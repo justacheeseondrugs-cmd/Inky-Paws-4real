@@ -368,6 +368,28 @@ body .paper input[type=text]::placeholder{ color:var(--reader-ink);opacity:.7; }
 .generation-review .review-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
 .generation-review .review-actions button{flex:1 1 160px;}
 .scene-guide{font-size:12px;line-height:1.5;margin:7px 0;color:var(--paper-ink-soft);}
+
+.writer-action-bar{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+  margin-top:10px;
+}
+.writer-action-bar .btn{
+  width:100%;
+  min-height:42px;
+  padding:9px 10px;
+}
+.writer-action-bar .btn-ending{
+  background:linear-gradient(180deg,var(--blush-100),var(--blush-200));
+  border:1px solid var(--oldrose-400);
+  color:var(--oldrose-700);
+}
+.writer-action-bar .btn-ending:hover{filter:brightness(1.02);}
+.writer-action-bar-start{margin-top:0;}
+@media(min-width:680px){
+  .writer-action-bar:not(.writer-action-bar-start){grid-template-columns:repeat(4,minmax(0,1fr));}
+}
 #write-form-card .planning-fields textarea{min-height:85px;}
 
 
