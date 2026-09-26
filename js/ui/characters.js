@@ -5,7 +5,7 @@ export async function renderCharacters(root) {
   const characters = (await db.getAll('characters')).sort((a, b) => a.name.localeCompare(b.name));
   root.innerHTML = `
     <h2 class="section-title">Personajes</h2>
-    <p class="section-hint">Cada ficha se inyecta en el Canon Guard cuando el personaje está activo. Aquí defines pronombres, personalidad, reglas duras y qué sabe cada uno hasta ahora.</p>
+    <p class="section-hint">Cada ficha se incorpora al control de canon cuando el personaje está activo. Aquí defines pronombres, personalidad, reglas duras y qué sabe cada uno hasta ahora.</p>
     <div class="btn-row" style="margin-bottom:14px;"><button class="btn btn-primary" id="char-new-btn">+ Nuevo personaje</button></div>
     <div id="char-list"></div>`;
   document.getElementById('char-new-btn').addEventListener('click', () => openCharacterModal(null, root));
@@ -34,11 +34,11 @@ async function openCharacterModal(id, root) {
     <label class="field-label">Pronombres</label><input type="text" id="f-pronouns" value="${escapeHtml(c.pronouns)}" placeholder="ej: she/her, they/them, he/him">
     <label class="field-label">Personalidad</label><textarea id="f-personality">${escapeHtml(c.personality)}</textarea>
     <label class="field-label">Estilo de habla</label><textarea id="f-speech">${escapeHtml(c.speechStyle)}</textarea>
-    <label class="field-label">Reglas duras (hard rules)</label><textarea id="f-hardrules" placeholder="Cosas que siempre deben cumplirse para este personaje">${escapeHtml(c.hardRules)}</textarea>
+    <label class="field-label">Reglas obligatorias</label><textarea id="f-hardrules" placeholder="Cosas que siempre deben cumplirse para este personaje">${escapeHtml(c.hardRules)}</textarea>
     <label class="field-label">Conocimiento actual</label><textarea id="f-knowledge" placeholder="Sólo lo que este personaje sabe hasta el momento actual de la historia">${escapeHtml(c.currentKnowledge)}</textarea>
     <label class="field-label">Relaciones</label><textarea id="f-relationships">${escapeHtml(c.relationships)}</textarea>
-    <label class="field-label">Nunca hacer (never-do rules)</label><textarea id="f-neverdo">${escapeHtml(c.neverDoRules)}</textarea>
-    <label class="field-label"><input type="checkbox" id="f-active" ${c.active !== false ? 'checked' : ''}> Incluir en el Canon Guard (activo)</label>
+    <label class="field-label">Reglas de nunca hacer</label><textarea id="f-neverdo">${escapeHtml(c.neverDoRules)}</textarea>
+    <label class="field-label"><input type="checkbox" id="f-active" ${c.active !== false ? 'checked' : ''}> Incluir en el control de canon (activo)</label>
     <div class="btn-row"><button class="btn btn-primary" id="f-save-btn">Guardar</button><button class="btn btn-ghost" id="f-cancel-btn">Cancelar</button></div>`);
   document.getElementById('f-cancel-btn').addEventListener('click', closeModal);
   document.getElementById('f-save-btn').addEventListener('click', async () => {
