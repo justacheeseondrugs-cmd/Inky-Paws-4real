@@ -2,7 +2,7 @@ import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, fmtDate, debounce, wordCount, openModal, closeModal, bus, copyTextToClipboard } from '../utils.js';
 import { rewriteChapter, generateContinuityMemory } from '../memoryEngine.js';
 
-function safeFilename(value, fallback = 'chapter') {
+function safeFilename(value, fallback = 'capitulo') {
   const cleaned = String(value || '')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -27,7 +27,7 @@ function downloadMarkdown(filename, markdown) {
 }
 
 function chapterAsMarkdown(chapter) {
-  const title = String(chapter?.title || 'Untitled chapter').trim();
+  const title = String(chapter?.title || 'Capítulo sin título').trim();
   const body = String(chapter?.content || '').trim();
   return '# ' + title + '\n\n' + body + '\n';
 }
@@ -38,7 +38,7 @@ async function copyChapterToClipboard(id) {
   const body = String(chapter.content || '').trim();
   if (!body) return toast('Este capítulo todavía no tiene texto para copiar.',{error:true});
   try {
-    await copyTextToClipboard(String(chapter.title || 'Untitled chapter').trim() + '\n\n' + body);
+    await copyTextToClipboard(String(chapter.title || 'Capítulo sin título').trim() + '\n\n' + body);
     toast('Capítulo copiado al portapapeles.');
   } catch (err) {
     toast(err.message || 'No se pudo copiar el capítulo.',{error:true});
@@ -48,7 +48,7 @@ async function copyChapterToClipboard(id) {
 async function downloadChapterMarkdown(id) {
   const chapter = await db.get('chapters',id);
   if (!chapter) return toast('No se encontró el capítulo.',{error:true});
-  downloadMarkdown(safeFilename(chapter.title,'chapter') + '.md', chapterAsMarkdown(chapter));
+  downloadMarkdown(safeFilename(chapter.title,'capitulo') + '.md', chapterAsMarkdown(chapter));
   toast('Capítulo descargado en .md · 0 tokens de IA.');
 }
 
@@ -187,7 +187,7 @@ async function duplicateChapter(id) {
 }
 
 async function deleteChapter(id, root) {
-  if (!confirm('¿Eliminar definitivamente este capítulo y su memoria de continuidad? Antes, exporta un backup si quieres conservarlo.')) return;
+  if (!confirm('¿Eliminar definitivamente este capítulo y su memoria de continuidad? Antes, exporta una copia de seguridad si quieres conservarlo.')) return;
   await db.del('chapters', id);
   await db.del('generationState', id).catch(() => {});
   const memories = await db.getByIndex('memoryEntries', 'by_chapter', id);
