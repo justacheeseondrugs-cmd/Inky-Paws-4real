@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
-import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter } from '../generation.js?v=20260919-workspaces-v1';
+import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260926-ending-controls-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260919-workspaces-v1';
 
 let isRunning = false;
@@ -40,7 +40,7 @@ export async function renderWrite(root) {
     '<p class="scene-guide">Los no marcados quedan fuera. Un documento de «Solo estilo» aporta sus notas de estilo, nunca texto ni personajes originales.</p>',
     '<div id="w-reference-list">'+(docsHtml || '<p class="muted">Sin documentos activos en esta historia. Súbelos en Documentos si los necesitas.</p>')+'</div>',
     '<div class="grid-2"><div><label class="field-label" for="w-words">Extensión orientativa</label><select id="w-words"><option value="3000">3.000 palabras</option><option value="5000" selected>5.000 palabras</option><option value="7000">7.000 palabras</option></select></div>',
-    '<div><label class="field-label">&nbsp;</label><button class="btn btn-primary" id="w-generate-btn" style="width:100%" '+(!hasKey || active ? 'disabled' : '')+'>✒️ Escribir primer bloque</button></div></div></div>',
+    '<div><label class="field-label">&nbsp;</label><div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Continue</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button></div><p class="scene-guide">«Add an ending» da a este primer bloque un cierre natural; no termina automáticamente toda la historia.</p></div></div></div>',
     '<div class="card paper" id="w-paper-card" style="display:none"><div class="paper-title" id="w-paper-title"></div><div class="muted" id="w-paper-meta"></div><div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="w-copy-chapter-btn">📋 Copiar capítulo</button></div><hr><div class="paper-readonly manuscript-rendered" id="w-paper-text"></div></div>'
   ].join('');
   // An explicitly chosen brainstorm suggestion is only a draft: the author
@@ -50,7 +50,8 @@ export async function renderWrite(root) {
     await db.del('settings',plannerDraft.id);
     toast('Idea de planificación lista para revisar en las instrucciones.');
   }
-  document.getElementById('w-generate-btn')?.addEventListener('click',onGenerateClick);
+  document.getElementById('w-generate-btn')?.addEventListener('click',()=>onGenerateClick('continue'));
+  document.getElementById('w-generate-ending-btn')?.addEventListener('click',()=>onGenerateClick('ending'));
   if(active){ renderBanner(active); showPaper(active); }
 }
 
@@ -75,11 +76,12 @@ function renderBanner(state) {
     '<div class="progress-track"><div class="progress-fill" style="width:'+pct+'%"></div></div>',
     '<div class="muted">'+state.wordsSoFar+' / '+state.targetWords+' palabras aceptadas · '+state.blocksDone+' bloque(s)</div>',
     state.lastError ? '<p class="muted">'+escapeHtml(state.lastError.message)+'</p>':'','</div></div>',
-    waiting ? '<div class="generation-review"><h3>✏️ Lee, corrige y aprueba este bloque</h3><p class="scene-guide">Este texto todavía NO es parte del capítulo. Si algo no te gusta, edítalo o descártalo antes de continuar.</p><textarea id="w-review-text" rows="12">'+escapeHtml(state.pendingText || '')+'</textarea><div class="review-actions"><button type="button" class="btn btn-primary" id="w-approve-btn">✓ Aceptar bloque</button><button type="button" class="btn btn-ghost" id="w-copy-block-btn">📋 Copiar bloque</button><button type="button" class="btn btn-ghost" id="w-reject-btn">Descartar SOLO este bloque</button></div></div>' : '',
+    waiting ? '<div class="generation-review"><h3>✏️ Lee, corrige y aprueba este bloque</h3><p class="scene-guide">Este texto todavía NO es parte del capítulo. Si algo no te gusta, edítalo o descártalo antes de continuar.</p><textarea id="w-review-text" rows="12">'+escapeHtml(state.pendingText || '')+'</textarea><div class="review-actions"><button type="button" class="btn btn-primary" id="w-approve-btn">✓ Aceptar bloque</button><button type="button" class="btn btn-ghost" id="w-copy-block-btn">📋 Copiar bloque</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-ending-pending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost" id="w-reject-btn">Descartar SOLO este bloque</button></div><p class="scene-guide">«Add an ending» conserva todo lo que ya lees y añade sólo el cierre al final. Después sigues pudiendo editarlo antes de aprobar.</p></div>' : '',
     showControls ? '<div class="card"><h3>🎬 Siguiente bloque</h3>'+
        (planOptions ? '<label class="field-label" for="w-current-scene">¿Qué escena debe avanzar ahora?</label><select id="w-current-scene">'+planOptions+'</select>':'')+
        '<label class="field-label" for="w-block-notes">Correcciones para el siguiente bloque</label><textarea id="w-block-notes" rows="3" placeholder="No repetir la plaza. Anya YA llegó: continúa con su encuentro con Erwin."></textarea>'+
-       '<div class="btn-row"><button type="button" class="btn btn-primary" id="w-next-btn">✒️ Escribir siguiente bloque</button>'+
+       '<div class="writer-action-bar"><button type="button" class="btn btn-primary writer-action" id="w-next-btn">▶ Continue</button><button type="button" class="btn btn-ghost writer-action" id="w-keep-going-btn">↪ Keep going</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-add-ending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost writer-action" id="w-surprise-btn">🎲 Surprise me</button></div>'+
+       '<div class="btn-row">'+
        (state.wordsSoFar ? '<button type="button" class="btn btn-ghost" id="w-finish-btn">✓ Finalizar capítulo aquí</button>':'')+
        '<button type="button" class="btn btn-danger" id="w-discard-btn">Cerrar generación</button></div>'+
        '<p class="scene-guide">Finaliza solo cuando el desenlace esté completo. Cerrar generación conserva lo aprobado como borrador.</p></div>':''
@@ -88,6 +90,18 @@ function renderBanner(state) {
     const text=document.getElementById('w-review-text')?.value || state.pendingText || '';
     try{await copyTextToClipboard(text);toast('Bloque copiado al portapapeles.');}
     catch(err){toast(err.message || 'No se pudo copiar el bloque.',{error:true});}
+  });
+  document.getElementById('w-ending-pending-btn')?.addEventListener('click',async(e)=>{
+    const btn=e.currentTarget;
+    const review=document.getElementById('w-review-text');
+    btn.disabled=true;
+    btn.textContent='✨ Adding ending…';
+    try{
+      const updated=await extendPendingBlockWithEnding(state.chapterId,review?.value || state.pendingText || '');
+      if(review) review.value=updated.pendingText || '';
+      toast('Final añadido al bloque. Revísalo antes de aprobar.',{ms:6000});
+    }catch(err){toast(err.message || 'No se pudo añadir el final.',{error:true,ms:8500});}
+    finally{btn.disabled=false;btn.textContent='✨ Add an ending';}
   });
   document.getElementById('w-approve-btn')?.addEventListener('click',async(e)=>{
     e.currentTarget.disabled=true;
@@ -100,15 +114,21 @@ function renderBanner(state) {
     await rejectPendingBlock(state.chapterId);
     toast('Bloque descartado. Puedes indicar cómo reescribirlo.');await renderWrite(document.getElementById('view-write'));
   });
-  document.getElementById('w-next-btn')?.addEventListener('click',async(e)=>{
-    e.currentTarget.disabled=true;
-    await runGeneration({
-      chapterId:state.chapterId,chapterTitle:state.chapterTitle,instructions:state.instructions,
-      targetWords:state.targetWords,requiredEnding:state.requiredEnding,
-      sceneIndex:document.getElementById('w-current-scene')?Number(document.getElementById('w-current-scene').value):state.sceneIndex,
-      blockNotes:document.getElementById('w-block-notes')?.value.trim() || ''
+  const runIntent=(buttonId,generationIntent)=>{
+    document.getElementById(buttonId)?.addEventListener('click',async(e)=>{
+      e.currentTarget.disabled=true;
+      await runGeneration({
+        chapterId:state.chapterId,chapterTitle:state.chapterTitle,instructions:state.instructions,
+        targetWords:state.targetWords,requiredEnding:state.requiredEnding,
+        sceneIndex:document.getElementById('w-current-scene')?Number(document.getElementById('w-current-scene').value):state.sceneIndex,
+        blockNotes:document.getElementById('w-block-notes')?.value.trim() || '',generationIntent
+      });
     });
-  });
+  };
+  runIntent('w-next-btn','continue');
+  runIntent('w-keep-going-btn','keep-going');
+  runIntent('w-add-ending-btn','ending');
+  runIntent('w-surprise-btn','surprise');
   document.getElementById('w-finish-btn')?.addEventListener('click',async(e)=>{
     if(!confirm('¿Ya se escribió el desenlace? Se finalizará con los bloques que aceptaste.'))return;
     e.currentTarget.disabled=true;
@@ -152,7 +172,7 @@ function showPaper(state){
   }
 }
 
-async function onGenerateClick(){
+async function onGenerateClick(generationIntent='continue'){
   const title=document.getElementById('w-title').value.trim();
   const instructions=document.getElementById('w-instructions').value.trim();
   const targetWords=Number(document.getElementById('w-words').value);
@@ -168,13 +188,14 @@ async function onGenerateClick(){
   const chapters=await db.getAll('chapters');
   const chapter={id:db.uid(),title,content:'',wordCount:0,status:'draft',order:chapters.length,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   await db.put('chapters',chapter);
-  await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,forbiddenCast,documentIds,reactionMode});
+  await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,forbiddenCast,documentIds,reactionMode,generationIntent});
 }
 
 async function runGeneration(options){
   if(isRunning)return toast('Ya hay una generación en curso.',{error:true});
   isRunning=true;
   const root=document.getElementById('view-write');
+  root?.querySelectorAll('.writer-action').forEach((btn)=>btn.setAttribute('disabled','true'));
   root?.querySelector('#w-next-btn')?.setAttribute('disabled','true');
   root?.querySelector('#w-generate-btn')?.setAttribute('disabled','true');
   try{
