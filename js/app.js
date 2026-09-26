@@ -1,11 +1,11 @@
 import { db } from './db.js';
-import { renderWrite } from './ui/write.js?v=20260926-copy-buttons-v1';
-import { renderChapters } from './ui/chapters.js?v=20260926-copy-buttons-v1';
-import { renderCharacters } from './ui/characters.js';
-import { renderDocuments } from './ui/documents.js';
+import { renderWrite } from './ui/write.js?v=20260926-spanish-ui-v1';
+import { renderChapters } from './ui/chapters.js?v=20260926-spanish-ui-v1';
+import { renderCharacters } from './ui/characters.js?v=20260926-spanish-ui-v1';
+import { renderDocuments } from './ui/documents.js?v=20260926-spanish-ui-v1';
 import { renderMemory } from './ui/memory.js';
-import { renderSettings } from './ui/settings.js';
-import { renderPlanner } from './ui/planner.js?v=20260925-sos-v2';
+import { renderSettings } from './ui/settings.js?v=20260926-spanish-ui-v1';
+import { renderPlanner } from './ui/planner.js?v=20260926-spanish-ui-v1';
 import { bus, toast } from './utils.js';
 import { getActiveGenerationState } from './generation.js';
 import { initAppearance } from './ui/appearance.js';
