@@ -5,6 +5,7 @@ import { generateContinuityMemory } from '../memoryEngine.js?v=20260919-workspac
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+const docTypeLabel = { CANON:'Canon', CHARACTER:'Personajes', CONTINUITY:'Continuidad', STYLE_ONLY:'Solo estilo', REFERENCE:'Referencia' };
 
 export async function renderWrite(root) {
   const [settings, active, documents, plannerDraft] = await Promise.all([
@@ -13,14 +14,14 @@ export async function renderWrite(root) {
   ]);
   const hasKey = !!settings?.apiKeys?.[settings.provider];
   const docs = documents.filter((d) => d.active !== false).sort((a,b) => (b.priority || 0)-(a.priority || 0));
-  const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(d.type)+')</span></label>').join('');
+  const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>').join('');
   root.innerHTML = [
     '<h2 class="section-title">Escribir</h2>',
     '<p class="section-hint">Planifica el capítulo y aprueba cada bloque antes de que la IA continúe. Los bloques descartados NO pasan al capítulo.</p>',
-    !hasKey ? '<div class="key-warning">Configura una API key en Ajustes antes de escribir.</div>' : '',
+    !hasKey ? '<div class="key-warning">Configura una clave API en Ajustes antes de escribir.</div>' : '',
     '<div id="gen-banner-slot"></div>',
     '<div class="card" id="write-form-card"><h3>Nuevo capítulo</h3>',
-    '<label class="field-label" for="w-title">Título</label><input id="w-title" type="text" placeholder="Chapter 2 — An Hour Early">',
+    '<label class="field-label" for="w-title">Título</label><input id="w-title" type="text" placeholder="Capítulo 2 — Una hora antes">',
     '<label class="field-label" for="w-instructions">¿Qué debe pasar? (instrucciones, secretos y límites)</label>',
     '<textarea id="w-instructions" rows="7"></textarea>',
     '<label class="field-label" for="w-scenes">🎬 Plan de escenas, una por línea (en orden)</label>',
@@ -36,7 +37,7 @@ export async function renderWrite(root) {
     '<textarea id="w-ending" rows="3" placeholder="La niña llega a los brazos de Erwin y habla entre sollozos ANTES del corte."></textarea>',
     '<label class="field-label"><input id="w-reactions" type="checkbox" checked> Sala de reacciones: entrelazar conversaciones de espectadores CON lo que ocurre en pantalla</label>',
     '<label class="field-label">📚 Documentos autorizados para ESTE capítulo</label>',
-    '<p class="scene-guide">Los no marcados quedan fuera. Un STYLE_ONLY aporta sus notas de estilo, nunca texto ni personajes originales.</p>',
+    '<p class="scene-guide">Los no marcados quedan fuera. Un documento de «Solo estilo» aporta sus notas de estilo, nunca texto ni personajes originales.</p>',
     '<div id="w-reference-list">'+(docsHtml || '<p class="muted">Sin documentos activos en esta historia. Súbelos en Documentos si los necesitas.</p>')+'</div>',
     '<div class="grid-2"><div><label class="field-label" for="w-words">Extensión orientativa</label><select id="w-words"><option value="3000">3.000 palabras</option><option value="5000" selected>5.000 palabras</option><option value="7000">7.000 palabras</option></select></div>',
     '<div><label class="field-label">&nbsp;</label><button class="btn btn-primary" id="w-generate-btn" style="width:100%" '+(!hasKey || active ? 'disabled' : '')+'>✒️ Escribir primer bloque</button></div></div></div>',
