@@ -86,7 +86,7 @@ function renderMessages(root, messages) {
         '<button type="button" class="btn btn-ghost btn-sm planner-use" data-message-index="' + index + '">✒️ Pasar a Escribir</button>' +
         '</div>' : '') +
     '</div>'
-  ).join('') : '<p class="planner-empty">¿Te quedaste sin ideas? Dime dónde terminó el capítulo, qué escena te gustaría explorar o simplemente escribe «surprise me» 💗</p>';
+  ).join('') : '<p class="planner-empty">¿Te quedaste sin ideas? Dime dónde terminó el capítulo, qué escena te gustaría explorar o simplemente escribe «sorpréndeme» 💗</p>';
   list.scrollTop = list.scrollHeight;
 }
 
@@ -100,15 +100,15 @@ export async function renderPlanner(root) {
     '<p class="section-hint">Úsalo solo cuando te quedes atascada: ideas, escenas, reacciones o caminos posibles. No cambia tu canon ni escribe capítulos sin tu aprobación.</p>',
     '<div class="card"><div class="planner-chat" role="log" aria-label="Conversación de planificación" id="planner-messages"></div>',
     '<label class="field-label" for="planner-input">¿Qué te gustaría planear?</label>',
-    '<textarea id="planner-input" rows="4" maxlength="6000" placeholder="My chapter ends with Joseph revealing the network… What could happen next?"></textarea>',
+    '<textarea id="planner-input" rows="4" maxlength="6000" placeholder="Mi capítulo termina con Joseph revelando la red… ¿Qué podría pasar después?"></textarea>',
     '<div class="btn-row"><button type="button" class="btn btn-primary" id="planner-send">💬 Enviar</button>',
     '<button type="button" class="btn btn-ghost" id="planner-clear">Nueva conversación</button></div>',
     '<p id="planner-status" class="muted" role="status">SOS opcional: solo usa la API cuando pulsas Enviar. Mantuvimos el contexto compacto para no gastar tokens de más.</p>',
     '</div>',
     '<div class="card"><h3>¿Sin ideas? Empieza por aquí</h3>',
-    '<div class="btn-row"><button type="button" class="btn btn-ghost btn-sm planner-example" data-prompt="Give me three distinct, canon-consistent directions for the next chapter, based on the exact end of my latest saved chapter. Avoid revealing secrets prematurely.">🌷 Dame 3 ideas</button>',
-    '<button type="button" class="btn btn-ghost btn-sm planner-example" data-prompt="Which character-driven tensions and reaction-room conversations could naturally follow the most recent chapter ending? Surprise me without changing established canon.">🎭 ¿Cómo reaccionarían?</button>',
-    '<button type="button" class="btn btn-ghost btn-sm planner-example" data-prompt="Help me build a short scene-by-scene plan for my next chapter. Ask me one question first if you need an important decision from me.">📖 Planear capítulo</button></div></div>',
+    '<div class="btn-row"><button type="button" class="btn btn-ghost btn-sm planner-example" data-prompt="Dame tres caminos distintos y coherentes con el canon para el próximo capítulo, basándote en el final exacto de mi último capítulo guardado. Evita revelar secretos antes de tiempo.">🌷 Dame 3 ideas</button>',
+    '<button type="button" class="btn btn-ghost btn-sm planner-example" data-prompt="¿Qué tensiones entre personajes y conversaciones de la sala de reacciones podrían seguir de forma natural al final del capítulo más reciente? Sorpréndeme sin cambiar el canon establecido.">🎭 ¿Cómo reaccionarían?</button>',
+    '<button type="button" class="btn btn-ghost btn-sm planner-example" data-prompt="Ayúdame a crear un plan breve, escena por escena, para mi próximo capítulo. Hazme primero una pregunta si necesitas que tome una decisión importante.">📖 Planear capítulo</button></div></div>',
     '<p class="muted">Esta conversación se guarda solo en este navegador y en la historia seleccionada. No se sincroniza aún entre dispositivos ni se añade automáticamente a tus capítulos o memorias.</p>',
   ].join('');
   const input = root.querySelector('#planner-input');
