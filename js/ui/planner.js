@@ -156,7 +156,7 @@ export async function renderPlanner(root) {
     if (projectId !== db.getActiveProjectId()) return toast('Vuelve a abrir Planificar en la historia correcta.',{error:true});
     const settings = await db.get('settings','main');
     if (!settings?.apiKeys?.[settings.provider]) {
-      return toast('Primero configura tu API key en Ajustes.',{error:true,ms:6500});
+      return toast('Primero configura tu clave API en Ajustes.',{error:true,ms:6500});
     }
     busy = true; send.disabled = true; clear.disabled = true;
     status.textContent = '💭 Pensando contigo…';
