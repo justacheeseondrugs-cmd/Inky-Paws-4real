@@ -7,7 +7,7 @@ export class OpenAIProvider extends AIProvider {
     const apiKey = this.config.apiKey;
     const model = this.config.model || 'gpt-4o';
     if (!apiKey) {
-      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la API key de OpenAI en Ajustes.', raw: null };
+      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de OpenAI en Ajustes.', raw: null };
     }
     const url = 'https://api.openai.com/v1/chat/completions';
     // Los modelos de razonamiento (GPT-5 / o-series) requieren
@@ -65,7 +65,7 @@ export class OpenAIProvider extends AIProvider {
         return { ok: false, text: null, errorType: 'quota', errorMessage: 'OpenAI devolvió 429 (cuota/límite de tasa excedido). No reintentes automáticamente; espera y vuelve a intentar.', raw: data };
       }
       if (res.status === 401 || res.status === 403) {
-        return { ok: false, text: null, errorType: 'auth', errorMessage: 'API key de OpenAI inválida o sin permisos (HTTP ' + res.status + ').', raw: data };
+        return { ok: false, text: null, errorType: 'auth', errorMessage: 'clave API de OpenAI inválida o sin permisos (HTTP ' + res.status + ').', raw: data };
       }
       return { ok: false, text: null, errorType: 'http', errorMessage: 'OpenAI devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), raw: data };
     }
