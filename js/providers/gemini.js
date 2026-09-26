@@ -7,7 +7,7 @@ export class GeminiProvider extends AIProvider {
     const apiKey = this.config.apiKey;
     const model = this.config.model || 'gemini-3.8-flash';
     if (!apiKey) {
-      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la API key de Gemini en Ajustes.', raw: null };
+      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de Gemini en Ajustes.', raw: null };
     }
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
     const body = {
@@ -47,7 +47,7 @@ export class GeminiProvider extends AIProvider {
         return { ok: false, text: null, errorType: 'busy', errorMessage: 'Gemini devolvió HTTP 503: el modelo tiene alta demanda temporal. El borrador está guardado. Espera unos minutos y pulsa Reanudar; también puedes elegir otro modelo Flash disponible en Ajustes.', raw: data };
       }
       if (res.status === 401 || res.status === 403) {
-        return { ok: false, text: null, errorType: 'auth', errorMessage: 'API key de Gemini inválida o sin permisos (HTTP ' + res.status + ').', raw: data };
+        return { ok: false, text: null, errorType: 'auth', errorMessage: 'clave API de Gemini inválida o sin permisos (HTTP ' + res.status + ').', raw: data };
       }
       return { ok: false, text: null, errorType: 'http', errorMessage: 'Gemini devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), raw: data };
     }
