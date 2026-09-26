@@ -27,9 +27,9 @@ jobs:
           ET.fromstring(svg)
           assert '<title>Inky Paws' in page
           assert 'class="brand-title">Inky Paws<' in page
-          assert 'Where stories bloom softly' in page
-          assert 'A little more magic today?' in page
-          assert 'Your stories are right where you left them.' in page
+          assert 'Donde las historias florecen despacito' in page
+          assert '¿Un poquito más de magia hoy?' in page
+          assert 'Tus historias están justo donde las dejaste.' in page
           assert 'Berkshire Swash' in css
           assert manifest['name'] == 'Inky Paws'
           assert manifest['short_name'] == 'Inky Paws'
@@ -39,5 +39,8 @@ jobs:
           logo = base64.b64decode(re.search(r'data:image/webp;base64,([A-Za-z0-9+/=]+)', svg).group(1), validate=True)
           assert logo[:4] == b'RIFF' and logo[8:12] == b'WEBP'
           assert 'icons/user-cat-logo.svg' in Path('sw.js').read_text()
-          print('PASS: Inky Paws name, wording, logo source, font, preserved scope and offline asset.')
+          assert 'Where stories bloom softly' not in page
+          assert 'A little more magic today?' not in page
+          assert manifest['description'].startswith('Donde las historias florecen despacito.')
+          print('PASS: Inky Paws name, Spanish wording, logo source, font, preserved scope and offline asset.')
           PY
