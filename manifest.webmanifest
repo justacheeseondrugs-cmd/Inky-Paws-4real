@@ -1,7 +1,7 @@
 {
   "name": "Inky Paws",
   "short_name": "Inky Paws",
-  "description": "Where stories bloom softly. Your cozy fanfiction writing studio.",
+  "description": "Donde las historias florecen despacito. Tu rincón acogedor para escribir fanfics.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
