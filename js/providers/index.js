@@ -5,9 +5,9 @@
 // aquí — el resto de la aplicación (generación de capítulos, memoria, etc.)
 // no necesita cambiar ni una línea.
 
-import { GeminiProvider } from './gemini.js';
-import { OpenAIProvider } from './openai.js?v=20260919-memoryfix-1';
-import { OpenRouterFreeProvider } from './openrouter.js';
+import { GeminiProvider } from './gemini.js?v=20260926-spanish-ui-v1';
+import { OpenAIProvider } from './openai.js?v=20260926-spanish-ui-v1';
+import { OpenRouterFreeProvider } from './openrouter.js?v=20260926-spanish-ui-v1';
 
 const REGISTRY = {
   gemini: { label: 'Google Gemini', build: (cfg) => new GeminiProvider(cfg) },
