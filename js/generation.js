@@ -25,7 +25,7 @@ export async function getActiveGenerationState() {
     .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
 }
 
-export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', onProgress, shouldStop }) {
+export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', generationIntent = 'continue', onProgress, shouldStop }) {
   let state = await db.get('generationState', chapterId);
   if (!state) {
     state = {
@@ -42,6 +42,7 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
       documentIds,
       reactionMode,
       blockNotes,
+      generationIntent,
       pendingText: '',
       accumulatedText: '',
       wordsSoFar: 0,
@@ -58,6 +59,7 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
     state.instructions = instructions || state.instructions;
     if (Number.isInteger(sceneIndex)) state.sceneIndex = sceneIndex;
     state.blockNotes = blockNotes || '';
+    state.generationIntent = generationIntent || 'continue';
     await db.put('generationState', state);
   }
 
@@ -82,7 +84,12 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
   // the author must approve or edit each block before a follow-up API request.
   {
     const remaining = Math.max(1,state.targetWords - state.wordsSoFar);
-    const thisBlockTarget = Math.min(blockWords, Math.max(remaining, Math.round(blockWords * .65)));
+    const intent = state.generationIntent || 'continue';
+    const normalBlockTarget = Math.min(blockWords, Math.max(remaining, Math.round(blockWords * .65)));
+    // "Add an ending" lands the current unit instead of forcing another full-size block.
+    const thisBlockTarget = intent === 'ending'
+      ? Math.min(600, Math.max(250, Math.round(blockWords * .55)))
+      : normalBlockTarget;
     const isFirstBlock = state.blocksDone === 0;
     const isLastStretch = remaining <= blockWords;
 
@@ -115,6 +122,14 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
           ? 'LATE MIDDLE: complete the ongoing conversation and make tangible progress toward the closing scene. No new subplot, character introductions or recaps.'
           : 'MIDDLE: continue from the precise last action and develop the NEXT unique event. Never replay a previous arrival, conversation or scream.';
 
+    const intentGuidance = intent === 'ending'
+      ? 'ADD AN ENDING: Continue seamlessly from the current prose and write only enough to give THIS CURRENT BLOCK/SCENE a satisfying stopping point. Resolve the immediate conversational or emotional beat, but keep larger story threads alive. Do not start a new scene, time-skip, recap, or invent an unrelated twist merely to manufacture an ending. Finish on a strong final line, image, reaction, realization, question, or organic hook. This does NOT mean end the whole story.'
+      : intent === 'keep-going'
+        ? 'KEEP GOING: Stay inside the exact current moment and scene. Deepen the interaction, reactions, body language, dialogue, interiority or immediate consequence before moving on. Do not time-skip, jump to the next planned scene, or rush to resolve the beat.'
+        : intent === 'surprise'
+          ? 'SURPRISE ME: Choose the most organic interesting next development from tensions and information already present. Surprise through character consequence, a revealing observation, a question, a mistake, a reaction or a plausible interruption—not a random new character, unrelated subplot, deus ex machina or canon-breaking twist.'
+          : 'CONTINUE: Advance naturally from the exact final line. Do not recap or restart.';
+
     const extraGuidance = [
       'This request is ONE continuous chapter, NOT a fresh chapter per API call. All events in CHAPTER_SO_FAR have ALREADY HAPPENED. Return ONLY the next new prose, never a repeat or rephrasing.',
       state.reactionMode ? 'REACTION ROOM: write TWO living scenes unfolding together, not a separated episode followed by a roster of comments. Interleave timely viewers reactions at scene beats and within onscreen action. Let viewers respond to EACH OTHER across several turns, interrupt, argue, joke or go silent; not every viewer needs to speak. Every reaction changes a conversation or action. Do not use formulaic introduction phrases like Meanwhile in the reaction room, or literary-critic commentary about symbolism.' : 'Write only the narrative requested by the author.',
@@ -124,9 +139,12 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
       state.forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: '+state.forbiddenCast+'. These names must never appear in the NEW prose.' : '',
       Array.isArray(state.scenePlan) && state.scenePlan.length ? 'ORDERED STORY PLAN (each beat happens once):\n'+state.scenePlan.map((beat,i) => (i+1)+'. '+beat).join('\n')+'\nFOCUS FOR THIS BLOCK: scene '+(Math.min(state.scenePlan.length-1,Math.max(0,state.sceneIndex || 0))+1)+': '+state.scenePlan[Math.min(state.scenePlan.length-1,Math.max(0,state.sceneIndex || 0))]+'. Progress from here toward the later scenes, never jump backward.' : '',
       state.blockNotes ? 'AUTHOR CORRECTION FOR THIS BLOCK (obey exactly, never repeat an earlier bad draft): '+state.blockNotes : '',
+      intentGuidance,
       narrativePosition,
       state.requiredEnding ? 'MANDATORY FINAL SCENE / LAST IMAGE: ' + state.requiredEnding + ' Complete the entire event before ending; do not stop at the first distant hint of it.' : '',
-      isFirstBlock ? 'Write the FIRST approximately ' + thisBlockTarget + ' words of "' + state.chapterTitle + '". Do not end the chapter in this block.' : 'Write ONLY the NEXT approximately ' + thisBlockTarget + ' words from the last sentence. ' + (isLastStretch ? 'This is the final scene, not another setup.' : 'Keep moving toward the specified ending.'),
+      isFirstBlock
+        ? 'Write the FIRST approximately ' + thisBlockTarget + ' words of "' + state.chapterTitle + '".' + (intent === 'ending' ? ' Give this opening block a natural stopping point without pretending the whole story is over.' : ' Do not end the chapter in this block.')
+        : 'Write ONLY the NEXT approximately ' + thisBlockTarget + ' words from the last sentence. ' + (intent === 'ending' ? 'Land the current beat and stop cleanly.' : (isLastStretch ? 'This is the final scene, not another setup.' : 'Keep moving toward the specified ending.')),
     ].filter(Boolean).join('\n\n');
 
     const systemPrompt = assembleSystemPrompt({
@@ -149,6 +167,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
           '</CHAPTER_SO_FAR>',
           'The chapter currently has ' + state.wordsSoFar + ' of approximately ' + state.targetWords + ' words. Begin the NEXT paragraph after the final sentence above, with no heading and no recap.',
           state.requiredEnding ? 'The author-required event to reach before ending is: ' + state.requiredEnding : '',
+          intentGuidance,
           narrativePosition,
           'Return ONLY new prose continuing from the final line of CHAPTER_SO_FAR.',
         ].filter(Boolean).join('\n\n');
@@ -203,6 +222,105 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     return state;
   }
 
+  return state;
+}
+
+
+export async function extendPendingBlockWithEnding(chapterId, editedText, endingStyle = 'natural') {
+  const state = await db.get('generationState',chapterId);
+  if (!state || state.status !== 'awaiting_review') throw new Error('No hay un bloque pendiente para completar.');
+  const pending = String(editedText || state.pendingText || '').trim();
+  if (wordCount(pending) < 15) throw new Error('El bloque es demasiado corto para añadirle un final.');
+
+  const settings = (await db.get('settings','main')) || {};
+  const blockWords = settings.blockWordSize || DEFAULT_BLOCK_WORDS;
+  const provider = getProvider(settings);
+  const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks] = await Promise.all([
+    db.getAll('lockedFacts'),
+    db.getAll('characters'),
+    db.getAll('memoryEntries'),
+    db.getAll('canonNotes'),
+    db.getAll('documents'),
+    db.getAll('docChunks'),
+  ]);
+
+  const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const characters = allCharacters.filter((c) => permittedNames.includes(c.name.trim().toLowerCase()) && c.active !== false);
+  const memoryEntries = allMemoryEntries.sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+    .filter((m) => m.chapterId !== state.chapterId);
+  const documents = allDocuments.filter((d) => Array.isArray(state.documentIds) ? state.documentIds.includes(d.id) : true);
+  const queryText = [state.instructions,state.allowedCast,pending.slice(-5000),'ending'].join(' ');
+  const safeDocuments = documents.filter((d) => d.type !== 'STYLE_ONLY');
+  const retrievedChunks = getRelevantChunks(safeDocuments,allChunks,queryText,{context:'chapter_generation'});
+  for (const doc of documents.filter((d) => d.type === 'STYLE_ONLY' && d.active !== false)) {
+    retrievedChunks.push({
+      documentId:doc.id,
+      document:doc,
+      text:'Style notes supplied by author: '+(doc.useOnlyFor || 'novel-like rhythm and narration')+
+        '. Do not import any plot, character, relationship, dialogue or event from this file.'
+    });
+  }
+
+  const styleInstruction = endingStyle === 'hook'
+    ? 'Close the immediate beat, but make the final line an organic hook, realization, question, discovery or complication.'
+    : endingStyle === 'soft'
+      ? 'Use a quiet emotional landing rather than a cliffhanger.'
+      : endingStyle === 'hard'
+        ? 'Make the scene ending unmistakable and complete, without beginning the next scene.'
+        : endingStyle === 'chapter'
+          ? 'Give this chapter a substantial closing beat while preserving larger unresolved story threads.'
+          : 'Choose the ending shape that best fits the prose already on the page: a final line, image, reaction, realization or gentle hook.';
+
+  const fullText = [state.accumulatedText,pending].filter(Boolean).join('\n\n').slice(-STORY_CONTEXT_CHAR_CAP);
+  const endingWords = Math.min(600,Math.max(250,Math.round(blockWords * .5)));
+  const systemPrompt = assembleSystemPrompt({
+    lockedFacts,
+    chapterInstructions: state.instructions,
+    characters,
+    memoryEntries,
+    canonNotes,
+    recentChapterExcerpt:'',
+    retrievedChunks,
+    extraGuidance:[
+      'ADD AN ENDING TO THE CURRENT TEXT. Continue from the exact final sentence; do not restart, summarize, rewrite or replace anything already written.',
+      'Write only enough to bring the CURRENT BLOCK/SCENE to a natural stopping point. This does not automatically end the whole story.',
+      'Resolve the immediate conversational or emotional beat while leaving larger plot threads intact. Do not begin a new scene, jump in time or introduce an unrelated plot development merely to create an ending.',
+      styleInstruction,
+      'Preserve the current POV, tone, pacing, characterization, dialogue rhythm and continuity.',
+      state.reactionMode ? 'If this is a reaction-room scene, keep reactions integrated into the same living conversation instead of turning the ending into a roster of comments.' : '',
+      'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none)')+'. Do not introduce another named person.',
+      state.forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: '+state.forbiddenCast+'. These names must not appear.' : '',
+      'Target roughly '+endingWords+' additional words, but stop sooner if the prose has already landed. Do not pad the ending.'
+    ].filter(Boolean).join('\n\n')
+  });
+
+  const result = await provider.generate({
+    systemPrompt,
+    userPrompt:[
+      'TEXT ALREADY WRITTEN. Continue only after its final sentence:',
+      '<TEXT_ALREADY_WRITTEN>',
+      fullText,
+      '</TEXT_ALREADY_WRITTEN>',
+      'Return ONLY the new ending prose to append. No heading, preface, recap, commentary or duplicated sentences.'
+    ].join('\n\n'),
+    maxOutputTokens:Math.round(endingWords * 3.6) + 500,
+    temperature:0.95,
+  });
+
+  if (!result.ok) throw new Error(result.errorMessage || 'No se pudo generar el final.');
+
+  const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+  const lowerResult = String(result.text || '').toLowerCase();
+  const leaks = forbidden.filter((name) => lowerResult.includes(name.toLowerCase()));
+  if (leaks.length) throw new Error('El final incluyó personajes prohibidos: '+leaks.join(', ')+'. No se añadió.');
+
+  const addition = String(result.text || '').trim();
+  if (wordCount(addition) < 8) throw new Error('La IA devolvió un final demasiado corto. No se modificó el bloque.');
+  state.pendingText = pending + '\n\n' + addition;
+  state.status = 'awaiting_review';
+  state.lastError = null;
+  state.updatedAt = new Date().toISOString();
+  await db.put('generationState',state);
   return state;
 }
 
