@@ -8,7 +8,7 @@ export class OpenRouterFreeProvider extends AIProvider {
   async generate({ systemPrompt, userPrompt, maxOutputTokens = 2048, temperature = 1 }) {
     const key = String(this.config.apiKey || '').trim();
     const model = String(this.config.model || 'openrouter/free').trim();
-    if (!key) return { ok:false, text:null, errorType:'auth', errorMessage:'Falta la API key de OpenRouter en Ajustes. No sirve la clave de Gemini.', raw:null };
+    if (!key) return { ok:false, text:null, errorType:'auth', errorMessage:'Falta la clave API de OpenRouter en Ajustes. No sirve la clave de Gemini.', raw:null };
     if (!isFreeModel(model)) return { ok:false, text:null, errorType:'http', errorMessage:'Este proveedor solo permite openrouter/free o IDs que terminan en :free para evitar cargos.', raw:null };
     let response;
     try {
