@@ -44,7 +44,8 @@ jobs:
           assert "document.getElementById('w-review-text')?.value" in w
           assert 'copyChapterToClipboard' in c
           assert 'act-copy' in c
-          assert '20260926-copy-buttons-v1' in a
+          assert './ui/write.js?v=' in a
+          assert './ui/chapters.js?v=' in a
           assert 'const DB_VERSION = 1' in d
           print('PASS: block and chapter copy buttons are wired; IndexedDB schema is unchanged.')
           PY
