@@ -1,0 +1,99 @@
+name: Check Spanish interface
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "manifest.webmanifest"
+      - "js/app.js"
+      - "js/ui/write.js"
+      - "js/ui/planner.js"
+      - "js/ui/chapters.js"
+      - "js/ui/characters.js"
+      - "js/ui/documents.js"
+      - "js/ui/settings.js"
+      - "js/providers/index.js"
+      - "js/providers/openai.js"
+      - "js/providers/gemini.js"
+      - "js/providers/openrouter.js"
+      - "sw.js"
+      - ".github/workflows/check-spanish-ui.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  spanish-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Parse changed JavaScript
+        run: |
+          node --check js/app.js
+          node --check js/ui/write.js
+          node --check js/ui/planner.js
+          node --check js/ui/chapters.js
+          node --check js/ui/characters.js
+          node --check js/ui/documents.js
+          node --check js/ui/settings.js
+          node --check js/providers/index.js
+          node --check js/providers/openai.js
+          node --check js/providers/gemini.js
+          node --check js/providers/openrouter.js
+          node --check sw.js
+      - name: Verify Spanish UI without changing stored values
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          page = Path('index.html').read_text()
+          manifest = json.loads(Path('manifest.webmanifest').read_text())
+          write = Path('js/ui/write.js').read_text()
+          planner = Path('js/ui/planner.js').read_text()
+          chapters = Path('js/ui/chapters.js').read_text()
+          chars = Path('js/ui/characters.js').read_text()
+          docs = Path('js/ui/documents.js').read_text()
+          settings = Path('js/ui/settings.js').read_text()
+          db = Path('js/db.js').read_text()
+
+          assert 'Inky Paws' in page
+          assert 'Donde las historias florecen despacito' in page
+          assert '¿Un poquito más de magia hoy?' in page
+          assert 'Tus historias están justo donde las dejaste.' in page
+          assert 'Where stories bloom softly' not in page
+          assert 'A little more magic today?' not in page
+          assert manifest['name'] == 'Inky Paws'
+          assert manifest['start_url'] == './index.html'
+          assert manifest['scope'] == './'
+
+          assert 'placeholder="Capítulo 2 — Una hora antes"' in write
+          assert "STYLE_ONLY:'Solo estilo'" in write
+          assert '«Solo estilo»' in write
+
+          assert '«sorpréndeme»' in planner
+          assert 'Mi capítulo termina con Joseph revelando la red' in planner
+          # Planning logic stays untouched; only the visible examples changed.
+          assert "You are the author’s friendly collaborative story-planning partner" in planner
+
+          assert 'Capítulo sin título' in chapters
+          assert 'copia de seguridad' in chapters
+          assert 'Reglas obligatorias' in chars
+          assert 'Reglas de nunca hacer' in chars
+          assert 'control de canon' in chars
+
+          # Localized labels, same internal values.
+          assert 'value="STYLE_ONLY"' in docs and '>Solo estilo</option>' in docs
+          assert 'value="SMART"' in docs and '>Automática (sólo fragmentos relevantes)</option>' in docs
+          assert 'value="ALWAYS"' in docs and '>Siempre (incluir siempre, con tope)</option>' in docs
+          assert "TYPE_LABELS" in docs and "INCLUSION_LABELS" in docs
+
+          assert 'Tu clave API se guarda' in settings
+          assert 'Exportar copia completa' in settings
+          assert 'Importar copia' in settings
+
+          assert 'const DB_VERSION = 1' in db
+          print('PASS: visible interface is Spanish, Inky Paws is preserved, technical values and IndexedDB schema are unchanged.')
+          PY
