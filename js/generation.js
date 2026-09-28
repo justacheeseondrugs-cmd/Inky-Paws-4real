@@ -243,13 +243,14 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   const settings = (await db.get('settings','main')) || {};
   const blockWords = settings.blockWordSize || DEFAULT_BLOCK_WORDS;
   const provider = getProvider(settings);
-  const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks] = await Promise.all([
+  const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks, allChapters] = await Promise.all([
     db.getAll('lockedFacts'),
     db.getAll('characters'),
     db.getAll('memoryEntries'),
     db.getAll('canonNotes'),
     db.getAll('documents'),
     db.getAll('docChunks'),
+    db.getAll('chapters'),
   ]);
 
   const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
