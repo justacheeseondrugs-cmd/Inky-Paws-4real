@@ -423,3 +423,33 @@ body .paper input[type=text]::placeholder{ color:var(--reader-ink);opacity:.7; }
   .planner-message{max-width:96%;padding:10px;}
   .planner-message-actions .btn{padding:7px 10px;}
 }
+
+
+/* ---- Alternative chapter branches ---- */
+.chapter-variant{
+  margin-left:22px;
+  background:linear-gradient(90deg,var(--blush-50),#fff);
+  border-style:dashed;
+  position:relative;
+}
+.chapter-variant::before{
+  content:'↳';
+  position:absolute;
+  left:-18px;
+  top:12px;
+  color:var(--oldrose-500);
+  font-weight:700;
+}
+.branch-note{
+  margin:5px 0 2px;
+  font-size:12px;
+  line-height:1.45;
+  color:var(--paper-ink-soft);
+}
+body[data-theme="dark"] .chapter-variant{
+  background:linear-gradient(90deg,#3a2d3a,#3e3040);
+}
+@media(max-width:520px){
+  .chapter-variant{margin-left:10px;}
+  .chapter-variant::before{display:none;}
+}
