@@ -6,7 +6,7 @@
 // no necesita cambiar ni una línea.
 
 import { GeminiProvider } from './gemini.js?v=20260926-spanish-ui-v1';
-import { OpenAIProvider } from './openai.js?v=20260928-cache-cost-v1';
+import { OpenAIProvider } from './openai.js?v=20260928-economy-mini-v1';
 import { OpenRouterFreeProvider } from './openrouter.js?v=20260926-spanish-ui-v1';
 
 const REGISTRY = {
