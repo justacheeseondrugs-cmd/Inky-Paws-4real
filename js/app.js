@@ -19,7 +19,7 @@ async function seedDefaults() {
   }
   const settings = await db.get('settings', 'main');
   if (!settings) {
-    await db.put('settings', { id:'main', provider:'gemini', apiKeys:{gemini:'',openai:''}, models:{gemini:'gemini-2.0-flash',openai:'gpt-5.4-mini'}, blockWordSize:900, economyMiniMigration20260928:true });
+    await db.put('settings', { id:'main', provider:'gemini', apiKeys:{gemini:'',openai:''}, models:{gemini:'gemini-2.0-flash',openai:'gpt-5.4-mini'}, blockWordSize:1000, defaultGenerationMode:'full_chapter', economyMiniMigration20260928:true, fullChapterMigration20260928:true });
   } else if (!settings.economyMiniMigration20260928) {
     const currentOpenAI = String(settings.models?.openai || '').trim().toLowerCase();
     // One-time personal-app migration requested by the author: move an
@@ -32,6 +32,15 @@ async function seedDefaults() {
     }
     settings.economyMiniMigration20260928 = true;
     await db.put('settings', settings);
+  }
+  const refreshedSettings = await db.get('settings', 'main');
+  if (refreshedSettings && !refreshedSettings.fullChapterMigration20260928) {
+    if (!Number(refreshedSettings.blockWordSize) || Number(refreshedSettings.blockWordSize) < 1000) {
+      refreshedSettings.blockWordSize = 1000;
+    }
+    refreshedSettings.defaultGenerationMode = refreshedSettings.defaultGenerationMode || 'full_chapter';
+    refreshedSettings.fullChapterMigration20260928 = true;
+    await db.put('settings', refreshedSettings);
   }
 }
 
