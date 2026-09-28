@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, fmtDate, debounce, wordCount, openModal, closeModal, bus, copyTextToClipboard } from '../utils.js';
 import { rewriteChapter, generateContinuityMemory } from '../memoryEngine.js?v=20260928-cache-cost-v1';
+import { isMainTimelineChapter, sortChaptersWithVariants } from '../timeline.js?v=20260928-chapter-variants-v1';
 
 function safeFilename(value, fallback = 'capitulo') {
   const cleaned = String(value || '')
@@ -72,45 +73,147 @@ bus.on('chapters-changed', () => {
 });
 
 export async function renderChapters(root) {
-  const chapters = (await db.getAll('chapters')).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const chapters = sortChaptersWithVariants(await db.getAll('chapters'));
+  const mainChapters = chapters.filter(isMainTimelineChapter);
   root.innerHTML = `
     <h2 class="section-title">Capítulos</h2>
-    <p class="section-hint">Biblioteca de todos tus capítulos. Los archivos .md se crean localmente y no usan la API ni consumen tokens.</p>
+    <p class="section-hint">Tu línea principal y sus alternativas. Las alternativas se guardan completas pero NO afectan continuidad, planificación ni «Descargar todos» hasta que las hagas principales.</p>
     <div class="btn-row chapter-export-row">
-      <button class="btn btn-ghost" id="chapters-download-all">⬇️ Descargar todos en .md</button>
+      <button class="btn btn-ghost" id="chapters-download-all">⬇️ Descargar línea principal en .md</button>
     </div>
     <div id="chapters-list"></div>`;
-  document.getElementById('chapters-download-all')?.addEventListener('click', () => downloadAllChaptersMarkdown(chapters));
+  document.getElementById('chapters-download-all')?.addEventListener('click', () => downloadAllChaptersMarkdown(mainChapters));
   const list = document.getElementById('chapters-list');
   if (!chapters.length) { list.innerHTML = `<div class="empty"><span class="ic">📖</span>Todavía no tienes capítulos. Ve a «Escribir» para crear el primero.</div>`; return; }
-  list.innerHTML = chapters.map((c) => `
-    <div class="list-item" data-id="${c.id}">
+
+  list.innerHTML = chapters.map((c) => {
+    const alternative = !isMainTimelineChapter(c);
+    const branched = !!c.branchGroupId;
+    const branchLabel = escapeHtml(c.variantLabel || (alternative ? 'Alternativa' : 'Principal'));
+    const branchPill = alternative
+      ? `<span class="pill pill-reference">🌿 Alternativa ${branchLabel} · fuera de continuidad</span>`
+      : branched
+        ? `<span class="pill pill-active">🌳 Principal · ${branchLabel}</span>`
+        : '';
+    return `
+    <div class="list-item ${alternative ? 'chapter-variant' : ''}" data-id="${c.id}">
       <div class="title-row"><b>${escapeHtml(c.title)}</b><span class="muted">${c.wordCount || 0} palabras</span></div>
       <div class="chip-row">
         <span class="pill ${c.status === 'finished' ? 'pill-active' : 'pill-inactive'}">${c.status === 'finished' ? 'Terminado' : 'Borrador'}</span>
+        ${branchPill}
         ${c.versions?.length ? `<span class="pill pill-reference">${c.versions.length} versión(es) anterior(es)</span>` : ''}
         <span class="muted">${fmtDate(c.updatedAt)}</span>
       </div>
+      ${alternative ? '<p class="branch-note">Esta versión es segura para experimentar: puedes editarla o reescribirla sin cambiar la historia principal.</p>' : ''}
       <div class="btn-row">
         <button class="btn btn-ghost btn-sm act-open">Abrir/editar</button>
         <button class="btn btn-ghost btn-sm act-copy">📋 Copiar</button>
         <button class="btn btn-ghost btn-sm act-download">⬇️ .md</button>
         <button class="btn btn-ghost btn-sm act-rewrite">Reescribir</button>
-        <button class="btn btn-ghost btn-sm act-memory">🧠 Crear/actualizar memoria</button>
+        ${alternative ? '<button class="btn btn-primary btn-sm act-promote">⭐ Usar como principal</button>' : '<button class="btn btn-ghost btn-sm act-memory">🧠 Crear/actualizar memoria</button><button class="btn btn-ghost btn-sm act-variants">🌿 Crear 2 alternativas</button>'}
         <button class="btn btn-ghost btn-sm act-duplicate">Duplicar</button>
         <button class="btn btn-danger btn-sm act-delete">Eliminar</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+
   list.querySelectorAll('.list-item').forEach((el) => {
     const id = el.dataset.id;
-    el.querySelector('.act-open').addEventListener('click', () => openChapterEditor(id));
-    el.querySelector('.act-copy').addEventListener('click', () => copyChapterToClipboard(id));
-    el.querySelector('.act-download').addEventListener('click', () => downloadChapterMarkdown(id));
-    el.querySelector('.act-rewrite').addEventListener('click', () => openRewriteModal(id));
-    el.querySelector('.act-memory').addEventListener('click', () => createChapterMemory(id, el));
-    el.querySelector('.act-duplicate').addEventListener('click', () => duplicateChapter(id));
-    el.querySelector('.act-delete').addEventListener('click', () => deleteChapter(id, root));
+    el.querySelector('.act-open')?.addEventListener('click', () => openChapterEditor(id));
+    el.querySelector('.act-copy')?.addEventListener('click', () => copyChapterToClipboard(id));
+    el.querySelector('.act-download')?.addEventListener('click', () => downloadChapterMarkdown(id));
+    el.querySelector('.act-rewrite')?.addEventListener('click', () => openRewriteModal(id));
+    el.querySelector('.act-memory')?.addEventListener('click', () => createChapterMemory(id, el));
+    el.querySelector('.act-variants')?.addEventListener('click', () => createChapterAlternatives(id));
+    el.querySelector('.act-promote')?.addEventListener('click', () => promoteAlternative(id));
+    el.querySelector('.act-duplicate')?.addEventListener('click', () => duplicateChapter(id));
+    el.querySelector('.act-delete')?.addEventListener('click', () => deleteChapter(id, root));
   });
+}
+
+async function createChapterAlternatives(id) {
+  const chapter = await db.get('chapters', id);
+  if (!chapter) return;
+  if (!isMainTimelineChapter(chapter)) return toast('Crea alternativas desde la versión principal.', {error:true});
+
+  const all = await db.getAll('chapters');
+  const groupId = chapter.branchGroupId || chapter.id;
+  let main = chapter;
+  if (!chapter.branchGroupId) {
+    main = { ...chapter, branchGroupId: groupId, branchRole: 'main', variantLabel: chapter.variantLabel || 'Original', updatedAt: new Date().toISOString() };
+    await db.put('chapters', main);
+  } else if (!chapter.branchRole) {
+    main = { ...chapter, branchRole: 'main', variantLabel: chapter.variantLabel || 'Original', updatedAt: new Date().toISOString() };
+    await db.put('chapters', main);
+  }
+
+  const refreshed = await db.getAll('chapters');
+  const group = refreshed.filter((item) => (item.branchGroupId || item.id) === groupId);
+  const alternatives = group.filter((item) => item.branchRole === 'alternative');
+  if (alternatives.length >= 2) {
+    toast('Este capítulo ya tiene dos alternativas. Puedes reescribirlas o elegir una como principal.', {ms:6500});
+    bus.emit('chapters-changed');
+    return;
+  }
+
+  const usedLabels = new Set(group.map((item) => String(item.variantLabel || '').toUpperCase()));
+  const labels = ['A','B','C','D'].filter((label) => !usedLabels.has(label));
+  const needed = 2 - alternatives.length;
+  const now = new Date().toISOString();
+  for (let i = 0; i < needed; i++) {
+    const label = labels[i] || String(alternatives.length + i + 1);
+    const copy = {
+      ...main,
+      id: db.uid(),
+      branchGroupId: groupId,
+      branchRole: 'alternative',
+      variantLabel: label,
+      alternativeSourceId: main.id,
+      versions: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.put('chapters', copy);
+  }
+  toast('🌿 Alternativas creadas sin usar IA ni tokens. La versión principal quedó intacta.', {ms:7000});
+  bus.emit('chapters-changed');
+}
+
+async function promoteAlternative(id) {
+  const selected = await db.get('chapters', id);
+  if (!selected || selected.branchRole !== 'alternative' || !selected.branchGroupId) return;
+
+  const all = await db.getAll('chapters');
+  const group = all.filter((item) => (item.branchGroupId || item.id) === selected.branchGroupId);
+  const currentMain = group.find(isMainTimelineChapter);
+  const involved = [selected, currentMain].filter(Boolean);
+  for (const chapter of involved) {
+    const state = await db.get('generationState', chapter.id);
+    if (state && state.status !== 'completed' && state.status !== 'discarded') {
+      return toast('Cierra primero cualquier generación pendiente de estas versiones antes de cambiar la línea principal.', {error:true,ms:8000});
+    }
+  }
+
+  const selectedLabel = selected.variantLabel || 'alternativa';
+  if (!confirm('¿Usar la alternativa ' + selectedLabel + ' como versión principal? La versión principal actual NO se borrará: pasará a ser una alternativa guardada.')) return;
+
+  const now = new Date().toISOString();
+  if (currentMain && currentMain.id !== selected.id) {
+    currentMain.branchRole = 'alternative';
+    if (!currentMain.variantLabel || currentMain.variantLabel === 'Principal') currentMain.variantLabel = 'Original';
+    currentMain.updatedAt = now;
+    await db.put('chapters', currentMain);
+  }
+  selected.branchRole = 'main';
+  selected.updatedAt = now;
+  await db.put('chapters', selected);
+
+  const memories = await db.getByIndex('memoryEntries', 'by_chapter', selected.id);
+  toast(memories.length
+    ? '⭐ Alternativa ' + selectedLabel + ' ahora es la historia principal. Su memoria de continuidad ya queda activa.'
+    : '⭐ Alternativa ' + selectedLabel + ' ahora es la historia principal. Cuando estés conforme, crea su memoria de continuidad para que Paws continúe desde ella.',
+    {ms:9000});
+  bus.emit('chapters-changed');
 }
 
 async function createChapterMemory(id, card) {
@@ -183,15 +286,35 @@ async function openRewriteModal(id) {
 }
 
 async function duplicateChapter(id) {
-  const chapter = await db.get('chapters', id); const copy = { ...chapter, id: db.uid(), title: chapter.title + ' (copia)', versions: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; await db.put('chapters', copy); toast('Capítulo duplicado.'); bus.emit('chapters-changed');
+  const chapter = await db.get('chapters', id);
+  if (!chapter) return;
+  const copy = { ...chapter, id: db.uid(), title: chapter.title + ' (copia)', versions: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  delete copy.branchGroupId;
+  delete copy.branchRole;
+  delete copy.variantLabel;
+  delete copy.alternativeSourceId;
+  const mains = (await db.getAll('chapters')).filter(isMainTimelineChapter);
+  copy.order = mains.length ? Math.max(...mains.map((item) => item.order ?? 0)) + 1 : 0;
+  await db.put('chapters', copy);
+  toast('Capítulo duplicado como capítulo independiente.');
+  bus.emit('chapters-changed');
 }
 
 async function deleteChapter(id, root) {
-  if (!confirm('¿Eliminar definitivamente este capítulo y su memoria de continuidad? Antes, exporta una copia de seguridad si quieres conservarlo.')) return;
+  const chapter = await db.get('chapters', id);
+  if (!chapter) return;
+  if (isMainTimelineChapter(chapter) && chapter.branchGroupId) {
+    const group = (await db.getAll('chapters')).filter((item) => item.branchGroupId === chapter.branchGroupId);
+    if (group.some((item) => item.branchRole === 'alternative')) {
+      return toast('Este capítulo tiene alternativas guardadas. Si quieres eliminar la versión principal, primero haz principal otra alternativa o elimina las alternativas.', {error:true,ms:9000});
+    }
+  }
+  const label = chapter.branchRole === 'alternative' ? 'esta alternativa' : 'este capítulo';
+  if (!confirm('¿Eliminar definitivamente ' + label + ' y su memoria de continuidad? Antes, exporta una copia si quieres conservarlo.')) return;
   await db.del('chapters', id);
   await db.del('generationState', id).catch(() => {});
   const memories = await db.getByIndex('memoryEntries', 'by_chapter', id);
   for (const memory of memories) await db.del('memoryEntries', memory.id);
-  toast('Capítulo y su memoria eliminados.');
+  toast(chapter.branchRole === 'alternative' ? 'Alternativa eliminada.' : 'Capítulo y su memoria eliminados.');
   renderChapters(root);
 }
