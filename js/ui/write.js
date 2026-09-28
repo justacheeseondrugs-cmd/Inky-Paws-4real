@@ -3,7 +3,7 @@ import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '.
 import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding, polishPendingBlock } from '../generation.js?v=20260928-author-brain-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-memory-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
-import { buildModelTestPack } from '../modelTestPack.js?v=20260928-long-memory-v1';
+import { buildModelTestPack } from '../modelTestPack.js?v=20260928-author-brain-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-author-brain-v1';
 
 let isRunning = false;
@@ -30,7 +30,7 @@ export async function renderWrite(root) {
     '<textarea id="w-instructions" rows="7"></textarea>',
     '<label class="field-label" for="w-scenes">🎬 Plan de escenas, una por línea (en orden)</label>',
     '<textarea id="w-scenes" rows="5" placeholder="Viaje a la capital&#10;Conversaciones en la plaza y reacciones&#10;Anya aparece en el perro&#10;Anya llega a Erwin, habla y se corta el episodio"></textarea>',
-    '<p class="scene-guide">Puedes elegir manualmente la siguiente escena antes de generar cada bloque.</p>',
+    '<p class="scene-guide">Inky pesa los beats automáticamente. Si quieres control extra, puedes prefijar una línea con <code>[BOMB]</code>, <code>[BRIDGE]</code>, <code>[TEXTURE]</code> o <code>[HOOK]</code>.</p>',
     '<label class="field-label" for="w-cast">👥 Reparto permitido en este capítulo (obligatorio)</label>',
     '<textarea id="w-cast" rows="3" placeholder="Levi, Joseph, Erwin, Eren, Anya, Hange, Mike, Petra, Jean, Connie, Sasha, Armin, Ymir, Historia, Mikasa, Candy, Zackly"></textarea>',
     '<p class="scene-guide">Se enviarán fichas solo de estos nombres. Los extras sin nombre siguen permitidos si la trama los necesita.</p>',
@@ -119,6 +119,7 @@ function renderBanner(state) {
     try{
       const updated=await polishPendingBlock(state.chapterId,review.value);
       review.value=updated.pendingText || review.value;
+      state.pendingText=updated.pendingText || state.pendingText;
       toast('Editor Pass listo. Revisa el nuevo borrador antes de aprobar.',{ms:7500});
     }catch(err){toast(err.message || 'No se pudo hacer el Editor Pass.',{error:true,ms:9000});}
     finally{btn.disabled=false;btn.textContent='🐈‍⬛ Editor Pass · 1 llamada';}
