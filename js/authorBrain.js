@@ -38,6 +38,12 @@ CONTINUITY IS SOCIAL.
 - Do not reset relationships to neutral at the start of a new chapter.
 - Let old information change how a new moment lands without re-explaining the original event.
 
+CAUSAL OWNERSHIP IS CANON.
+- Preserve who did what. Buying, choosing, making, carrying, hiding, revealing, giving, promising, discovering and saying are NOT interchangeable actions.
+- Distinguish an object's provenance from its current possession. Someone may carry or hand over an object another person selected or bought; physical possession does not transfer credit or history.
+- Never transfer an action, achievement, memory, secret, injury, discovery or line of responsibility to a different character for convenience.
+- If the chapter instructions explicitly assign ACTOR + ACTION + OBJECT/FACT, that attribution remains binding unless the author explicitly changes it.
+
 PROSE RHYTHM.
 - Use polished novel prose with varied paragraph length, clean transitions, interiority when useful, and dialogue braided with action.
 - Avoid repetitive dramatic constructions, especially repeated "the room went silent/froze/held its breath" resets.
@@ -185,6 +191,7 @@ export function compactAuthorBrief(brief) {
   if (brief.chemistryFocus) lines.push('Chemistry focus: '+brief.chemistryFocus);
   if (brief.pacingRisks) lines.push('Pacing risks: '+brief.pacingRisks);
   if (brief.doNotOverplay) lines.push('Do not overplay: '+brief.doNotOverplay);
+  if (brief.ownershipAnchors) lines.push('Ownership anchors: '+brief.ownershipAnchors);
   return lines.length ? 'INKY PRE-FLIGHT EDITORIAL BRIEF:\n'+lines.map((x)=>'- '+x).join('\n') : '';
 }
 
@@ -194,6 +201,7 @@ export function buildAuthorGuidance({ brain, characters, scenePlan, requiredEndi
     chemistryGuidance(characters),
     feedbackGuidance(brain),
     buildPressureMap(scenePlan, requiredEnding),
+    'CAUSAL OWNERSHIP GUARD:\nConcrete actor → action → object/fact attributions from canon and current chapter instructions are binding. Track provenance separately from possession. A character may hold, carry or hand over something without becoming the person who chose, bought, made or earned it. Never transfer credit, blame, knowledge, promises, discoveries, injuries or past actions between characters merely to make a scene flow.',
     compactAuthorBrief(authorBrief),
   ].filter(Boolean).join('\n\n');
 }
@@ -206,13 +214,15 @@ Return ONLY valid JSON with these exact string keys:
   "activeThreads": "",
   "chemistryFocus": "",
   "pacingRisks": "",
-  "doNotOverplay": ""
+  "doNotOverplay": "",
+  "ownershipAnchors": ""
 }
 pressureMap: identify which planned beats are true bombs, bridges, texture and the final hook; keep it concise.
 activeThreads: list unresolved questions, suspicions, jokes, secrets, awkwardness or promises from prior continuity that can remain alive during this chapter.
 chemistryFocus: identify the 2-4 relationship dynamics most useful to the requested chapter, without inventing feelings or history.
 pacingRisks: name likely ways this specific plan could become slow, checklist-like, repetitive or over-explained.
 doNotOverplay: identify props/details/reveals that should land and move rather than consume disproportionate page time.
+ownershipAnchors: extract the chapter's concrete actor→action→object/fact assignments that must not drift. Be explicit about provenance versus possession. Example format: "Levi → selected/bought → strawberry plush; Joseph may carry/hand it over but did NOT choose/buy it." Include only facts actually supported by supplied material.
 Use only supplied canon, memories, character sheets and chapter instructions.`;
 }
 
@@ -227,6 +237,7 @@ export function parseAuthorBrief(text) {
       chemistryFocus:String(obj.chemistryFocus || '').trim(),
       pacingRisks:String(obj.pacingRisks || '').trim(),
       doNotOverplay:String(obj.doNotOverplay || '').trim(),
+      ownershipAnchors:String(obj.ownershipAnchors || '').trim(),
     };
   } catch {
     return null;
