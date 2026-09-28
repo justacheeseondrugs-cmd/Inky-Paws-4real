@@ -2,7 +2,7 @@ import { db } from '../db.js';
 import { toast, escapeHtml } from '../utils.js';
 import { listProviders } from '../providers/index.js';
 import { renderAppearanceSettings, bindAppearanceSettings } from './appearance.js';
-import { getAuthorBrain, saveAuthorBrain, DEFAULT_WRITING_DNA, FEEDBACK_OPTIONS } from '../authorBrain.js?v=20260928-author-brain-v1';
+import { getAuthorBrain, saveAuthorBrain, DEFAULT_WRITING_DNA, FEEDBACK_OPTIONS } from '../authorBrain.js?v=20260928-ownership-guard-v1';
 
 export async function renderSettings(root) {
   const settings = (await db.get('settings', 'main')) || { provider: 'gemini', apiKeys: {}, models: {}, blockWordSize: 1000, defaultGenerationMode:'full_chapter' };
