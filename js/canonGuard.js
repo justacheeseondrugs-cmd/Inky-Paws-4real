@@ -39,30 +39,105 @@ export function buildCharacterBlock(characters) {
   return `👤 PERSONAJES (ficha + conocimiento actual):\n${parts.join('\n\n')}`;
 }
 
-export function buildContinuityBlock(memoryEntries, canonNotes, recentChapterExcerpt) {
+function clip(text, max = 320) {
+  const value = String(text || '').trim();
+  return value.length <= max ? value : value.slice(0, max - 1).trimEnd() + '…';
+}
+
+function formatMemoryEntry(m) {
+  return [
+    `[Memoria del capítulo "${m.chapterTitle || 'sin título'}"]`,
+    m.events ? `EVENTOS: ${m.events}` : '',
+    m.relationshipChanges ? `CAMBIOS DE RELACIÓN: ${m.relationshipChanges}` : '',
+    m.newFacts ? `HECHOS NUEVOS: ${m.newFacts}` : '',
+    m.whoKnowsWhat ? `QUIÉN SABE QUÉ: ${m.whoKnowsWhat}` : '',
+    m.physicalState ? `ESTADO FÍSICO / HERIDAS: ${m.physicalState}` : '',
+    m.currentLocationTime ? `LUGAR / TIEMPO ACTUAL: ${m.currentLocationTime}` : '',
+    m.openThreads ? `HILOS ABIERTOS: ${m.openThreads}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function compactMemoryEntry(m) {
+  const pieces = [
+    m.events ? 'Eventos: ' + clip(m.events, 220) : '',
+    m.newFacts ? 'Hechos: ' + clip(m.newFacts, 180) : '',
+    m.whoKnowsWhat ? 'Quién sabe qué: ' + clip(m.whoKnowsWhat, 220) : '',
+    m.openThreads ? 'Hilos: ' + clip(m.openThreads, 180) : '',
+  ].filter(Boolean);
+  return `[${m.chapterTitle || 'sin título'}] ${pieces.join(' | ')}`;
+}
+
+function sampleEvenly(items, maxItems = 18) {
+  if (items.length <= maxItems) return items;
+  const picked = [];
+  for (let i = 0; i < maxItems; i += 1) {
+    const index = Math.round(i * (items.length - 1) / Math.max(1, maxItems - 1));
+    const item = items[index];
+    if (item && !picked.includes(item)) picked.push(item);
+  }
+  return picked;
+}
+
+export function buildContinuityBlock(memoryEntries, canonNotes, recentChapterExcerpt, storyExcerpts = []) {
   const blocks = [];
   if (canonNotes?.length) {
     blocks.push('📜 CANON PERMANENTE:\n' + canonNotes.map((n) => `- ${n.text}`).join('\n'));
   }
+
   if (memoryEntries?.length) {
-    const recent = memoryEntries.slice(-4); // no saturar el prompt con todo el historial
-    const fmt = recent.map((m) => {
-      return [
-        `[Memoria del capítulo "${m.chapterTitle || 'sin título'}"]`,
-        m.events ? `EVENTOS: ${m.events}` : '',
-        m.relationshipChanges ? `CAMBIOS DE RELACIÓN: ${m.relationshipChanges}` : '',
-        m.newFacts ? `HECHOS NUEVOS: ${m.newFacts}` : '',
-        m.whoKnowsWhat ? `QUIÉN SABE QUÉ: ${m.whoKnowsWhat}` : '',
-        m.physicalState ? `ESTADO FÍSICO / HERIDAS: ${m.physicalState}` : '',
-        m.currentLocationTime ? `LUGAR / TIEMPO ACTUAL: ${m.currentLocationTime}` : '',
-        m.openThreads ? `HILOS ABIERTOS: ${m.openThreads}` : '',
-      ].filter(Boolean).join('\n');
-    }).join('\n\n');
-    blocks.push('🧵 MEMORIA DE CONTINUIDAD (capítulos recientes):\n' + fmt);
+    const all = memoryEntries.filter(Boolean);
+    const foundation = all.slice(0, 3);
+    const recent = all.slice(-4);
+    const detailedIds = new Set([...foundation, ...recent].map((m) => m.chapterId || m.id));
+    const detailed = all.filter((m) => detailedIds.has(m.chapterId || m.id));
+    const middle = sampleEvenly(all.filter((m) => !detailedIds.has(m.chapterId || m.id)));
+
+    blocks.push(
+      '🧠 CONTINUIDAD DE LARGO PLAZO — REGLA IMPORTANTE:\n' +
+      'Los capítulos antiguos siguen siendo canon aunque no sean recientes. No reinicies relaciones, bromas, secretos, sospechas, conocimiento ni preguntas ya establecidas sólo porque ocurrieron hace varios capítulos.'
+    );
+
+    if (foundation.length) {
+      blocks.push(
+        '🏛️ MEMORIAS FUNDACIONALES (primeros capítulos; conservar siempre):\n' +
+        foundation.map(formatMemoryEntry).join('\n\n')
+      );
+    }
+
+    if (middle.length) {
+      blocks.push(
+        '🗺️ ÍNDICE DE CONTINUIDAD INTERMEDIA (historia entre el inicio y lo reciente):\n' +
+        middle.map(compactMemoryEntry).join('\n')
+      );
+    }
+
+    const recentOnly = recent.filter((m) => !foundation.some((f) => (f.chapterId || f.id) === (m.chapterId || m.id)));
+    if (recentOnly.length) {
+      blocks.push(
+        '🧵 MEMORIA RECIENTE DETALLADA:\n' +
+        recentOnly.map(formatMemoryEntry).join('\n\n')
+      );
+    }
   }
+
   if (recentChapterExcerpt) {
-    blocks.push('📖 FINAL DEL CAPÍTULO/BLOQUE ANTERIOR (para continuar el tono y la escena sin repetir):\n…' + recentChapterExcerpt);
+    blocks.push(
+      '📖 FINAL DEL CAPÍTULO ANTERIOR (evidencia directa; continuar tono/estado sin repetir):\n…' +
+      recentChapterExcerpt
+    );
   }
+
+  if (storyExcerpts?.length) {
+    const excerpts = storyExcerpts.map((item) =>
+      `[Extracto relevante de "${item.chapterTitle || 'capítulo anterior'}"]\n${item.text}`
+    ).join('\n\n');
+    blocks.push(
+      '🔎 RECUERDO DIRECTO DE CAPÍTULOS ANTERIORES (texto real recuperado por relevancia):\n' +
+      'Usa estos extractos como evidencia de continuidad. No los repitas ni recrees la escena; recuerda lo que ya ocurrió, cómo hablaban y qué sabían.\n\n' +
+      excerpts
+    );
+  }
+
   return blocks.join('\n\n');
 }
 
@@ -97,6 +172,7 @@ export function assembleSystemPromptParts({
   memoryEntries,
   canonNotes,
   recentChapterExcerpt,
+  storyExcerpts = [],
   retrievedChunks,
   extraGuidance,
 }) {
@@ -105,7 +181,7 @@ export function assembleSystemPromptParts({
     buildLockedFactsBlock(lockedFacts),
     chapterInstructions ? `✍️ INSTRUCCIONES DEL CAPÍTULO ACTUAL:\n${chapterInstructions}` : '',
     buildCharacterBlock(characters),
-    buildContinuityBlock(memoryEntries, canonNotes, recentChapterExcerpt),
+    buildContinuityBlock(memoryEntries, canonNotes, recentChapterExcerpt, storyExcerpts),
     buildDocumentsBlock(retrievedChunks),
     `🖋️ ESTILO:\n${STYLE_GUIDE}`,
   ].filter(Boolean);
