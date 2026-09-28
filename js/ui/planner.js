@@ -4,7 +4,7 @@
 import { db } from '../db.js';
 import { getProvider } from '../providers/index.js?v=20260928-economy-mini-v1';
 import { getRelevantChunks } from '../retrieval.js';
-import { getActiveGenerationState } from '../generation.js?v=20260928-reaction-chaos-v1';
+import { getActiveGenerationState } from '../generation.js?v=20260928-long-memory-v1';
 import { escapeHtml, toast, bus } from '../utils.js';
 import { isMainTimelineChapter, filterActiveMemories } from '../timeline.js?v=20260928-chapter-variants-v1';
 
