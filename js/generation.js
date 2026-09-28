@@ -11,7 +11,7 @@
 
 import { db } from './db.js';
 import { getProvider } from './providers/index.js';
-import { assembleSystemPrompt } from './canonGuard.js';
+import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js?v=20260928-cache-cost-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { wordCount } from './utils.js';
 
@@ -147,7 +147,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
         : 'Write ONLY the NEXT approximately ' + thisBlockTarget + ' words from the last sentence. ' + (intent === 'ending' ? 'Land the current beat and stop cleanly.' : (isLastStretch ? 'This is the final scene, not another setup.' : 'Keep moving toward the specified ending.')),
     ].filter(Boolean).join('\n\n');
 
-    const systemPrompt = assembleSystemPrompt({
+    const promptParts = assembleSystemPromptParts({
       lockedFacts,
       chapterInstructions: state.instructions,
       characters,
@@ -157,6 +157,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
       retrievedChunks,
       extraGuidance,
     });
+    const systemPrompt = [promptParts.stablePrompt, promptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
 
     const userPrompt = isFirstBlock
       ? 'BEGIN CHAPTER. Follow the author scene order and write ONLY the opening block as English novel prose.'
@@ -176,6 +177,10 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
 
     const result = await provider.generate({
       systemPrompt,
+      stableSystemPrompt: promptParts.stablePrompt,
+      dynamicSystemPrompt: promptParts.dynamicPrompt,
+      cacheStrategy: 'reuse',
+      cacheKey: 'inky-paws:' + String(state.chapterId || '').slice(0, 50),
       userPrompt,
       maxOutputTokens: Math.round(thisBlockTarget * 3.6) + 700,
       temperature: 1.0,
@@ -273,7 +278,7 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
 
   const fullText = [state.accumulatedText,pending].filter(Boolean).join('\n\n').slice(-STORY_CONTEXT_CHAR_CAP);
   const endingWords = Math.min(600,Math.max(250,Math.round(blockWords * .5)));
-  const systemPrompt = assembleSystemPrompt({
+  const endingPromptParts = assembleSystemPromptParts({
     lockedFacts,
     chapterInstructions: state.instructions,
     characters,
@@ -293,9 +298,13 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
       'Target roughly '+endingWords+' additional words, but stop sooner if the prose has already landed. Do not pad the ending.'
     ].filter(Boolean).join('\n\n')
   });
+  const systemPrompt = [endingPromptParts.stablePrompt, endingPromptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
 
   const result = await provider.generate({
     systemPrompt,
+    // "Add an ending" is normally a one-off request: never pay to cache-write
+    // its changing suffix/pending text. OpenAI explicit mode will do no write.
+    cacheStrategy: 'off',
     userPrompt:[
       'TEXT ALREADY WRITTEN. Continue only after its final sentence:',
       '<TEXT_ALREADY_WRITTEN>',
