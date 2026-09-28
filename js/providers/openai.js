@@ -130,6 +130,7 @@ export class OpenAIProvider extends AIProvider {
     // Compatibility path for older GPT / o-series models.
     const url = 'https://api.openai.com/v1/chat/completions';
     const isReasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/i.test(model);
+    const isGpt54 = /^gpt-5\.4(?:[.-]|$)/i.test(model);
     const body = {
       model,
       messages: [
@@ -137,7 +138,11 @@ export class OpenAIProvider extends AIProvider {
         { role: 'user', content: userPrompt || '' },
       ],
       [isReasoningModel ? 'max_completion_tokens' : 'max_tokens']: maxOutputTokens,
-      ...(isReasoningModel ? {} : { temperature }),
+      // Economy mode: GPT-5.4 Mini supports "none" and it avoids paying for
+      // extra reasoning tokens on prose generation. Temperature remains
+      // supported at reasoning_effort=none, which keeps creative variation.
+      ...(isGpt54 ? { reasoning_effort: 'none', temperature } : isReasoningModel ? {} : { temperature }),
+      store: false,
     };
 
     // Fallback por si el ID del modelo no sigue la convención esperada.
