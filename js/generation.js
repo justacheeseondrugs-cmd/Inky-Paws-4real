@@ -15,6 +15,7 @@ import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js
 import { getRelevantChunks } from './retrieval.js';
 import { wordCount } from './utils.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
+import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
@@ -146,7 +147,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
 
     const extraGuidance = [
       'This request is ONE continuous chapter, NOT a fresh chapter per API call. All events in CHAPTER_SO_FAR have ALREADY HAPPENED. Return ONLY the next new prose, never a repeat or rephrasing.',
-      state.reactionMode ? 'REACTION ROOM: write TWO living scenes unfolding together, not a separated episode followed by a roster of comments. Interleave timely viewers reactions at scene beats and within onscreen action. Let viewers respond to EACH OTHER across several turns, interrupt, argue, joke or go silent; not every viewer needs to speak. Every reaction changes a conversation or action. Do not use formulaic introduction phrases like Meanwhile in the reaction room, or literary-critic commentary about symbolism.' : 'Write only the narrative requested by the author.',
+      state.reactionMode ? REACTION_ROOM_GUIDANCE : 'Write only the narrative requested by the author.',
       'References contain background, not a new scene plan. Do not introduce unrelated characters, places or plotlines just because a reference mentions them. The author instructions and chapter-so-far control the current episode.',
       'Word count is a flexible target, not a reason to end before the author-requested final event. Pace the setup to leave time for the entire climax and cliffhanger.',
       'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none; ask the author for a cast)')+'. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them.',
@@ -316,7 +317,7 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
       'Resolve the immediate conversational or emotional beat while leaving larger plot threads intact. Do not begin a new scene, jump in time or introduce an unrelated plot development merely to create an ending.',
       styleInstruction,
       'Preserve the current POV, tone, pacing, characterization, dialogue rhythm and continuity.',
-      state.reactionMode ? 'If this is a reaction-room scene, keep reactions integrated into the same living conversation instead of turning the ending into a roster of comments.' : '',
+      state.reactionMode ? REACTION_ROOM_ENDING_GUIDANCE : '',
       'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none)')+'. Do not introduce another named person.',
       state.forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: '+state.forbiddenCast+'. These names must not appear.' : '',
       'Target roughly '+endingWords+' additional words, but stop sooner if the prose has already landed. Do not pad the ending.'
