@@ -3,6 +3,7 @@ import { getProvider } from './providers/index.js?v=20260928-cache-cost-v1';
 import { assembleSystemPrompt } from './canonGuard.js?v=20260928-cache-cost-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { isLikelyInvalidProse } from './providers/base.js';
+import { filterActiveMemories } from './timeline.js?v=20260928-chapter-variants-v1';
 
 const MEMORY_FIELDS = [
   ['EVENTS', 'events'],
@@ -77,15 +78,16 @@ export async function generateContinuityMemory(chapter) {
 export async function rewriteChapter(chapter, rewriteInstructions) {
   const settings = (await db.get('settings', 'main')) || {};
   const provider = getProvider(settings);
-  const [lockedFacts, characters, memoryEntries, canonNotes, documents, allChunks] = await Promise.all([
-    db.getAll('lockedFacts'), db.getAll('characters'), db.getAll('memoryEntries'), db.getAll('canonNotes'), db.getAll('documents'), db.getAll('docChunks'),
+  const [lockedFacts, characters, memoryEntries, canonNotes, documents, allChunks, chapters] = await Promise.all([
+    db.getAll('lockedFacts'), db.getAll('characters'), db.getAll('memoryEntries'), db.getAll('canonNotes'), db.getAll('documents'), db.getAll('docChunks'), db.getAll('chapters'),
   ]);
+  const activeMemoryEntries = filterActiveMemories(memoryEntries, chapters);
   const queryText = rewriteInstructions + ' ' + chapter.title;
   const retrievedChunks = getRelevantChunks(documents.filter((d) => d.type !== 'STYLE_ONLY'), allChunks, queryText, { context: 'rewrite' });
   const systemPrompt = assembleSystemPrompt({
     lockedFacts,
     chapterInstructions: `Vas a REESCRIBIR un capítulo existente según instrucciones del autor. Instrucciones de reescritura: ${rewriteInstructions}`,
-    characters, memoryEntries, canonNotes, recentChapterExcerpt: '', retrievedChunks,
+    characters, memoryEntries: activeMemoryEntries, canonNotes, recentChapterExcerpt: '', retrievedChunks,
     extraGuidance: 'Devuelve el capítulo reescrito completo, en prosa, sin comentarios meta ni explicaciones fuera del propio texto narrativo.',
   });
   const userPrompt = `CAPÍTULO ORIGINAL:\n\n${chapter.content}\n\n---\n\nReescribe este capítulo aplicando las instrucciones indicadas, conservando lo que no se pidió cambiar.`;
