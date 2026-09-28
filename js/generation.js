@@ -14,6 +14,7 @@ import { getProvider } from './providers/index.js?v=20260928-cache-cost-v1';
 import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js?v=20260928-cache-cost-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { wordCount } from './utils.js';
+import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
@@ -71,13 +72,14 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
   const blockWords = settings.blockWordSize || DEFAULT_BLOCK_WORDS;
   const provider = getProvider(settings);
 
-  const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks] = await Promise.all([
+  const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks, allChapters] = await Promise.all([
     db.getAll('lockedFacts'),
     db.getAll('characters'),
     db.getAll('memoryEntries'),
     db.getAll('canonNotes'),
     db.getAll('documents'),
     db.getAll('docChunks'),
+    db.getAll('chapters'),
   ]);
 
   // A single API call produces one PENDING block. Never auto-append it:
@@ -95,8 +97,9 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
 
     const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
     const characters = allCharacters.filter((c) => permittedNames.includes(c.name.trim().toLowerCase()) && c.active !== false);
+    const activeIds = activeChapterIds(allChapters);
     const memoryEntries = allMemoryEntries.sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)))
-      .filter((m) => m.chapterId !== state.chapterId);
+      .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
     const documents = allDocuments.filter((d) =>
       Array.isArray(state.documentIds) ? state.documentIds.includes(d.id) : true);
     const queryText = [state.instructions, state.allowedCast, memoryEntries.slice(-2).map((m) => m.events).join(' ')].join(' ');
@@ -251,8 +254,9 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
 
   const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
   const characters = allCharacters.filter((c) => permittedNames.includes(c.name.trim().toLowerCase()) && c.active !== false);
+  const activeIds = activeChapterIds(allChapters);
   const memoryEntries = allMemoryEntries.sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)))
-    .filter((m) => m.chapterId !== state.chapterId);
+    .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
   const documents = allDocuments.filter((d) => Array.isArray(state.documentIds) ? state.documentIds.includes(d.id) : true);
   const queryText = [state.instructions,state.allowedCast,pending.slice(-5000),'ending'].join(' ');
   const safeDocuments = documents.filter((d) => d.type !== 'STYLE_ONLY');
