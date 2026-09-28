@@ -2,6 +2,7 @@ import { db } from './db.js';
 import { assembleSystemPromptParts } from './canonGuard.js?v=20260928-cache-cost-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
+import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -29,7 +30,7 @@ function firstRequestGuidance({
   return [
     'This request is ONE continuous chapter, NOT a fresh chapter per API call. Return ONLY new prose, never a repeat or rephrasing.',
     reactionMode
-      ? 'REACTION ROOM: write TWO living scenes unfolding together, not a separated episode followed by a roster of comments. Interleave timely viewers reactions at scene beats and within onscreen action. Let viewers respond to EACH OTHER across several turns, interrupt, argue, joke or go silent; not every viewer needs to speak. Every reaction changes a conversation or action. Do not use formulaic introduction phrases like Meanwhile in the reaction room, or literary-critic commentary about symbolism.'
+      ? REACTION_ROOM_GUIDANCE
       : 'Write only the narrative requested by the author.',
     'References contain background, not a new scene plan. Do not introduce unrelated characters, places or plotlines just because a reference mentions them. The author instructions control the current episode.',
     'Word count is a flexible target, not a reason to end before the author-requested final event. Pace the setup to leave time for the entire climax and cliffhanger.',
