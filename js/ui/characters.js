@@ -27,7 +27,7 @@ export async function renderCharacters(root) {
 }
 
 async function openCharacterModal(id, root) {
-  const c = id ? await db.get('characters', id) : { name: '', pronouns: '', personality: '', speechStyle: '', hardRules: '', currentKnowledge: '', relationships: '', neverDoRules: '', active: true };
+  const c = id ? await db.get('characters', id) : { name: '', pronouns: '', personality: '', speechStyle: '', hardRules: '', currentKnowledge: '', relationships: '', chemistry: '', neverDoRules: '', active: true };
   openModal(`
     <h3 style="font-family:'Cormorant Garamond',serif; color:var(--oldrose-700); font-size:22px;">${id ? 'Editar' : 'Nuevo'} personaje</h3>
     <label class="field-label">Nombre</label><input type="text" id="f-name" value="${escapeHtml(c.name)}">
@@ -37,13 +37,15 @@ async function openCharacterModal(id, root) {
     <label class="field-label">Reglas obligatorias</label><textarea id="f-hardrules" placeholder="Cosas que siempre deben cumplirse para este personaje">${escapeHtml(c.hardRules)}</textarea>
     <label class="field-label">Conocimiento actual</label><textarea id="f-knowledge" placeholder="Sólo lo que este personaje sabe hasta el momento actual de la historia">${escapeHtml(c.currentKnowledge)}</textarea>
     <label class="field-label">Relaciones</label><textarea id="f-relationships">${escapeHtml(c.relationships)}</textarea>
+    <label class="field-label">⚡ Química con otros personajes</label><textarea id="f-chemistry" placeholder="Cómo cambia su voz/comportamiento con personas concretas. Ej: Con Joseph, Levi tolera insolencias que cortaría en otros; se entienden por hábitos y gestos.">${escapeHtml(c.chemistry || '')}</textarea>
+    <p class="muted">No es una lista de hechos: describe el ritmo, fricción, confianza, bromas privadas, silencios y hábitos que hacen única la dinámica.</p>
     <label class="field-label">Reglas de nunca hacer</label><textarea id="f-neverdo">${escapeHtml(c.neverDoRules)}</textarea>
     <label class="field-label"><input type="checkbox" id="f-active" ${c.active !== false ? 'checked' : ''}> Incluir en el control de canon (activo)</label>
     <div class="btn-row"><button class="btn btn-primary" id="f-save-btn">Guardar</button><button class="btn btn-ghost" id="f-cancel-btn">Cancelar</button></div>`);
   document.getElementById('f-cancel-btn').addEventListener('click', closeModal);
   document.getElementById('f-save-btn').addEventListener('click', async () => {
     const name = document.getElementById('f-name').value.trim(); if (!name) return toast('El personaje necesita un nombre.', { error: true });
-    const obj = { ...c, id: id || undefined, name, pronouns: document.getElementById('f-pronouns').value.trim(), personality: document.getElementById('f-personality').value.trim(), speechStyle: document.getElementById('f-speech').value.trim(), hardRules: document.getElementById('f-hardrules').value.trim(), currentKnowledge: document.getElementById('f-knowledge').value.trim(), relationships: document.getElementById('f-relationships').value.trim(), neverDoRules: document.getElementById('f-neverdo').value.trim(), active: document.getElementById('f-active').checked };
+    const obj = { ...c, id: id || undefined, name, pronouns: document.getElementById('f-pronouns').value.trim(), personality: document.getElementById('f-personality').value.trim(), speechStyle: document.getElementById('f-speech').value.trim(), hardRules: document.getElementById('f-hardrules').value.trim(), currentKnowledge: document.getElementById('f-knowledge').value.trim(), relationships: document.getElementById('f-relationships').value.trim(), chemistry: document.getElementById('f-chemistry').value.trim(), neverDoRules: document.getElementById('f-neverdo').value.trim(), active: document.getElementById('f-active').checked };
     await db.put('characters', obj); toast('Personaje guardado.'); closeModal(); renderCharacters(root);
   });
 }
