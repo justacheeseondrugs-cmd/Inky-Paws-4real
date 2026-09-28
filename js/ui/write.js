@@ -1,9 +1,10 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
-import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-long-memory-v1';
+import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding, polishPendingBlock } from '../generation.js?v=20260928-author-brain-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-memory-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
 import { buildModelTestPack } from '../modelTestPack.js?v=20260928-long-memory-v1';
+import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-author-brain-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -83,7 +84,7 @@ function renderBanner(state) {
     '<div class="progress-track"><div class="progress-fill" style="width:'+pct+'%"></div></div>',
     '<div class="muted">'+state.wordsSoFar+' / '+state.targetWords+' palabras aceptadas · '+state.blocksDone+' '+((state.generationMode || 'blocks')==='full_chapter' ? 'respuesta(s) larga(s)' : 'bloque(s)')+'</div>',
     state.lastError ? '<p class="muted">'+escapeHtml(state.lastError.message)+'</p>':'','</div></div>',
-    waiting ? '<div class="generation-review"><h3>✏️ Lee, corrige y aprueba este bloque</h3><p class="scene-guide">Este texto todavía NO es parte del capítulo. Si algo no te gusta, edítalo o descártalo antes de continuar.</p><textarea id="w-review-text" rows="12">'+escapeHtml(state.pendingText || '')+'</textarea><div class="review-actions"><button type="button" class="btn btn-primary" id="w-approve-btn">✓ Aceptar bloque</button><button type="button" class="btn btn-ghost" id="w-copy-block-btn">📋 Copiar bloque</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-ending-pending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost" id="w-reject-btn">Descartar SOLO este bloque</button></div><p class="scene-guide">«Add an ending» conserva todo lo que ya lees y añade sólo el cierre al final. Después sigues pudiendo editarlo antes de aprobar.</p></div>' : '',
+    waiting ? '<div class="generation-review"><h3>✏️ Lee, corrige y aprueba este bloque</h3><p class="scene-guide">Este texto todavía NO es parte del capítulo. Si algo no te gusta, edítalo o descártalo antes de continuar.</p><textarea id="w-review-text" rows="12">'+escapeHtml(state.pendingText || '')+'</textarea><p class="scene-guide"><b>🐈‍⬛ Enséñale tu gusto a Inky:</b> marca lo que falló; se guarda localmente y pesa en futuros capítulos.</p><div class="btn-row" id="w-feedback-row">'+FEEDBACK_OPTIONS.map(([tag,label])=>'<button type="button" class="btn btn-ghost btn-sm w-feedback-tag" data-tag="'+tag+'">'+escapeHtml(label)+'</button>').join('')+'</div><div class="review-actions"><button type="button" class="btn btn-primary" id="w-approve-btn">✓ Aceptar bloque</button><button type="button" class="btn btn-ghost" id="w-copy-block-btn">📋 Copiar bloque</button><button type="button" class="btn btn-ghost" id="w-editor-pass-btn">🐈‍⬛ Editor Pass · 1 llamada</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-ending-pending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost" id="w-reject-btn">Descartar SOLO este bloque</button></div><p class="scene-guide">Editor Pass reescribe el borrador completo conservando eventos y final, pero aprieta ritmo, voz y subtexto. Usa una llamada extra. «Add an ending» sólo añade el cierre.</p></div>' : '',
     showControls ? '<div class="card"><h3>🎬 Siguiente bloque</h3>'+
        (planOptions ? '<label class="field-label" for="w-current-scene">¿Qué escena debe avanzar ahora?</label><select id="w-current-scene">'+planOptions+'</select>':'')+
        '<label class="field-label" for="w-block-notes">Correcciones para el siguiente bloque</label><textarea id="w-block-notes" rows="3" placeholder="No repetir la plaza. Anya YA llegó: continúa con su encuentro con Erwin."></textarea>'+
@@ -93,10 +94,34 @@ function renderBanner(state) {
        '<button type="button" class="btn btn-danger" id="w-discard-btn">Cerrar generación</button></div>'+
        '<p class="scene-guide">Finaliza solo cuando el desenlace esté completo. Cerrar generación conserva lo aprobado como borrador.</p></div>':''
   ].join('');
+  document.querySelectorAll('.w-feedback-tag').forEach((btn)=>{
+    btn.addEventListener('click',async()=>{
+      const tag=btn.dataset.tag;
+      try{
+        await recordAuthorFeedback(tag);
+        btn.disabled=true;
+        btn.textContent='✓ '+btn.textContent;
+        toast('Inky guardó esa señal de gusto para futuros borradores.');
+      }catch(err){toast(err.message || 'No se pudo guardar la señal.',{error:true});}
+    });
+  });
   document.getElementById('w-copy-block-btn')?.addEventListener('click',async()=>{
     const text=document.getElementById('w-review-text')?.value || state.pendingText || '';
     try{await copyTextToClipboard(text);toast('Bloque copiado al portapapeles.');}
     catch(err){toast(err.message || 'No se pudo copiar el bloque.',{error:true});}
+  });
+  document.getElementById('w-editor-pass-btn')?.addEventListener('click',async(e)=>{
+    const btn=e.currentTarget;
+    const review=document.getElementById('w-review-text');
+    if(!review?.value.trim())return toast('No hay borrador para editar.',{error:true});
+    btn.disabled=true;
+    btn.textContent='🐈‍⬛ Editando…';
+    try{
+      const updated=await polishPendingBlock(state.chapterId,review.value);
+      review.value=updated.pendingText || review.value;
+      toast('Editor Pass listo. Revisa el nuevo borrador antes de aprobar.',{ms:7500});
+    }catch(err){toast(err.message || 'No se pudo hacer el Editor Pass.',{error:true,ms:9000});}
+    finally{btn.disabled=false;btn.textContent='🐈‍⬛ Editor Pass · 1 llamada';}
   });
   document.getElementById('w-ending-pending-btn')?.addEventListener('click',async(e)=>{
     const btn=e.currentTarget;
@@ -112,7 +137,11 @@ function renderBanner(state) {
   });
   document.getElementById('w-approve-btn')?.addEventListener('click',async(e)=>{
     e.currentTarget.disabled=true;
-    try{await approvePendingBlock(state.chapterId,document.getElementById('w-review-text').value);
+    try{
+      const edited=document.getElementById('w-review-text').value;
+      const original=state.pendingText || '';
+      await approvePendingBlock(state.chapterId,edited);
+      try{await recordEditSignal(original,edited);}catch{}
       toast('Bloque aprobado y guardado.');await renderWrite(document.getElementById('view-write'));
     }catch(err){toast(err.message,{error:true,ms:6500});e.currentTarget.disabled=false;}
   });
