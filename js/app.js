@@ -1,13 +1,13 @@
 import { db } from './db.js';
-import { renderWrite } from './ui/write.js?v=20260928-long-memory-v1';
+import { renderWrite } from './ui/write.js?v=20260928-author-brain-v1';
 import { renderChapters } from './ui/chapters.js?v=20260928-economy-mini-v1';
-import { renderCharacters } from './ui/characters.js?v=20260926-spanish-ui-v1';
+import { renderCharacters } from './ui/characters.js?v=20260928-author-brain-v1';
 import { renderDocuments } from './ui/documents.js?v=20260926-spanish-ui-v1';
 import { renderMemory } from './ui/memory.js?v=20260928-chapter-variants-v1';
-import { renderSettings } from './ui/settings.js?v=20260928-full-chapter-v1';
+import { renderSettings } from './ui/settings.js?v=20260928-author-brain-v1';
 import { renderPlanner } from './ui/planner.js?v=20260928-long-memory-v1';
 import { bus, toast } from './utils.js';
-import { getActiveGenerationState } from './generation.js?v=20260928-long-memory-v1';
+import { getActiveGenerationState } from './generation.js?v=20260928-author-brain-v1';
 import { initAppearance } from './ui/appearance.js';
 
 const VIEWS = { write: renderWrite, planner: renderPlanner, chapters: renderChapters, characters: renderCharacters, documents: renderDocuments, memory: renderMemory, settings: renderSettings };
