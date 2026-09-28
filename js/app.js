@@ -42,6 +42,40 @@ async function seedDefaults() {
     refreshedSettings.fullChapterMigration20260928 = true;
     await db.put('settings', refreshedSettings);
   }
+
+  // One-time chemistry seed for the author's original Power to Strive workspace.
+  // Never overwrite hand-written chemistry and never inject these AU dynamics into
+  // a different workspace/story.
+  if (db.getActiveProjectId() === 'original') {
+    const markerId = 'author-chemistry-seed:original-v1';
+    const marker = await db.get('settings', markerId);
+    if (!marker) {
+      const chemistry = {
+        levi:'With Joseph, Levi tolerates dry insolence she would cut off in others; their intimacy is practical, habitual and secure, often visible in tiny corrections, shared routines and the fact that neither performs the relationship. With Erwin, old history creates compressed familiarity and dangerous shorthand; she resists being publicly interpreted. With Hange, irritation and trust coexist: Hange can recognize embarrassment and deliberately make it worse.',
+        joseph:'With Levi, Joseph is dry, composed and provocatively familiar without needing reassurance; he knows which threats are real, which silences mean stop, and when not to expose her. With Anya, he is an easy, steady father who can be amused without turning her into a joke. Around Erwin, he is secure rather than jealous: old history is something he knows, not a competition.',
+        erwin:'With Levi, Erwin has unusually deep history and shorthand; he can read small shifts others miss, but public personal exposure can knock him half a step off his command rhythm. He does not turn that history into a current romantic contest. With Joseph, he is measured and observant rather than territorial.',
+        hange:'With Levi, Hange has earned the right to notice too much and enjoys social disasters involving her, but knows more than the younger cast and should not casually dump that knowledge. In the room, they escalate through curiosity, badly timed delight and interruptions rather than long analytical speeches.',
+        petra:'With Levi, Petra notices tells, habits and practical behavior because she has served under her closely. Her reactions should often begin with a concrete observation before emotion catches up.',
+        jean:'Jean tends to blurt the socially dangerous implication before everyone is ready for it, then has to live with the consequences. He is skeptical but not stupid and can become sincere when a reveal actually lands.',
+        connie:'Connie asks the simple or invasive question everyone else had enough sense not to say. He is often accidentally useful because his confusion exposes the obvious social implication.',
+        sasha:'Sasha reacts sincerely and literally. Her questions can detonate a room because she asks them without strategic embarrassment, not because she is trying to be cruel.',
+        armin:'Armin connects evidence quickly, but should do it in compact observations and questions rather than detective lectures. Let him be interrupted before he can turn insight into a seminar.',
+        mikasa:'Mikasa is restrained and direct. She notices protection, body mechanics and who moves toward whom under stress; she rarely needs many words to make the observation land.',
+        ymir:'Ymir reads social discomfort faster than most of the room and enjoys watching people squirm. Her sharpness works best in short lines, side comments and knowing looks, not explanatory monologues.',
+        historia:'Historia is emotionally attentive, especially around children and vulnerability. She notices hurt without turning every moment into a speech and often softens the social temperature by asking one sincere question.',
+        eren:'Eren reacts from conviction and confusion more than social finesse. He can miss private implications that others catch, which makes his blunt questions useful when the room gets too clever.'
+      };
+      const characters = await db.getAll('characters');
+      for (const character of characters) {
+        const key = String(character.name || '').trim().toLowerCase();
+        if (!character.chemistry && chemistry[key]) {
+          character.chemistry = chemistry[key];
+          await db.put('characters',character);
+        }
+      }
+      await db.put('settings',{id:markerId,done:true,createdAt:new Date().toISOString()});
+    }
+  }
 }
 
 const ORIGINAL = { id:'original', name:'Historia original (mis datos actuales)' };
