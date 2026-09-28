@@ -16,6 +16,7 @@ import { getRelevantChunks } from './retrieval.js';
 import { wordCount } from './utils.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
+import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
@@ -108,6 +109,24 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     const activeIds = activeChapterIds(allChapters);
     const memoryEntries = allMemoryEntries.sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)))
       .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
+    const mainPreviousChapters = allChapters
+      .filter((chapter) => chapter.id !== state.chapterId && activeIds.has(chapter.id) && String(chapter.content || '').trim())
+      .slice()
+      .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+    const continuityQuery = [
+      state.instructions,
+      state.allowedCast,
+      state.requiredEnding,
+      Array.isArray(state.scenePlan) ? state.scenePlan.join(' ') : '',
+      state.blockNotes,
+      memoryEntries.slice(-2).map((m) => [m.events,m.openThreads,m.whoKnowsWhat].filter(Boolean).join(' ')).join(' ')
+    ].filter(Boolean).join(' ');
+    const storyExcerpts = getRelevantStoryExcerpts(mainPreviousChapters, continuityQuery, {
+      excludeChapterId: state.chapterId,
+      maxExcerpts: 5,
+      maxPerChapter: 2,
+    });
+    const previousEnding = getPreviousChapterEnding(mainPreviousChapters, state.chapterId, 4200);
     const documents = allDocuments.filter((d) =>
       Array.isArray(state.documentIds) ? state.documentIds.includes(d.id) : true);
     const queryText = [state.instructions, state.allowedCast, memoryEntries.slice(-2).map((m) => m.events).join(' ')].join(' ');
@@ -174,7 +193,8 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
       characters,
       memoryEntries,
       canonNotes,
-      recentChapterExcerpt: '',
+      recentChapterExcerpt: previousEnding.text,
+      storyExcerpts,
       retrievedChunks,
       extraGuidance,
     });
@@ -278,6 +298,14 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   const activeIds = activeChapterIds(allChapters);
   const memoryEntries = allMemoryEntries.sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)))
     .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
+  const mainPreviousChapters = allChapters
+    .filter((chapter) => chapter.id !== state.chapterId && activeIds.has(chapter.id) && String(chapter.content || '').trim())
+    .slice()
+    .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const storyExcerpts = getRelevantStoryExcerpts(mainPreviousChapters, [
+    state.instructions,state.allowedCast,state.requiredEnding,pending.slice(-3000)
+  ].filter(Boolean).join(' '), { excludeChapterId:state.chapterId,maxExcerpts:4,maxPerChapter:2 });
+  const previousEnding = getPreviousChapterEnding(mainPreviousChapters,state.chapterId,3200);
   const documents = allDocuments.filter((d) => Array.isArray(state.documentIds) ? state.documentIds.includes(d.id) : true);
   const queryText = [state.instructions,state.allowedCast,pending.slice(-5000),'ending'].join(' ');
   const safeDocuments = documents.filter((d) => d.type !== 'STYLE_ONLY');
@@ -309,7 +337,8 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
     characters,
     memoryEntries,
     canonNotes,
-    recentChapterExcerpt:'',
+    recentChapterExcerpt:previousEnding.text,
+    storyExcerpts,
     retrievedChunks,
     extraGuidance:[
       'ADD AN ENDING TO THE CURRENT TEXT. Continue from the exact final sentence; do not restart, summarize, rewrite or replace anything already written.',
