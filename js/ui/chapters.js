@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, fmtDate, debounce, wordCount, openModal, closeModal, bus, copyTextToClipboard } from '../utils.js';
-import { rewriteChapter, generateContinuityMemory } from '../memoryEngine.js?v=20260928-cache-cost-v1';
+import { rewriteChapter, generateContinuityMemory } from '../memoryEngine.js?v=20260928-chapter-variants-v1';
 import { isMainTimelineChapter, sortChaptersWithVariants } from '../timeline.js?v=20260928-chapter-variants-v1';
 
 function safeFilename(value, fallback = 'capitulo') {
