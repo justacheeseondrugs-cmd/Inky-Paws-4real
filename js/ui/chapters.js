@@ -77,7 +77,7 @@ export async function renderChapters(root) {
   const mainChapters = chapters.filter(isMainTimelineChapter);
   root.innerHTML = `
     <h2 class="section-title">Capítulos</h2>
-    <p class="section-hint">Tu línea principal y sus alternativas. Las alternativas se guardan completas pero NO afectan continuidad, planificación ni «Descargar todos» hasta que las hagas principales.</p>
+    <p class="section-hint">Tu línea principal y sus alternativas. Las alternativas se guardan completas pero NO afectan continuidad, planificación ni «Descargar todos» hasta que las hagas principales. Tu copia de seguridad completa sigue disponible en Ajustes.</p>
     <div class="btn-row chapter-export-row">
       <button class="btn btn-ghost" id="chapters-download-all">⬇️ Descargar línea principal en .md</button>
     </div>
