@@ -4,6 +4,7 @@ import { getRelevantChunks } from './retrieval.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
+import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928-author-brain-v1';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -114,16 +115,27 @@ export async function buildModelTestPack({
     });
   }
 
-  const extraGuidance = firstRequestGuidance({
-    chapterTitle,
-    targetWords,
-    requiredEnding,
+  const authorBrain = await getAuthorBrain();
+  const authorGuidance = buildAuthorGuidance({
+    brain:authorBrain,
+    characters,
     scenePlan,
-    allowedCast,
-    forbiddenCast,
-    reactionMode,
-    generationMode,
+    requiredEnding,
+    authorBrief:null,
   });
+  const extraGuidance = [
+    firstRequestGuidance({
+      chapterTitle,
+      targetWords,
+      requiredEnding,
+      scenePlan,
+      allowedCast,
+      forbiddenCast,
+      reactionMode,
+      generationMode,
+    }),
+    authorGuidance,
+  ].filter(Boolean).join('\n\n');
 
   const promptParts = assembleSystemPromptParts({
     lockedFacts,
@@ -162,6 +174,7 @@ export async function buildModelTestPack({
     '- Continuity memories included by Paws: ' + (memoryTitles.join(' → ') || '(none)'),
     '- Selected documents: ' + (selectedDocNames.join(', ') || '(none)'),
     '- Direct prior-chapter excerpts recalled: ' + storyExcerpts.length,
+    '- Inky author brain: Writing DNA + learned feedback + relationship chemistry + local pressure map',
     '',
     '---',
     '',
