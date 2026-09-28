@@ -3,6 +3,7 @@ import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '.
 import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-full-chapter-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-economy-mini-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
+import { buildModelTestPack } from '../modelTestPack.js?v=20260928-model-test-pack-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -44,7 +45,7 @@ export async function renderWrite(root) {
     '<div class="grid-2"><div><label class="field-label" for="w-words">Extensión orientativa</label><select id="w-words"><option value="3000">3.000 palabras</option><option value="5000" selected>5.000 palabras</option><option value="7000">7.000 palabras</option></select></div>',
     '<div><label class="field-label" for="w-generation-mode">Modo de escritura</label><select id="w-generation-mode"><option value="full_chapter" '+(defaultGenerationMode === 'full_chapter' ? 'selected' : '')+'>📖 Capítulo completo · una sola llamada</option><option value="blocks" '+(defaultGenerationMode === 'blocks' ? 'selected' : '')+'>🧩 Por bloques · revisar paso a paso</option></select></div></div>',
     '<p class="scene-guide" id="w-mode-help">'+(defaultGenerationMode === 'full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.')+'</p>',
-    '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Escribir</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button></div><p class="scene-guide">«Add an ending» da al primer tramo un cierre natural; para una reescritura completa usa «Escribir».</p></div>',
+    '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Escribir</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button><button class="btn btn-ghost" id="w-export-test-pack-btn">🧪 Exportar pack para otro modelo</button></div><p class="scene-guide">«Add an ending» da al primer tramo un cierre natural. «Exportar pack» NO usa API ni créditos: descarga el lore/contexto que Paws usaría para este capítulo.</p></div>',
     '<div class="card paper" id="w-paper-card" style="display:none"><div class="paper-title" id="w-paper-title"></div><div class="muted" id="w-paper-meta"></div><div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="w-copy-chapter-btn">📋 Copiar capítulo</button></div><hr><div class="paper-readonly manuscript-rendered" id="w-paper-text"></div></div>'
   ].join('');
   // An explicitly chosen brainstorm suggestion is only a draft: the author
@@ -57,6 +58,7 @@ export async function renderWrite(root) {
   document.getElementById('w-generation-mode')?.addEventListener('change',(e)=>{ const help=document.getElementById('w-mode-help'); if(help) help.textContent=e.target.value==='full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.'; });
   document.getElementById('w-generate-btn')?.addEventListener('click',()=>onGenerateClick('continue'));
   document.getElementById('w-generate-ending-btn')?.addEventListener('click',()=>onGenerateClick('ending'));
+  document.getElementById('w-export-test-pack-btn')?.addEventListener('click',exportModelTestPackFromForm);
   if(active){ renderBanner(active); showPaper(active); }
 }
 
@@ -175,6 +177,53 @@ function showPaper(state){
         toast('Capítulo copiado al portapapeles.');
       }catch(err){toast(err.message || 'No se pudo copiar el capítulo.',{error:true});}
     };
+  }
+}
+
+async function exportModelTestPackFromForm(){
+  const title=document.getElementById('w-title')?.value.trim() || '';
+  const instructions=document.getElementById('w-instructions')?.value.trim() || '';
+  const targetWords=Number(document.getElementById('w-words')?.value || 5000);
+  const generationMode=document.getElementById('w-generation-mode')?.value || 'full_chapter';
+  const requiredEnding=document.getElementById('w-ending')?.value.trim() || '';
+  const scenePlan=lines(document.getElementById('w-scenes')?.value || '');
+  const allowedCast=document.getElementById('w-cast')?.value.trim() || '';
+  const forbiddenCast=document.getElementById('w-forbidden')?.value.trim() || '';
+  const reactionMode=!!document.getElementById('w-reactions')?.checked;
+  const documentIds=Array.from(document.querySelectorAll('.w-doc:checked')).map((el)=>el.value);
+
+  if(!title || !instructions)return toast('Escribe título e instrucciones antes de exportar el pack.',{error:true});
+  if(!allowedCast)return toast('Indica el reparto autorizado para que el pack incluya las fichas correctas.',{error:true,ms:6500});
+
+  const btn=document.getElementById('w-export-test-pack-btn');
+  if(btn){btn.disabled=true;btn.textContent='🧪 Preparando pack…';}
+  try{
+    const pack=await buildModelTestPack({
+      chapterTitle:title,
+      instructions,
+      targetWords,
+      requiredEnding,
+      scenePlan,
+      allowedCast,
+      forbiddenCast,
+      documentIds,
+      reactionMode,
+      generationMode,
+    });
+    const blob=new Blob([pack.markdown],{type:'text/markdown;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=pack.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('🧪 Pack listo: '+pack.stats.characters+' fichas, '+pack.stats.memories+' memorias y '+pack.stats.documents+' documento(s). No se gastaron créditos.',{ms:9000});
+  }catch(err){
+    toast('No se pudo crear el pack: '+(err.message || err),{error:true,ms:9000});
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='🧪 Exportar pack para otro modelo';}
   }
 }
 
