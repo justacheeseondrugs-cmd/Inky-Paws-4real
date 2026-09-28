@@ -85,9 +85,12 @@ export function buildDocumentsBlock(retrievedChunks) {
 const STYLE_GUIDE = `Escribe SIEMPRE en prosa de novela profesional: ritmo cuidado, interioridad de los personajes, atmósfera sensorial, lenguaje corporal, silencios y subtexto, transiciones fluidas entre escenas. Evita el formato de guion/screenplay y evita el diálogo constante sin narración: el diálogo debe estar entretejido con acción, pensamiento y descripción. No resumas: dramatiza.`;
 
 /**
- * Ensambla el prompt de sistema completo respetando la jerarquía de prioridad.
+ * Divide el prompt en un prefijo reutilizable y un sufijo dinámico.
+ * En GPT-5.6+ el proveedor OpenAI puede cachear SOLO el prefijo estable,
+ * evitando pagar escrituras de caché por el capítulo-en-progreso y por las
+ * instrucciones que cambian de un bloque al siguiente.
  */
-export function assembleSystemPrompt({
+export function assembleSystemPromptParts({
   lockedFacts,
   chapterInstructions,
   characters,
@@ -97,7 +100,7 @@ export function assembleSystemPrompt({
   retrievedChunks,
   extraGuidance,
 }) {
-  const sections = [
+  const stableSections = [
     'Eres la IA de escritura de "Power to Strive Studio", una herramienta personal de fanfiction largo. Sigue estrictamente el siguiente orden de prioridad si hay algún conflicto entre secciones: (1) Hechos bloqueados, (2) instrucciones del capítulo actual, (3) fichas de personaje, (4) memoria de continuidad, (5) documentos de referencia.',
     buildLockedFactsBlock(lockedFacts),
     chapterInstructions ? `✍️ INSTRUCCIONES DEL CAPÍTULO ACTUAL:\n${chapterInstructions}` : '',
@@ -105,7 +108,17 @@ export function assembleSystemPrompt({
     buildContinuityBlock(memoryEntries, canonNotes, recentChapterExcerpt),
     buildDocumentsBlock(retrievedChunks),
     `🖋️ ESTILO:\n${STYLE_GUIDE}`,
-    extraGuidance || '',
   ].filter(Boolean);
-  return sections.join('\n\n---\n\n');
+  return {
+    stablePrompt: stableSections.join('\n\n---\n\n'),
+    dynamicPrompt: extraGuidance || '',
+  };
+}
+
+/**
+ * Ensambla el prompt completo para proveedores que no usan partes separadas.
+ */
+export function assembleSystemPrompt(args) {
+  const { stablePrompt, dynamicPrompt } = assembleSystemPromptParts(args);
+  return [stablePrompt, dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
 }
