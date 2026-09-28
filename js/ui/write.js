@@ -1,9 +1,9 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
-import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-full-chapter-v1';
+import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-reaction-chaos-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-economy-mini-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
-import { buildModelTestPack } from '../modelTestPack.js?v=20260928-model-test-pack-v1';
+import { buildModelTestPack } from '../modelTestPack.js?v=20260928-reaction-chaos-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -38,7 +38,7 @@ export async function renderWrite(root) {
     '<p class="scene-guide">Si aparece uno de estos nombres en un bloque, no se incorporará al capítulo.</p>',
     '<label class="field-label" for="w-ending">Última escena obligatoria (recomendado)</label>',
     '<textarea id="w-ending" rows="3" placeholder="La niña llega a los brazos de Erwin y habla entre sollozos ANTES del corte."></textarea>',
-    '<label class="field-label"><input id="w-reactions" type="checkbox" checked> Sala de reacciones: entrelazar conversaciones de espectadores CON lo que ocurre en pantalla</label>',
+    '<label class="field-label"><input id="w-reactions" type="checkbox" checked> Sala de reacciones: caos natural + la pantalla NO espera a que terminen de reaccionar</label>',
     '<label class="field-label">📚 Documentos autorizados para ESTE capítulo</label>',
     '<p class="scene-guide">Los no marcados quedan fuera. Un documento de «Solo estilo» aporta sus notas de estilo, nunca texto ni personajes originales.</p>',
     '<div id="w-reference-list">'+(docsHtml || '<p class="muted">Sin documentos activos en esta historia. Súbelos en Documentos si los necesitas.</p>')+'</div>',
