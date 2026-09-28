@@ -1,6 +1,6 @@
 import { db } from './db.js';
 import { getProvider } from './providers/index.js?v=20260928-economy-mini-v1';
-import { assembleSystemPrompt } from './canonGuard.js?v=20260928-cache-cost-v1';
+import { assembleSystemPrompt } from './canonGuard.js?v=20260928-long-memory-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { isLikelyInvalidProse } from './providers/base.js';
 import { filterActiveMemories } from './timeline.js?v=20260928-chapter-variants-v1';
@@ -48,7 +48,7 @@ export async function generateContinuityMemory(chapter) {
     lockedFacts,
     chapterInstructions: 'Analiza el capítulo completo proporcionado por el usuario y extrae, con precisión y sin inventar nada que no esté implícito en el texto, un resumen de continuidad estructurado.',
     characters, memoryEntries: [], canonNotes, recentChapterExcerpt: '', retrievedChunks,
-    extraGuidance: `Responde EXCLUSIVAMENTE con un objeto JSON válido (sin markdown, sin texto fuera del JSON) con estas claves exactas: EVENTS, RELATIONSHIP_CHANGES, NEW_FACTS, WHO_KNOWS_WHAT, PHYSICAL_STATE, CURRENT_LOCATION_TIME, OPEN_THREADS. Cada valor es un string breve (1-4 frases). Si una categoría no aplica en este capítulo, usa un string vacío.`,
+    extraGuidance: `Responde EXCLUSIVAMENTE con un objeto JSON válido (sin markdown, sin texto fuera del JSON) con estas claves exactas: EVENTS, RELATIONSHIP_CHANGES, NEW_FACTS, WHO_KNOWS_WHAT, PHYSICAL_STATE, CURRENT_LOCATION_TIME, OPEN_THREADS. Cada valor debe ser breve pero concreto. Prioriza nombres, relaciones, secretos revelados, quién sabe o NO sabe algo, apodos, promesas, bromas recurrentes, preguntas aún abiertas y hechos que un capítulo futuro podría contradecir. No sustituyas hechos por interpretaciones temáticas. Si una categoría no aplica, usa un string vacío.`,
   });
   const userPrompt = `CAPÍTULO A ANALIZAR ("${chapter.title}"):\n\n${chapter.content}`;
   // En modelos de razonamiento, max_completion_tokens incluye también los
