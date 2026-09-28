@@ -1,9 +1,9 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
-import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-reaction-chaos-v1';
-import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-economy-mini-v1';
+import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-long-memory-v1';
+import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-memory-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
-import { buildModelTestPack } from '../modelTestPack.js?v=20260928-reaction-chaos-v1';
+import { buildModelTestPack } from '../modelTestPack.js?v=20260928-long-memory-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
