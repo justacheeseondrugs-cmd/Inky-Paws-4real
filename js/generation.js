@@ -17,6 +17,7 @@ import { wordCount } from './utils.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
+import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js?v=20260928-author-brain-v1';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
@@ -140,6 +141,54 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
         '. Do not import any plot, character, relationship, dialogue or event from this file.' });
     }
 
+    const authorBrain = await getAuthorBrain();
+    if (isFirstBlock && !state.authorBrief && authorBrain.prepEnabled !== false) {
+      onProgress?.({ phase:'preflight', state });
+      try {
+        const prepParts = assembleSystemPromptParts({
+          lockedFacts,
+          chapterInstructions: state.instructions,
+          characters,
+          memoryEntries,
+          canonNotes,
+          recentChapterExcerpt: previousEnding.text,
+          storyExcerpts,
+          retrievedChunks: [],
+          extraGuidance: authorBriefJsonInstruction(),
+        });
+        const prepResult = await provider.generate({
+          systemPrompt:[prepParts.stablePrompt,prepParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n'),
+          cacheStrategy:'off',
+          userPrompt:[
+            'Prepare the editorial brief for this chapter before prose is written.',
+            'TITLE: '+state.chapterTitle,
+            'TARGET: approximately '+state.targetWords+' words',
+            'SCENE PLAN:\n'+((state.scenePlan || []).map((beat,i)=>(i+1)+'. '+beat).join('\n') || '(none supplied)'),
+            state.requiredEnding ? 'REQUIRED ENDING: '+state.requiredEnding : '',
+            'ALLOWED CAST: '+(state.allowedCast || '(none)'),
+            state.reactionMode ? 'This is a reaction-room chapter: preserve unresolved social collisions and let footage outrun commentary.' : ''
+          ].filter(Boolean).join('\n\n'),
+          maxOutputTokens:1200,
+          temperature:0.2,
+        });
+        const parsed = prepResult.ok ? parseAuthorBrief(prepResult.text) : null;
+        if (parsed) {
+          state.authorBrief = parsed;
+          state.updatedAt = new Date().toISOString();
+          await db.put('generationState',state);
+        }
+      } catch {
+        // Pre-flight is an optional quality layer; never block the actual chapter.
+      }
+    }
+    const authorGuidance = buildAuthorGuidance({
+      brain: authorBrain,
+      characters,
+      scenePlan: state.scenePlan || [],
+      requiredEnding: state.requiredEnding || '',
+      authorBrief: state.authorBrief || null,
+    });
+
     // No cortar el texto anterior a 1.400 caracteres: cada llamada debe ver
     // lo escrito en este mismo capítulo para no reiniciar escenas ya narradas.
     const chapterSoFar = state.accumulatedText.slice(-STORY_CONTEXT_CHAR_CAP);
@@ -167,6 +216,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     const extraGuidance = [
       'This request is ONE continuous chapter, NOT a fresh chapter per API call. All events in CHAPTER_SO_FAR have ALREADY HAPPENED. Return ONLY the next new prose, never a repeat or rephrasing.',
       state.reactionMode ? REACTION_ROOM_GUIDANCE : 'Write only the narrative requested by the author.',
+      authorGuidance,
       'References contain background, not a new scene plan. Do not introduce unrelated characters, places or plotlines just because a reference mentions them. The author instructions and chapter-so-far control the current episode.',
       'Word count is a flexible target, not a reason to end before the author-requested final event. Pace the setup to leave time for the entire climax and cliffhanger.',
       'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none; ask the author for a cast)')+'. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them.',
