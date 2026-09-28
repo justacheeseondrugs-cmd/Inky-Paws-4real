@@ -437,6 +437,116 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   return state;
 }
 
+
+export async function polishPendingBlock(chapterId, editedText) {
+  const state = await db.get('generationState',chapterId);
+  if (!state || state.status !== 'awaiting_review') throw new Error('No hay un borrador pendiente para editar.');
+  const draft = String(editedText || state.pendingText || '').trim();
+  if (wordCount(draft) < 80) throw new Error('El borrador es demasiado corto para un Editor Pass.');
+
+  const settings = (await db.get('settings','main')) || {};
+  const provider = getProvider(settings);
+  const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks, allChapters] = await Promise.all([
+    db.getAll('lockedFacts'),
+    db.getAll('characters'),
+    db.getAll('memoryEntries'),
+    db.getAll('canonNotes'),
+    db.getAll('documents'),
+    db.getAll('docChunks'),
+    db.getAll('chapters'),
+  ]);
+
+  const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x)=>x.trim().toLowerCase()).filter(Boolean);
+  const characters = allCharacters.filter((c)=>permittedNames.includes(String(c.name || '').trim().toLowerCase()) && c.active !== false);
+  const activeIds = activeChapterIds(allChapters);
+  const memoryEntries = allMemoryEntries.slice().sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)))
+    .filter((m)=>m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
+  const mainPreviousChapters = allChapters
+    .filter((chapter)=>chapter.id !== state.chapterId && activeIds.has(chapter.id) && String(chapter.content || '').trim())
+    .slice().sort((a,b)=>(a.order ?? 0)-(b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const storyExcerpts = getRelevantStoryExcerpts(
+    mainPreviousChapters,
+    [state.instructions,state.allowedCast,state.requiredEnding,draft.slice(-7000)].filter(Boolean).join(' '),
+    {excludeChapterId:state.chapterId,maxExcerpts:5,maxPerChapter:2}
+  );
+  const previousEnding = getPreviousChapterEnding(mainPreviousChapters,state.chapterId,4200);
+
+  const documents = allDocuments.filter((d)=>Array.isArray(state.documentIds) ? state.documentIds.includes(d.id) : true);
+  const safeDocuments = documents.filter((d)=>d.type !== 'STYLE_ONLY');
+  const retrievedChunks = getRelevantChunks(
+    safeDocuments,
+    allChunks,
+    [state.instructions,state.allowedCast,'editor pass',draft.slice(-2500)].join(' '),
+    {context:'chapter_generation'}
+  );
+  for (const doc of documents.filter((d)=>d.type === 'STYLE_ONLY' && d.active !== false)) {
+    retrievedChunks.push({
+      documentId:doc.id,
+      document:doc,
+      text:'Style notes supplied by author: '+(doc.useOnlyFor || 'novel-like rhythm and narration')+
+        '. Do not import any plot, character, relationship, dialogue or event from this file.'
+    });
+  }
+
+  const authorBrain = await getAuthorBrain();
+  const authorGuidance = buildAuthorGuidance({
+    brain:authorBrain,
+    characters,
+    scenePlan:state.scenePlan || [],
+    requiredEnding:state.requiredEnding || '',
+    authorBrief:state.authorBrief || null,
+  });
+
+  const promptParts = assembleSystemPromptParts({
+    lockedFacts,
+    chapterInstructions:state.instructions,
+    characters,
+    memoryEntries,
+    canonNotes,
+    recentChapterExcerpt:previousEnding.text,
+    storyExcerpts,
+    retrievedChunks,
+    extraGuidance:[
+      'EDITOR PASS — revise the supplied draft as a novelist and ruthless line editor. Return the COMPLETE revised draft only.',
+      'Preserve the same events, event order, reveals, factual content, POV, scene destination and required ending. Do not add a new subplot, new named person, new reveal or different outcome.',
+      'Remove AI-ish explanation after gestures, thematic summaries, repeated reactions, redundant emotional interpretation and dialogue that explains what everyone already knows.',
+      'Tighten bridges, protect character-specific voices, preserve subtext, and make ensemble reactions collide naturally instead of taking orderly turns.',
+      'Keep good lines and good scene business. This is an edit, not a total reinvention.',
+      state.reactionMode ? REACTION_ROOM_GUIDANCE : '',
+      authorGuidance,
+      'ALLOWED NAMED CAST: '+(state.allowedCast || '(none)')+'.',
+      state.forbiddenCast ? 'FORBIDDEN NAMES: '+state.forbiddenCast+'.' : '',
+    ].filter(Boolean).join('\n\n')
+  });
+
+  const result = await provider.generate({
+    systemPrompt:[promptParts.stablePrompt,promptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n'),
+    cacheStrategy:'off',
+    userPrompt:[
+      'DRAFT TO EDIT:',
+      '<DRAFT>',
+      draft,
+      '</DRAFT>',
+      'Return only the complete edited prose. No notes, headings, explanations, change log or preface.'
+    ].join('\n\n'),
+    maxOutputTokens:Math.min(120000,Math.round(wordCount(draft) * 4.0) + 1600),
+    temperature:0.85,
+  });
+  if (!result.ok) throw new Error(result.errorMessage || 'No se pudo completar el Editor Pass.');
+
+  const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x)=>x.trim()).filter(Boolean);
+  const lower = String(result.text || '').toLowerCase();
+  const leaks = forbidden.filter((name)=>lower.includes(name.toLowerCase()));
+  if (leaks.length) throw new Error('El Editor Pass incluyó personajes prohibidos: '+leaks.join(', ')+'. No se aplicó.');
+
+  const revised = String(result.text || '').trim();
+  if (wordCount(revised) < 60) throw new Error('El Editor Pass devolvió un texto demasiado corto. No se modificó el borrador.');
+  state.pendingText = revised;
+  state.updatedAt = new Date().toISOString();
+  await db.put('generationState',state);
+  return state;
+}
+
 export async function approvePendingBlock(chapterId, editedText) {
   const state = await db.get('generationState',chapterId);
   if (!state || state.status !== 'awaiting_review') throw new Error('No hay un bloque pendiente de aprobación.');
