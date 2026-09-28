@@ -6,6 +6,7 @@ import { getProvider } from '../providers/index.js?v=20260928-cache-cost-v1';
 import { getRelevantChunks } from '../retrieval.js';
 import { getActiveGenerationState } from '../generation.js?v=20260928-cache-cost-v1';
 import { escapeHtml, toast, bus } from '../utils.js';
+import { isMainTimelineChapter, filterActiveMemories } from '../timeline.js?v=20260928-chapter-variants-v1';
 
 const HISTORY_LIMIT = 50;
 const CONTEXT_TURNS = 4;
@@ -29,8 +30,9 @@ async function collectContext(question) {
     db.getAll('memoryEntries'), db.getAll('chapters'),
     db.getAll('documents'), db.getAll('docChunks'),
   ]);
-  const sortedChapters = chapters.filter((ch) => ch.content?.trim())
+  const sortedChapters = chapters.filter((ch) => isMainTimelineChapter(ch) && ch.content?.trim())
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const activeMemories = filterActiveMemories(memories, chapters);
   const recent = sortedChapters.slice(-1);
   const chapterContext = recent.map((ch, i) => {
     const tail = 6200;
@@ -55,7 +57,7 @@ async function collectContext(question) {
     'LOCKED FACTS:\n' + lockedFacts.map((f) => '- ' + f.text).join('\n').slice(0, 9000),
     'PERMANENT AU CANON:\n' + canonNotes.map((n) => '- ' + n.text).join('\n').slice(0, 6000),
     'CHARACTER PROFILES:\n' + characterContext.slice(0, 10500),
-    'RECENT APPROVED CONTINUITY MEMORIES:\n' + formatMemory(memories.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')))),
+    'RECENT APPROVED CONTINUITY MEMORIES:\n' + formatMemory(activeMemories.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')))),
     'ACTUAL MOST RECENT SAVED CHAPTER ENDINGS (source of truth for immediate next scene):\n' + chapterContext,
     docContext ? 'SELECTED CURRENT-AU REFERENCE EXCERPTS (background only, not events that automatically occurred):\n' + docContext : '',
   ].filter(Boolean).join('\n\n---\n\n');
