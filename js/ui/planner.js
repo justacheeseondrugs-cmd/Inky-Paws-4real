@@ -2,7 +2,7 @@
 // The conversation is stored per workspace in the existing settings store.
 // It never writes to chapters, character profiles or continuity memory.
 import { db } from '../db.js';
-import { getProvider } from '../providers/index.js?v=20260928-cache-cost-v1';
+import { getProvider } from '../providers/index.js?v=20260928-economy-mini-v1';
 import { getRelevantChunks } from '../retrieval.js';
 import { getActiveGenerationState } from '../generation.js?v=20260928-chapter-variants-v1';
 import { escapeHtml, toast, bus } from '../utils.js';
