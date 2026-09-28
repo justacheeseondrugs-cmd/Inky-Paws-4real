@@ -3,6 +3,7 @@ import { assembleSystemPromptParts } from './canonGuard.js?v=20260928-cache-cost
 import { getRelevantChunks } from './retrieval.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
+import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -82,6 +83,23 @@ export async function buildModelTestPack({
     .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
     .filter((m) => m.chapterId && activeIds.has(m.chapterId));
 
+  const mainChapters = allChapters
+    .filter((chapter) => activeIds.has(chapter.id) && String(chapter.content || '').trim())
+    .slice()
+    .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const continuityQuery = [
+    instructions,
+    allowedCast,
+    requiredEnding,
+    Array.isArray(scenePlan) ? scenePlan.join(' ') : '',
+    memoryEntries.slice(-2).map((m) => [m.events,m.openThreads,m.whoKnowsWhat].filter(Boolean).join(' ')).join(' ')
+  ].filter(Boolean).join(' ');
+  const storyExcerpts = getRelevantStoryExcerpts(mainChapters, continuityQuery, {
+    maxExcerpts:5,
+    maxPerChapter:2,
+  });
+  const previousEnding = getPreviousChapterEnding(mainChapters, '', 4200);
+
   const documents = allDocuments.filter((d) => Array.isArray(documentIds) ? documentIds.includes(d.id) : true);
   const queryText = [instructions, allowedCast, memoryEntries.slice(-2).map((m) => m.events).join(' ')].join(' ');
   const safeDocuments = documents.filter((d) => d.type !== 'STYLE_ONLY');
@@ -113,7 +131,8 @@ export async function buildModelTestPack({
     characters,
     memoryEntries,
     canonNotes,
-    recentChapterExcerpt: '',
+    recentChapterExcerpt: previousEnding.text,
+    storyExcerpts,
     retrievedChunks,
     extraGuidance,
   });
@@ -142,6 +161,7 @@ export async function buildModelTestPack({
     '- Selected character sheets: ' + (characters.map((c) => c.name).join(', ') || '(none)'),
     '- Continuity memories included by Paws: ' + (memoryTitles.join(' → ') || '(none)'),
     '- Selected documents: ' + (selectedDocNames.join(', ') || '(none)'),
+    '- Direct prior-chapter excerpts recalled: ' + storyExcerpts.length,
     '',
     '---',
     '',
