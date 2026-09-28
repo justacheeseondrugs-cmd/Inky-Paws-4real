@@ -1,6 +1,6 @@
 import { db } from './db.js';
-import { getProvider } from './providers/index.js';
-import { assembleSystemPrompt } from './canonGuard.js';
+import { getProvider } from './providers/index.js?v=20260928-cache-cost-v1';
+import { assembleSystemPrompt } from './canonGuard.js?v=20260928-cache-cost-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { isLikelyInvalidProse } from './providers/base.js';
 
