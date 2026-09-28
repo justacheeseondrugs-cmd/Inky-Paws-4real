@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
-import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-economy-mini-v1';
+import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-full-chapter-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-economy-mini-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
 
