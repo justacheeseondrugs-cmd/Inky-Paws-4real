@@ -4,7 +4,7 @@ import { renderChapters } from './ui/chapters.js?v=20260928-chapter-variants-v1'
 import { renderCharacters } from './ui/characters.js?v=20260926-spanish-ui-v1';
 import { renderDocuments } from './ui/documents.js?v=20260926-spanish-ui-v1';
 import { renderMemory } from './ui/memory.js?v=20260928-chapter-variants-v1';
-import { renderSettings } from './ui/settings.js?v=20260926-spanish-ui-v1';
+import { renderSettings } from './ui/settings.js?v=20260928-economy-mini-v1';
 import { renderPlanner } from './ui/planner.js?v=20260928-chapter-variants-v1';
 import { bus, toast } from './utils.js';
 import { getActiveGenerationState } from './generation.js?v=20260928-chapter-variants-v1';
@@ -18,7 +18,21 @@ async function seedDefaults() {
     await db.put('lockedFacts', { text: 'Hange usa pronombres they/them (elle/su). Nunca uses pronombres binarios (he/she, él/ella) para Hange. Esos pronombres sí pueden referirse a otros personajes cercanos a Hange en la misma frase.', isCore: true });
   }
   const settings = await db.get('settings', 'main');
-  if (!settings) await db.put('settings', { id:'main', provider:'gemini', apiKeys:{gemini:'',openai:''}, models:{gemini:'gemini-2.0-flash',openai:'gpt-4o'}, blockWordSize:900 });
+  if (!settings) {
+    await db.put('settings', { id:'main', provider:'gemini', apiKeys:{gemini:'',openai:''}, models:{gemini:'gemini-2.0-flash',openai:'gpt-5.4-mini'}, blockWordSize:900, economyMiniMigration20260928:true });
+  } else if (!settings.economyMiniMigration20260928) {
+    const currentOpenAI = String(settings.models?.openai || '').trim().toLowerCase();
+    // One-time personal-app migration requested by the author: move an
+    // existing GPT-5.6 Sol setting back to the much cheaper GPT-5.4 Mini.
+    // The flag prevents us from overriding a future manual switch back to Sol.
+    if (/^gpt-5[._-]6-sol(?:$|[-.])/i.test(currentOpenAI)) {
+      settings.models = { ...(settings.models || {}), openai:'gpt-5.4-mini' };
+    } else if (!currentOpenAI) {
+      settings.models = { ...(settings.models || {}), openai:'gpt-5.4-mini' };
+    }
+    settings.economyMiniMigration20260928 = true;
+    await db.put('settings', settings);
+  }
 }
 
 const ORIGINAL = { id:'original', name:'Historia original (mis datos actuales)' };
