@@ -54,7 +54,7 @@ export class OpenAIProvider extends AIProvider {
     temperature = 1.0,
   }) {
     const apiKey = this.config.apiKey;
-    const model = this.config.model || 'gpt-4o';
+    const model = this.config.model || 'gpt-5.4-mini';
     if (!apiKey) {
       return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de OpenAI en Ajustes.', raw: null };
     }
