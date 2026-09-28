@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
 import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding } from '../generation.js?v=20260928-cache-cost-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-cache-cost-v1';
+import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -186,7 +187,9 @@ async function onGenerateClick(generationIntent='continue'){
   if(!allowedCast)return toast('Indica el reparto autorizado del capítulo.',{error:true,ms:6500});
   if(await getActiveGenerationState())return toast('Termina o cierra el capítulo pendiente.',{error:true});
   const chapters=await db.getAll('chapters');
-  const chapter={id:db.uid(),title,content:'',wordCount:0,status:'draft',order:chapters.length,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+  const mainChapters=chapters.filter(isMainTimelineChapter);
+  const nextOrder=mainChapters.length ? Math.max(...mainChapters.map((chapter)=>chapter.order ?? 0)) + 1 : 0;
+  const chapter={id:db.uid(),title,content:'',wordCount:0,status:'draft',order:nextOrder,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   await db.put('chapters',chapter);
   await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,forbiddenCast,documentIds,reactionMode,generationIntent});
 }
