@@ -14,6 +14,7 @@ export async function renderWrite(root) {
     db.get('settings','planner-draft:' + db.getActiveProjectId())
   ]);
   const hasKey = !!settings?.apiKeys?.[settings.provider];
+  const defaultGenerationMode = settings?.defaultGenerationMode || 'full_chapter';
   const docs = documents.filter((d) => d.active !== false).sort((a,b) => (b.priority || 0)-(a.priority || 0));
   const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>').join('');
   root.innerHTML = [
@@ -41,7 +42,9 @@ export async function renderWrite(root) {
     '<p class="scene-guide">Los no marcados quedan fuera. Un documento de «Solo estilo» aporta sus notas de estilo, nunca texto ni personajes originales.</p>',
     '<div id="w-reference-list">'+(docsHtml || '<p class="muted">Sin documentos activos en esta historia. Súbelos en Documentos si los necesitas.</p>')+'</div>',
     '<div class="grid-2"><div><label class="field-label" for="w-words">Extensión orientativa</label><select id="w-words"><option value="3000">3.000 palabras</option><option value="5000" selected>5.000 palabras</option><option value="7000">7.000 palabras</option></select></div>',
-    '<div><label class="field-label">&nbsp;</label><div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Continue</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button></div><p class="scene-guide">«Add an ending» da a este primer bloque un cierre natural; no termina automáticamente toda la historia.</p></div></div></div>',
+    '<div><label class="field-label" for="w-generation-mode">Modo de escritura</label><select id="w-generation-mode"><option value="full_chapter" '+(defaultGenerationMode === 'full_chapter' ? 'selected' : '')+'>📖 Capítulo completo · una sola llamada</option><option value="blocks" '+(defaultGenerationMode === 'blocks' ? 'selected' : '')+'>🧩 Por bloques · revisar paso a paso</option></select></div></div>',
+    '<p class="scene-guide" id="w-mode-help">'+(defaultGenerationMode === 'full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.')+'</p>',
+    '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Escribir</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button></div><p class="scene-guide">«Add an ending» da al primer tramo un cierre natural; para una reescritura completa usa «Escribir».</p></div>',
     '<div class="card paper" id="w-paper-card" style="display:none"><div class="paper-title" id="w-paper-title"></div><div class="muted" id="w-paper-meta"></div><div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="w-copy-chapter-btn">📋 Copiar capítulo</button></div><hr><div class="paper-readonly manuscript-rendered" id="w-paper-text"></div></div>'
   ].join('');
   // An explicitly chosen brainstorm suggestion is only a draft: the author
@@ -51,6 +54,7 @@ export async function renderWrite(root) {
     await db.del('settings',plannerDraft.id);
     toast('Idea de planificación lista para revisar en las instrucciones.');
   }
+  document.getElementById('w-generation-mode')?.addEventListener('change',(e)=>{ const help=document.getElementById('w-mode-help'); if(help) help.textContent=e.target.value==='full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.'; });
   document.getElementById('w-generate-btn')?.addEventListener('click',()=>onGenerateClick('continue'));
   document.getElementById('w-generate-ending-btn')?.addEventListener('click',()=>onGenerateClick('ending'));
   if(active){ renderBanner(active); showPaper(active); }
@@ -75,7 +79,7 @@ function renderBanner(state) {
   slot.innerHTML=[
     '<div class="banner"><div style="flex:1;min-width:200px"><b>'+escapeHtml(state.chapterTitle)+'</b> · '+(labels[state.status] || escapeHtml(state.status)),
     '<div class="progress-track"><div class="progress-fill" style="width:'+pct+'%"></div></div>',
-    '<div class="muted">'+state.wordsSoFar+' / '+state.targetWords+' palabras aceptadas · '+state.blocksDone+' bloque(s)</div>',
+    '<div class="muted">'+state.wordsSoFar+' / '+state.targetWords+' palabras aceptadas · '+state.blocksDone+' '+((state.generationMode || 'blocks')==='full_chapter' ? 'respuesta(s) larga(s)' : 'bloque(s)')+'</div>',
     state.lastError ? '<p class="muted">'+escapeHtml(state.lastError.message)+'</p>':'','</div></div>',
     waiting ? '<div class="generation-review"><h3>✏️ Lee, corrige y aprueba este bloque</h3><p class="scene-guide">Este texto todavía NO es parte del capítulo. Si algo no te gusta, edítalo o descártalo antes de continuar.</p><textarea id="w-review-text" rows="12">'+escapeHtml(state.pendingText || '')+'</textarea><div class="review-actions"><button type="button" class="btn btn-primary" id="w-approve-btn">✓ Aceptar bloque</button><button type="button" class="btn btn-ghost" id="w-copy-block-btn">📋 Copiar bloque</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-ending-pending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost" id="w-reject-btn">Descartar SOLO este bloque</button></div><p class="scene-guide">«Add an ending» conserva todo lo que ya lees y añade sólo el cierre al final. Después sigues pudiendo editarlo antes de aprobar.</p></div>' : '',
     showControls ? '<div class="card"><h3>🎬 Siguiente bloque</h3>'+
@@ -122,7 +126,8 @@ function renderBanner(state) {
         chapterId:state.chapterId,chapterTitle:state.chapterTitle,instructions:state.instructions,
         targetWords:state.targetWords,requiredEnding:state.requiredEnding,
         sceneIndex:document.getElementById('w-current-scene')?Number(document.getElementById('w-current-scene').value):state.sceneIndex,
-        blockNotes:document.getElementById('w-block-notes')?.value.trim() || '',generationIntent
+        blockNotes:document.getElementById('w-block-notes')?.value.trim() || '',generationIntent,
+        generationMode:state.generationMode || 'blocks'
       });
     });
   };
@@ -177,6 +182,7 @@ async function onGenerateClick(generationIntent='continue'){
   const title=document.getElementById('w-title').value.trim();
   const instructions=document.getElementById('w-instructions').value.trim();
   const targetWords=Number(document.getElementById('w-words').value);
+  const generationMode=document.getElementById('w-generation-mode')?.value || 'full_chapter';
   const requiredEnding=document.getElementById('w-ending').value.trim();
   const scenePlan=lines(document.getElementById('w-scenes').value);
   const allowedCast=document.getElementById('w-cast').value.trim();
@@ -191,7 +197,7 @@ async function onGenerateClick(generationIntent='continue'){
   const nextOrder=mainChapters.length ? Math.max(...mainChapters.map((chapter)=>chapter.order ?? 0)) + 1 : 0;
   const chapter={id:db.uid(),title,content:'',wordCount:0,status:'draft',order:nextOrder,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   await db.put('chapters',chapter);
-  await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,forbiddenCast,documentIds,reactionMode,generationIntent});
+  await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,forbiddenCast,documentIds,reactionMode,generationIntent,generationMode});
 }
 
 async function runGeneration(options){
@@ -203,7 +209,7 @@ async function runGeneration(options){
   root?.querySelector('#w-generate-btn')?.setAttribute('disabled','true');
   try{
     const result=await startOrResumeGeneration({...options,onProgress:({state})=>{renderBanner(state);showPaper(state);}});
-    if(result.status==='awaiting_review')toast('Bloque listo: léelo y apruébalo antes de continuar.',{ms:6000});
+    if(result.status==='awaiting_review')toast((result.generationMode==='full_chapter' ? 'Capítulo completo listo' : 'Bloque listo')+': léelo y apruébalo antes de continuar.',{ms:6500});
     else if(result.status?.startsWith('paused_'))toast(result.lastError?.message || 'Generación pausada.',{error:true,ms:8000});
   }catch(err){toast('No se pudo generar: '+err.message,{error:true,ms:10000});}
   finally{isRunning=false;await renderWrite(root);}
