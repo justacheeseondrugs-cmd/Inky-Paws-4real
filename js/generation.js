@@ -26,7 +26,7 @@ export async function getActiveGenerationState() {
     .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
 }
 
-export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', generationIntent = 'continue', onProgress, shouldStop }) {
+export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', generationIntent = 'continue', generationMode = 'blocks', onProgress, shouldStop }) {
   let state = await db.get('generationState', chapterId);
   if (!state) {
     state = {
@@ -44,6 +44,7 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
       reactionMode,
       blockNotes,
       generationIntent,
+      generationMode,
       pendingText: '',
       accumulatedText: '',
       wordsSoFar: 0,
@@ -61,6 +62,7 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
     if (Number.isInteger(sceneIndex)) state.sceneIndex = sceneIndex;
     state.blockNotes = blockNotes || '';
     state.generationIntent = generationIntent || 'continue';
+    state.generationMode = generationMode || state.generationMode || 'blocks';
     await db.put('generationState', state);
   }
 
@@ -87,13 +89,18 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
   {
     const remaining = Math.max(1,state.targetWords - state.wordsSoFar);
     const intent = state.generationIntent || 'continue';
-    const normalBlockTarget = Math.min(blockWords, Math.max(remaining, Math.round(blockWords * .65)));
-    // "Add an ending" lands the current unit instead of forcing another full-size block.
+    const generationMode = state.generationMode || 'blocks';
+    const fullChapterMode = generationMode === 'full_chapter';
+    const normalBlockTarget = fullChapterMode
+      ? remaining
+      : Math.min(blockWords, Math.max(remaining, Math.round(blockWords * .65)));
+    // "Add an ending" still lands the current unit instead of forcing another
+    // full-size request, even when Full chapter mode is selected.
     const thisBlockTarget = intent === 'ending'
-      ? Math.min(600, Math.max(250, Math.round(blockWords * .55)))
+      ? Math.min(700, Math.max(250, Math.round(Math.min(blockWords, remaining) * .55)))
       : normalBlockTarget;
     const isFirstBlock = state.blocksDone === 0;
-    const isLastStretch = remaining <= blockWords;
+    const isLastStretch = fullChapterMode || remaining <= blockWords;
 
     const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
     const characters = allCharacters.filter((c) => permittedNames.includes(c.name.trim().toLowerCase()) && c.active !== false);
@@ -117,13 +124,17 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     // lo escrito en este mismo capítulo para no reiniciar escenas ya narradas.
     const chapterSoFar = state.accumulatedText.slice(-STORY_CONTEXT_CHAR_CAP);
     const progress = state.wordsSoFar / Math.max(state.targetWords, 1);
-    const narrativePosition = isFirstBlock
-      ? 'FIRST BLOCK: establish the initial scene; do not rush to the climax.'
-      : isLastStretch || progress >= .82
-        ? 'FINAL STRETCH: stop expanding the setup. Move directly toward the author-requested final scene and execute it fully. Close immediately after the specified cliffhanger.'
-        : progress >= .60
-          ? 'LATE MIDDLE: complete the ongoing conversation and make tangible progress toward the closing scene. No new subplot, character introductions or recaps.'
-          : 'MIDDLE: continue from the precise last action and develop the NEXT unique event. Never replay a previous arrival, conversation or scream.';
+    const narrativePosition = fullChapterMode && isFirstBlock
+      ? 'FULL CHAPTER: write the complete chapter in this single response. Pace the opening, middle, escalation and ending as ONE continuous arc. Do not stop after an intermediate reveal or treat each listed beat as a separate mini-scene. Carry unfinished questions, jokes, tension and emotional consequences forward across the whole chapter.'
+      : fullChapterMode
+        ? 'FULL CHAPTER CONTINUATION: the previous full-chapter attempt ended short. Continue seamlessly from the exact last line and finish the remaining arc and required ending without recap.'
+        : isFirstBlock
+          ? 'FIRST BLOCK: establish the initial scene; do not rush to the climax.'
+          : isLastStretch || progress >= .82
+            ? 'FINAL STRETCH: stop expanding the setup. Move directly toward the author-requested final scene and execute it fully. Close immediately after the specified cliffhanger.'
+            : progress >= .60
+              ? 'LATE MIDDLE: complete the ongoing conversation and make tangible progress toward the closing scene. No new subplot, character introductions or recaps.'
+              : 'MIDDLE: continue from the precise last action and develop the NEXT unique event. Never replay a previous arrival, conversation or scream.';
 
     const intentGuidance = intent === 'ending'
       ? 'ADD AN ENDING: Continue seamlessly from the current prose and write only enough to give THIS CURRENT BLOCK/SCENE a satisfying stopping point. Resolve the immediate conversational or emotional beat, but keep larger story threads alive. Do not start a new scene, time-skip, recap, or invent an unrelated twist merely to manufacture an ending. Finish on a strong final line, image, reaction, realization, question, or organic hook. This does NOT mean end the whole story.'
@@ -140,14 +151,20 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
       'Word count is a flexible target, not a reason to end before the author-requested final event. Pace the setup to leave time for the entire climax and cliffhanger.',
       'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none; ask the author for a cast)')+'. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them.',
       state.forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: '+state.forbiddenCast+'. These names must never appear in the NEW prose.' : '',
-      Array.isArray(state.scenePlan) && state.scenePlan.length ? 'ORDERED STORY PLAN (each beat happens once):\n'+state.scenePlan.map((beat,i) => (i+1)+'. '+beat).join('\n')+'\nFOCUS FOR THIS BLOCK: scene '+(Math.min(state.scenePlan.length-1,Math.max(0,state.sceneIndex || 0))+1)+': '+state.scenePlan[Math.min(state.scenePlan.length-1,Math.max(0,state.sceneIndex || 0))]+'. Progress from here toward the later scenes, never jump backward.' : '',
+      Array.isArray(state.scenePlan) && state.scenePlan.length
+        ? (fullChapterMode
+          ? 'ORDERED STORY PLAN FOR THE WHOLE CHAPTER (each beat happens once, flowing naturally into the next):\n'+state.scenePlan.map((beat,i) => (i+1)+'. '+beat).join('\n')+'\nTreat this as one arc, not a checklist. Earlier beats may keep affecting dialogue and tension long after the story has moved forward.'
+          : 'ORDERED STORY PLAN (each beat happens once):\n'+state.scenePlan.map((beat,i) => (i+1)+'. '+beat).join('\n')+'\nFOCUS FOR THIS BLOCK: scene '+(Math.min(state.scenePlan.length-1,Math.max(0,state.sceneIndex || 0))+1)+': '+state.scenePlan[Math.min(state.scenePlan.length-1,Math.max(0,state.sceneIndex || 0))]+'. Progress from here toward the later scenes, never jump backward.')
+        : '',
       state.blockNotes ? 'AUTHOR CORRECTION FOR THIS BLOCK (obey exactly, never repeat an earlier bad draft): '+state.blockNotes : '',
       intentGuidance,
       narrativePosition,
       state.requiredEnding ? 'MANDATORY FINAL SCENE / LAST IMAGE: ' + state.requiredEnding + ' Complete the entire event before ending; do not stop at the first distant hint of it.' : '',
       isFirstBlock
-        ? 'Write the FIRST approximately ' + thisBlockTarget + ' words of "' + state.chapterTitle + '".' + (intent === 'ending' ? ' Give this opening block a natural stopping point without pretending the whole story is over.' : ' Do not end the chapter in this block.')
-        : 'Write ONLY the NEXT approximately ' + thisBlockTarget + ' words from the last sentence. ' + (intent === 'ending' ? 'Land the current beat and stop cleanly.' : (isLastStretch ? 'This is the final scene, not another setup.' : 'Keep moving toward the specified ending.')),
+        ? (fullChapterMode && intent !== 'ending'
+          ? 'Write the COMPLETE chapter "' + state.chapterTitle + '" now, targeting approximately ' + thisBlockTarget + ' words in this one response. Reach the required ending before you stop. Do not stop at 1,500-2,000 words merely because a major reveal has landed.'
+          : 'Write the FIRST approximately ' + thisBlockTarget + ' words of "' + state.chapterTitle + '".' + (intent === 'ending' ? ' Give this opening block a natural stopping point without pretending the whole story is over.' : ' Do not end the chapter in this block.'))
+        : 'Write ONLY the NEXT approximately ' + thisBlockTarget + ' words from the last sentence. ' + (intent === 'ending' ? 'Land the current beat and stop cleanly.' : (isLastStretch ? 'Finish the remaining chapter arc and required ending.' : 'Keep moving toward the specified ending.')),
     ].filter(Boolean).join('\n\n');
 
     const promptParts = assembleSystemPromptParts({
@@ -163,7 +180,9 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     const systemPrompt = [promptParts.stablePrompt, promptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
 
     const userPrompt = isFirstBlock
-      ? 'BEGIN CHAPTER. Follow the author scene order and write ONLY the opening block as English novel prose.'
+      ? (fullChapterMode && intent !== 'ending'
+        ? 'BEGIN AND COMPLETE THE CHAPTER. Write the entire cohesive English novel chapter in this single response, from opening through ending hook. Target approximately ' + state.targetWords + ' words. Do not stop at an intermediate beat, do not ask to continue, and do not output an outline or commentary.'
+        : 'BEGIN CHAPTER. Follow the author scene order and write ONLY the opening block as English novel prose.')
       : [
           'EXACT CHAPTER ALREADY WRITTEN. Do not rewrite, summarize, reproduce or restart any part:',
           '<CHAPTER_SO_FAR>',
@@ -185,7 +204,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
       cacheStrategy: 'reuse',
       cacheKey: 'inky-paws:' + String(state.chapterId || '').slice(0, 50),
       userPrompt,
-      maxOutputTokens: Math.round(thisBlockTarget * 3.6) + 700,
+      maxOutputTokens: Math.min(120000, Math.round(thisBlockTarget * 3.6) + (fullChapterMode ? 1800 : 700)),
       temperature: 1.0,
     });
 
