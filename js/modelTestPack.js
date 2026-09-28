@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { assembleSystemPromptParts } from './canonGuard.js?v=20260928-cache-cost-v1';
+import { assembleSystemPromptParts } from './canonGuard.js?v=20260928-long-memory-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
