@@ -11,11 +11,43 @@ import { getActiveGenerationState } from './generation.js?v=20260928-ownership-g
 import { initAppearance } from './ui/appearance.js';
 
 const VIEWS = { write: renderWrite, planner: renderPlanner, chapters: renderChapters, characters: renderCharacters, documents: renderDocuments, memory: renderMemory, settings: renderSettings };
+
+const POWER_TO_STRIVE_DEFAULT_FACTS = [
+  'Levi es mujer en este AU. Usa SIEMPRE pronombres she/her (ella/la) para Levi. Nunca uses he/him/his ni términos masculinos (hombre, esposo, novio, hijo) para referirte a Levi. Esas palabras sí pueden usarse para otros personajes masculinos en la misma frase.',
+  'Hange usa pronombres they/them (elle/su). Nunca uses pronombres binarios (he/she, él/ella) para Hange. Esos pronombres sí pueden referirse a otros personajes cercanos a Hange en la misma frase.',
+];
+
 async function seedDefaults() {
+  const projectId = db.getActiveProjectId();
   const facts = await db.getAll('lockedFacts');
-  if (facts.length === 0) {
-    await db.put('lockedFacts', { text: 'Levi es mujer en este AU. Usa SIEMPRE pronombres she/her (ella/la) para Levi. Nunca uses he/him/his ni términos masculinos (hombre, esposo, novio, hijo) para referirte a Levi. Esas palabras sí pueden usarse para otros personajes masculinos en la misma frase.', isCore: true });
-    await db.put('lockedFacts', { text: 'Hange usa pronombres they/them (elle/su). Nunca uses pronombres binarios (he/she, él/ella) para Hange. Esos pronombres sí pueden referirse a otros personajes cercanos a Hange en la misma frase.', isCore: true });
+
+  // Power to Strive keeps its AU-specific identity rules. Brand-new stories are
+  // deliberately canon-neutral so one story's Levi/Hange assumptions never leak
+  // into another fic.
+  if (projectId === 'original' && facts.length === 0) {
+    for (const text of POWER_TO_STRIVE_DEFAULT_FACTS) {
+      await db.put('lockedFacts', { text, isCore:true });
+    }
+  }
+
+  // Clean up only the exact legacy auto-seeded rules in non-original workspaces.
+  // Hand-written or edited canon facts are never touched.
+  if (projectId !== 'original') {
+    const migrationId = 'neutral-workspace-default-cleanup:' + projectId + ':v1';
+    const migration = await db.get('settings', migrationId);
+    if (!migration) {
+      const legacyDefaults = new Set(POWER_TO_STRIVE_DEFAULT_FACTS);
+      for (const fact of facts) {
+        if (fact?.isCore === true && legacyDefaults.has(String(fact.text || '').trim())) {
+          await db.del('lockedFacts', fact.id);
+        }
+      }
+      await db.put('settings', {
+        id:migrationId,
+        done:true,
+        createdAt:new Date().toISOString(),
+      });
+    }
   }
   const settings = await db.get('settings', 'main');
   if (!settings) {
@@ -126,7 +158,7 @@ async function initWorkspaces() {
     await seedDefaults();
     await renderWorkspaces();
     switchView('chapters');
-    toast('Historia nueva creada. La original y su memoria siguen intactas.');
+    toast('Historia nueva creada con canon neutral. La original y su memoria siguen intactas.');
   });
 }
 
