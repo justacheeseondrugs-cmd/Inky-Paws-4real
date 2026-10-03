@@ -6,8 +6,8 @@ import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reactio
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928-ownership-guard-v1';
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js?v=20261003-smart-context-v1';
-import { analyzeContextGuard } from './contextGuard.js?v=20261003-canon-scope-v1';
-import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v1';
+import { analyzeContextGuard } from './contextGuard.js?v=20261003-onscreen-warning-v1';
+import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v2';
 import { combineCast, formatCast } from './storyCast.js?v=20261003-room-cast-v2';
 
 function safeName(value) {
@@ -181,6 +181,7 @@ export async function buildModelTestPack({
     canonNotes,
     allCharacters,
     allowedCast,
+    onscreenCast,
     instructions,
     scenePlan,
     reactionMode,
