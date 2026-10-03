@@ -539,3 +539,24 @@ body[data-theme="dark"] .context-guard-warning{background:#51432f;border-color:#
 body[data-theme="dark"] .context-guard-info,
 body[data-theme="dark"] .context-evidence{background:#3e3040;}
 body[data-theme="dark"] .context-guard-ok{background:#304633;color:#dff4df;border-color:#6e9c70;}
+
+
+/* ---- Automatic reaction-room cast ---- */
+.auto-cast-box{
+  margin:12px 0 10px;
+  padding:11px 12px;
+  border:1px solid var(--blush-300);
+  border-radius:var(--radius-sm);
+  background:rgba(255,255,255,.42);
+}
+.auto-cast-title{
+  font-weight:700;
+  color:var(--oldrose-700);
+  margin-bottom:8px;
+}
+.auto-cast-pills{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+}
+body[data-theme="dark"] .auto-cast-box{background:#3e3040;}
