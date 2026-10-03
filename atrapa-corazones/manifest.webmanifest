@@ -1,0 +1,17 @@
+{
+  "name":"Atrapa corazones 💕",
+  "short_name":"Corazones",
+  "description":"Un mini juego adorable para atrapar corazones y esquivar corazones rotos.",
+  "lang":"es",
+  "start_url":"./",
+  "scope":"./",
+  "display":"standalone",
+  "orientation":"portrait-primary",
+  "background_color":"#ffd3e4",
+  "theme_color":"#ff66a3",
+  "categories":["games","casual"],
+  "icons":[
+    {"src":"./icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"./icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}
