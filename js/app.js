@@ -4,7 +4,7 @@ import { renderChapters } from './ui/chapters.js?v=20260928-economy-mini-v1';
 import { renderCharacters } from './ui/characters.js?v=20260928-author-brain-v1';
 import { renderDocuments } from './ui/documents.js?v=20260926-spanish-ui-v1';
 import { renderMemory } from './ui/memory.js?v=20261003-canon-scope-v1';
-import { renderSettings } from './ui/settings.js?v=20260928-ownership-guard-v1';
+import { renderSettings } from './ui/settings.js?v=20261003-backup-key-guard-v1';
 import { renderPlanner } from './ui/planner.js?v=20260928-long-memory-v1';
 import { bus, toast } from './utils.js';
 import { getActiveGenerationState } from './generation.js?v=20261003-room-cast-canon-v1';
