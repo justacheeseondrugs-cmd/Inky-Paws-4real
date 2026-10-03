@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { renderWrite } from './ui/write.js?v=20261003-room-cast-detect-v1';
+import { renderWrite } from './ui/write.js?v=20261003-armin-onscreen-v1';
 import { renderChapters } from './ui/chapters.js?v=20260928-economy-mini-v1';
 import { renderCharacters } from './ui/characters.js?v=20260928-author-brain-v1';
 import { renderDocuments } from './ui/documents.js?v=20260926-spanish-ui-v1';
