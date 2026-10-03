@@ -49,6 +49,21 @@ async function seedDefaults() {
       });
     }
   }
+  // One-time safety migration: legacy canon notes had no visibility.
+  // Treat them as PRIVATE AUTHOR CANON so old future-summary material never
+  // becomes automatic character knowledge.
+  const canonVisibilityMigrationId='canon-visibility:'+projectId+':v1';
+  if(!(await db.get('settings',canonVisibilityMigrationId))){
+    const legacyCanon=await db.getAll('canonNotes');
+    for(const note of legacyCanon){
+      if(!note.visibility){
+        note.visibility='private';
+        await db.put('canonNotes',note);
+      }
+    }
+    await db.put('settings',{id:canonVisibilityMigrationId,done:true,createdAt:new Date().toISOString()});
+  }
+
   const settings = await db.get('settings', 'main');
   if (!settings) {
     await db.put('settings', { id:'main', provider:'gemini', apiKeys:{gemini:'',openai:''}, models:{gemini:'gemini-2.0-flash',openai:'gpt-5.4-mini'}, blockWordSize:1000, defaultGenerationMode:'full_chapter', economyMiniMigration20260928:true, fullChapterMigration20260928:true });
