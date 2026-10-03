@@ -19,6 +19,7 @@ import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactio
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js?v=20260928-ownership-guard-v1';
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost } from './smartContext.js?v=20261003-smart-context-v1';
+import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v1';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
@@ -106,8 +107,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     const isFirstBlock = state.blocksDone === 0;
     const isLastStretch = fullChapterMode || remaining <= blockWords;
 
-    const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
-    const characters = allCharacters.filter((c) => permittedNames.includes(c.name.trim().toLowerCase()) && c.active !== false);
+    const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
     const activeIds = activeChapterIds(allChapters);
     const allActiveMemoryEntries = allMemoryEntries.slice().sort((a,b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
       .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
@@ -352,8 +352,7 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
     db.getAll('chapters'),
   ]);
 
-  const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
-  const characters = allCharacters.filter((c) => permittedNames.includes(c.name.trim().toLowerCase()) && c.active !== false);
+  const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
   const activeIds = activeChapterIds(allChapters);
   const allActiveMemoryEntries = allMemoryEntries.slice().sort((a,b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
     .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
@@ -473,8 +472,7 @@ export async function polishPendingBlock(chapterId, editedText) {
     db.getAll('chapters'),
   ]);
 
-  const permittedNames = (state.allowedCast || '').split(/[,;\n]/).map((x)=>x.trim().toLowerCase()).filter(Boolean);
-  const characters = allCharacters.filter((c)=>permittedNames.includes(String(c.name || '').trim().toLowerCase()) && c.active !== false);
+  const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
   const activeIds = activeChapterIds(allChapters);
   const allActiveMemoryEntries = allMemoryEntries.slice().sort((a,b)=>String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
     .filter((m)=>m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
