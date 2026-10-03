@@ -123,22 +123,59 @@ async function clearStore(storeName) {
 }
 
 // ---- Export / import completo (backup) ----
+// Las credenciales API son deliberadamente LOCALES y nunca forman parte de una copia.
+function sanitizeSettingsForBackup(record) {
+  if (!record || typeof record !== 'object') return record;
+  const safe = { ...record };
+  if ('apiKeys' in safe) safe.apiKeys = {};
+  if ('apiKey' in safe) delete safe.apiKey;
+  return safe;
+}
+
 async function exportAll() {
   const dump = {};
   for (const name of Object.keys(STORES)) {
-    dump[name] = await rawGetAll(name);
+    const records = await rawGetAll(name);
+    dump[name] = name === 'settings'
+      ? records.map(sanitizeSettingsForBackup)
+      : records;
   }
-  dump.__meta = { app: 'pts-studio', exportedAt: new Date().toISOString(), version: DB_VERSION };
+  dump.__meta = {
+    app: 'pts-studio',
+    exportedAt: new Date().toISOString(),
+    version: DB_VERSION,
+    apiKeysExcluded: true
+  };
   return dump;
 }
 
 async function importAll(dump, { merge = false } = {}) {
+  // Nunca aceptar credenciales desde un archivo importado.
+  // Conserva únicamente las claves que ya estaban en ESTE navegador.
+  const localMain = await get('settings', 'main').catch(() => null);
+  const localApiKeys = { ...(localMain?.apiKeys || {}) };
+
   for (const name of Object.keys(STORES)) {
     if (!Array.isArray(dump[name])) continue;
     if (!merge) await clearStore(name);
     const store = await tx(name, 'readwrite');
+    let hasMainSettings = false;
+
     for (const obj of dump[name]) {
-      store.put(obj);
+      let safeObj = obj;
+      if (name === 'settings') {
+        safeObj = sanitizeSettingsForBackup(obj);
+        if (safeObj?.id === 'main') {
+          hasMainSettings = true;
+          safeObj = { ...safeObj, apiKeys: localApiKeys };
+        }
+      }
+      store.put(safeObj);
+    }
+
+    // Backup raro/antiguo sin settings.main: no perder las claves locales existentes.
+    if (name === 'settings' && !hasMainSettings && localMain) {
+      store.put({ ...localMain, apiKeys: localApiKeys });
     }
   }
   return true;
