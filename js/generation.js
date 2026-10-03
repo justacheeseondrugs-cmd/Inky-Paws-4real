@@ -31,7 +31,7 @@ export async function getActiveGenerationState() {
     .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
 }
 
-export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', generationIntent = 'continue', generationMode = 'blocks', onProgress, shouldStop }) {
+export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', roomCast = '', onscreenCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', generationIntent = 'continue', generationMode = 'blocks', onProgress, shouldStop }) {
   let state = await db.get('generationState', chapterId);
   if (!state) {
     state = {
@@ -44,6 +44,8 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
       scenePlan,
       sceneIndex: 0,
       allowedCast,
+      roomCast,
+      onscreenCast,
       forbiddenCast,
       documentIds,
       reactionMode,
@@ -64,6 +66,9 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
     if (state.status === 'awaiting_review') return state;
     state.status = 'in_progress';
     state.instructions = instructions || state.instructions;
+    if (roomCast) state.roomCast = roomCast;
+    if (onscreenCast) state.onscreenCast = onscreenCast;
+    if (allowedCast) state.allowedCast = allowedCast;
     if (Number.isInteger(sceneIndex)) state.sceneIndex = sceneIndex;
     state.blockNotes = blockNotes || '';
     state.generationIntent = generationIntent || 'continue';
@@ -174,8 +179,10 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
             'TARGET: approximately '+state.targetWords+' words',
             'SCENE PLAN:\n'+((state.scenePlan || []).map((beat,i)=>(i+1)+'. '+beat).join('\n') || '(none supplied)'),
             state.requiredEnding ? 'REQUIRED ENDING: '+state.requiredEnding : '',
-            'ALLOWED CAST: '+(state.allowedCast || '(none)'),
-            state.reactionMode ? 'This is a reaction-room chapter: preserve unresolved social collisions and let footage outrun commentary.' : ''
+            state.reactionMode ? 'REACTION ROOM CAST (physically present viewers): '+(state.roomCast || '(not specified)') : '',
+            'ONSCREEN CAST FOR THIS CHAPTER: '+(state.onscreenCast || '(none explicitly listed)'),
+            'ALLOWED CAST ACROSS BOTH SETTINGS: '+(state.allowedCast || '(none)'),
+            state.reactionMode ? 'This is a reaction-room chapter: keep reaction-room viewers physically separate from onscreen characters unless the story explicitly establishes the same character in both settings.' : ''
           ].filter(Boolean).join('\n\n'),
           maxOutputTokens:1200,
           temperature:0.2,
@@ -228,7 +235,9 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
       authorGuidance,
       'References contain background, not a new scene plan. Do not introduce unrelated characters, places or plotlines just because a reference mentions them. The author instructions and chapter-so-far control the current episode.',
       'Word count is a flexible target, not a reason to end before the author-requested final event. Pace the setup to leave time for the entire climax and cliffhanger.',
-      'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none; ask the author for a cast)')+'. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them.',
+      state.reactionMode ? 'REACTION ROOM CAST — physically present viewers: '+(state.roomCast || '(not specified)')+'. Keep these people in the room unless an approved event changes the room roster.' : '',
+      'ONSCREEN CAST FOR THIS CHAPTER: '+(state.onscreenCast || '(none explicitly listed)')+'. These names may appear in the future footage when the chapter plan requires them.',
+      'ALLOWED NAMED CAST ACROSS BOTH SETTINGS: '+(state.allowedCast || '(none; ask the author for a cast)')+'. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them. A name being allowed does NOT move that person between the reaction room and the onscreen episode.',
       state.forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: '+state.forbiddenCast+'. These names must never appear in the NEW prose.' : '',
       Array.isArray(state.scenePlan) && state.scenePlan.length
         ? (fullChapterMode
@@ -413,7 +422,9 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
       styleInstruction,
       'Preserve the current POV, tone, pacing, characterization, dialogue rhythm and continuity.',
       state.reactionMode ? REACTION_ROOM_ENDING_GUIDANCE : '',
-      'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none)')+'. Do not introduce another named person.',
+      state.reactionMode ? 'REACTION ROOM CAST: '+(state.roomCast || '(not specified)')+'.' : '',
+      'ONSCREEN CAST: '+(state.onscreenCast || '(none explicitly listed)')+'.',
+      'ALLOWED NAMED CAST FOR THIS CHAPTER: '+(state.allowedCast || '(none)')+'. Do not introduce another named person or move a person between settings without story support.',
       state.forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: '+state.forbiddenCast+'. These names must not appear.' : '',
       'Target roughly '+endingWords+' additional words, but stop sooner if the prose has already landed. Do not pad the ending.'
     ].filter(Boolean).join('\n\n')
@@ -539,6 +550,8 @@ export async function polishPendingBlock(chapterId, editedText) {
       'Keep good lines and good scene business. This is an edit, not a total reinvention.',
       state.reactionMode ? REACTION_ROOM_GUIDANCE : '',
       authorGuidance,
+      state.reactionMode ? 'REACTION ROOM CAST: '+(state.roomCast || '(not specified)')+'.' : '',
+      'ONSCREEN CAST: '+(state.onscreenCast || '(none explicitly listed)')+'.',
       'ALLOWED NAMED CAST: '+(state.allowedCast || '(none)')+'.',
       state.forbiddenCast ? 'FORBIDDEN NAMES: '+state.forbiddenCast+'.' : '',
     ].filter(Boolean).join('\n\n')
