@@ -1,14 +1,14 @@
 import { db } from './db.js';
-import { assembleSystemPromptParts } from './canonGuard.js?v=20260928-long-memory-v1';
+import { assembleSystemPromptParts } from './canonGuard.js?v=20261003-canon-scope-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928-ownership-guard-v1';
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js?v=20261003-smart-context-v1';
-import { analyzeContextGuard } from './contextGuard.js?v=20261003-name-match-v1';
+import { analyzeContextGuard } from './contextGuard.js?v=20261003-canon-scope-v1';
 import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v1';
-import { combineCast, formatCast } from './storyCast.js?v=20261003-room-cast-v1';
+import { combineCast, formatCast } from './storyCast.js?v=20261003-room-cast-v2';
 
 function safeName(value) {
   return String(value || 'chapter')
