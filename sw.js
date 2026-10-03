@@ -1,7 +1,7 @@
 // sw.js — cachea sólo el "shell" de la app (HTML/CSS/JS propios) para que
 // abra offline. Las llamadas a la API de IA siempre necesitan red y nunca
 // se cachean aquí.
-const CACHE = 'inky-paws-es-v29-context-inspector';
+const CACHE = 'inky-paws-es-v30-smart-context-v1';
 const SHELL = [
   './',
   './index.html',
@@ -17,6 +17,7 @@ const SHELL = [
   './js/authorBrain.js',
   './js/canonGuard.js',
   './js/retrieval.js',
+  './js/smartContext.js',
   './js/generation.js',
   './js/memoryEngine.js',
   './js/providers/base.js',
