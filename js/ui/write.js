@@ -3,7 +3,7 @@ import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '.
 import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding, polishPendingBlock } from '../generation.js?v=20261003-smart-context-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-memory-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
-import { buildModelTestPack } from '../modelTestPack.js?v=20261003-smart-context-v1';
+import { buildModelTestPack } from '../modelTestPack.js?v=20261003-context-guard-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-ownership-guard-v1';
 
 let isRunning = false;
@@ -282,17 +282,30 @@ async function showContextInspectorFromForm(){
     const previous=ctx.previousEnding
       ? '<pre class="context-prompt">'+escapeHtml(ctx.previousEnding)+'</pre>'
       : '<p class="muted">No hay un final anterior disponible.</p>';
+    const preflight=ctx.preflight || {issues:[],criticalCount:0,warningCount:0,infoCount:0,ok:true};
+    const issueIcon={critical:'🚨',warning:'⚠️',info:'ℹ️'};
+    const issueLabel={critical:'Conflicto',warning:'Advertencia',info:'Info'};
+    const preflightHtml=(preflight.issues || []).length
+      ? (preflight.issues || []).map((item)=>{
+          const evidence=Array.isArray(item.evidence)
+            ? item.evidence.map((x)=>'<li>'+escapeHtml(String(x))+'</li>').join('')
+            : (item.evidence ? '<div class="context-evidence">'+escapeHtml(String(item.evidence))+'</div>' : '');
+          return '<div class="context-guard-item context-guard-'+escapeHtml(item.level || 'info')+'"><div><b>'+escapeHtml(issueIcon[item.level] || 'ℹ️')+' '+escapeHtml(item.title || issueLabel[item.level] || 'Revisión')+'</b><div>'+escapeHtml(item.message || '')+'</div>'+(item.suggestion?'<div class="muted"><b>Sugerencia:</b> '+escapeHtml(item.suggestion)+'</div>':'')+(evidence?'<details><summary>Ver evidencia</summary>'+(Array.isArray(item.evidence)?'<ul>'+evidence+'</ul>':evidence)+'</details>':'')+'</div></div>';
+        }).join('')
+      : '<div class="context-guard-ok">✅ Context Guard no encontró conflictos estructurales críticos.</div>';
 
     slot.innerHTML=[
       '<div class="card context-inspector" id="w-context-inspector">',
       '<div class="card-row context-inspector-head"><div><h3>👀 Context Inspector</h3><div class="muted">Vista previa local. No llama a la IA ni gasta créditos.</div></div><button type="button" class="btn btn-ghost btn-sm" id="w-context-close">Cerrar</button></div>',
       '<div class="context-summary">',
+      '<span class="pill '+(preflight.criticalCount?'pill-canon':'pill-active')+'">🛡️ '+(preflight.criticalCount?preflight.criticalCount+' conflicto(s)':'Preflight OK')+'</span>',
       '<span class="pill pill-character">'+(ctx.characters?.length || 0)+' personajes</span>',
       '<span class="pill pill-continuity">'+(ctx.memories?.length || 0)+'/'+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+' memorias</span>',
       '<span class="pill pill-canon">'+((ctx.lockedFacts?.length || 0)+(ctx.canonNotes?.length || 0))+' hechos/canon</span>',
       '<span class="pill pill-reference">'+(ctx.retrievedChunks?.length || 0)+' fragmentos</span>',
       '<span class="pill pill-style">≈ '+(ctx.approxInputTokens || 0).toLocaleString('es-CL')+' tokens de entrada</span>',
       '</div>',
+      '<details open><summary>🛡️ Context Guard · revisión antes de generar</summary><div class="context-details-body">'+preflightHtml+'</div></details>',
       '<p class="context-lead"><b>Personajes cargados:</b> '+chars+'</p>',
       '<p class="muted">🐾 Smart Context v1 seleccionó '+(ctx.memories?.length || 0)+' de '+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+' memorias de continuidad'+((ctx.memoryOmitted || 0) ? ' y dejó '+ctx.memoryOmitted+' fuera por menor prioridad.' : '. Todo el historial cabe sin recorte.')+' Los hechos bloqueados y el canon permanente siguen entrando completos.</p>',
       '<p class="muted">Proveedor/modelo configurado: '+escapeHtml(ctx.sourceProvider || 'unknown')+' · '+escapeHtml(ctx.sourceModel || '')+'</p>',
@@ -381,6 +394,35 @@ async function onGenerateClick(generationIntent='continue'){
   if(!title || !instructions)return toast('Escribe título e instrucciones.',{error:true});
   if(!allowedCast)return toast('Indica el reparto autorizado del capítulo.',{error:true,ms:6500});
   if(await getActiveGenerationState())return toast('Termina o cierra el capítulo pendiente.',{error:true});
+
+  // Preflight is fully local: catch structural conflicts before spending API credits.
+  try{
+    const preflightPack=await buildModelTestPack({
+      chapterTitle:title,
+      instructions,
+      targetWords,
+      requiredEnding,
+      scenePlan,
+      allowedCast,
+      forbiddenCast,
+      documentIds,
+      reactionMode,
+      generationMode,
+    });
+    const preflight=preflightPack.inspector?.preflight;
+    const blockers=(preflight?.issues || []).filter((item)=>item.level==='critical');
+    if(blockers.length){
+      const summary=blockers.map((item)=>'• '+item.title+': '+item.message).join('\n\n');
+      const proceed=confirm('🛡️ Context Guard encontró '+blockers.length+' conflicto(s) antes de generar:\n\n'+summary+'\n\nAceptar = generar igualmente.\nCancelar = volver y corregir.');
+      if(!proceed){
+        toast('Generación cancelada para que corrijas el contexto. Usa 👀 Ver contexto para revisar la evidencia.',{error:true,ms:8500});
+        return;
+      }
+    }
+  }catch(err){
+    console.warn('Context Guard preflight failed:',err);
+  }
+
   const chapters=await db.getAll('chapters');
   const mainChapters=chapters.filter(isMainTimelineChapter);
   const nextOrder=mainChapters.length ? Math.max(...mainChapters.map((chapter)=>chapter.order ?? 0)) + 1 : 0;
