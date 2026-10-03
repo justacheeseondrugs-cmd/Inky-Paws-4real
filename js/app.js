@@ -9,6 +9,7 @@ import { renderPlanner } from './ui/planner.js?v=20260928-long-memory-v1';
 import { bus, toast } from './utils.js';
 import { getActiveGenerationState } from './generation.js?v=20261003-room-cast-canon-v1';
 import { initAppearance } from './ui/appearance.js';
+import { isPowerToStriveStory } from './storyCast.js?v=20261003-room-cast-v3';
 
 const VIEWS = { write: renderWrite, planner: renderPlanner, chapters: renderChapters, characters: renderCharacters, documents: renderDocuments, memory: renderMemory, settings: renderSettings };
 
@@ -92,8 +93,8 @@ async function seedDefaults() {
 
   // Repair the one legacy character-sheet typo so the automatic room cast
   // can use the canonical full name without special cases.
-  if(projectId === 'original'){
-    const nameFixId='character-name-fix:original:armin-arlert-v1';
+  if(isPowerToStriveStory(projectId,facts)){
+    const nameFixId='character-name-fix:'+projectId+':armin-arlert-v2';
     if(!(await db.get('settings',nameFixId))){
       const characters=await db.getAll('characters');
       const armin=characters.find((character)=>String(character.name || '').trim().toLowerCase()==='armin arlet');
