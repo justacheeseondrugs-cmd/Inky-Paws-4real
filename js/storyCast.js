@@ -25,8 +25,32 @@ function key(value){
   return String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
 }
 
-export function getAutomaticReactionRoomCast(projectId,reactionMode=true){
-  return projectId === 'original' && reactionMode ? POWER_TO_STRIVE_ROOM_CAST.slice() : [];
+function normalize(value){
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'');
+}
+
+export function isPowerToStriveStory(projectId,lockedFacts=[]){
+  if(projectId === 'original') return true;
+  const facts=(lockedFacts || []).map((fact)=>normalize(fact?.text)).join('\n');
+  const hasRoomRule =
+    facts.includes('exactly thirteen viewers physically present in the reaction room') ||
+    (facts.includes('joseph joins as the thirteenth') && facts.includes('anya is not in the reaction room'));
+  const hasCoreNames =
+    facts.includes('petra ral') &&
+    facts.includes('erwin smith') &&
+    facts.includes('joseph alcott') &&
+    facts.includes('hange zoe') &&
+    facts.includes('eren yeager');
+  return hasRoomRule && hasCoreNames;
+}
+
+export function getAutomaticReactionRoomCast(projectId,reactionMode=true,lockedFacts=[]){
+  return reactionMode && isPowerToStriveStory(projectId,lockedFacts)
+    ? POWER_TO_STRIVE_ROOM_CAST.slice()
+    : [];
 }
 
 export function combineCast(...groups){
