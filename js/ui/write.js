@@ -1,9 +1,9 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
-import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding, polishPendingBlock } from '../generation.js?v=20260928-ownership-guard-v1';
+import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding, polishPendingBlock } from '../generation.js?v=20261003-smart-context-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-memory-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
-import { buildModelTestPack } from '../modelTestPack.js?v=20261003-context-inspector-v1';
+import { buildModelTestPack } from '../modelTestPack.js?v=20261003-smart-context-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-ownership-guard-v1';
 
 let isRunning = false;
@@ -246,7 +246,19 @@ async function showContextInspectorFromForm(){
     });
     const ctx=pack.inspector || {};
     const chars=(ctx.characters || []).map((item)=>escapeHtml(item.name)).join(', ') || 'Ninguno';
-    const memories=(ctx.memories || []).map((item)=>'<li>'+escapeHtml(item.chapterTitle)+'</li>').join('') || '<li>Ninguna</li>';
+    const memoryReason={
+      'historial completo':'historial corto · se conserva',
+      'fundacional':'ancla fundacional',
+      'fundacional + reciente':'fundacional + reciente',
+      'reciente':'memoria reciente',
+      'relevante':'relevante para esta escena',
+      'cobertura temporal':'cobertura de continuidad'
+    };
+    const memories=(ctx.memories || []).map((item)=>{
+      const score=Number(item.score || 0);
+      const relevance=score>0 ? ' · relevancia '+score.toFixed(2) : '';
+      return '<li><b>'+escapeHtml(item.chapterTitle)+'</b> <span class="muted">· '+escapeHtml(memoryReason[item.reason] || item.reason || 'seleccionada')+escapeHtml(relevance)+'</span></li>';
+    }).join('') || '<li>Ninguna</li>';
     const docs=(ctx.documents || []).map((item)=>'<li><b>'+escapeHtml(item.filename)+'</b> <span class="muted">('+escapeHtml(item.type)+')</span></li>').join('') || '<li>Ninguno</li>';
     const chunks=(ctx.retrievedChunks || []).map((item)=>{
       const raw=String(item.text || '');
@@ -257,10 +269,16 @@ async function showContextInspectorFromForm(){
     const excerpts=(ctx.storyExcerpts || []).map((item)=>{
       const raw=String(item.text || '');
       const snippet=raw.length>650 ? raw.slice(0,649).trimEnd()+'…' : raw;
-      return '<div class="context-snippet"><b>'+escapeHtml(item.chapterTitle)+'</b><div>'+escapeHtml(snippet)+'</div></div>';
+      const score=item.score===null || item.score===undefined ? '' : ' · relevancia '+Number(item.score).toFixed(2);
+      return '<div class="context-snippet"><b>'+escapeHtml(item.chapterTitle)+'</b><span class="muted">'+escapeHtml(score)+'</span><div>'+escapeHtml(snippet)+'</div></div>';
     }).join('') || '<p class="muted">No se recuperaron extractos directos de capítulos anteriores.</p>';
     const locked=(ctx.lockedFacts || []).map((text)=>'<li>'+escapeHtml(text)+'</li>').join('') || '<li>Ninguno</li>';
-    const canon=(ctx.canonNotes || []).map((text)=>'<li>'+escapeHtml(text)+'</li>').join('') || '<li>Ninguno</li>';
+    const canonScores=new Map((ctx.canonRanking || []).map((item)=>[String(item.text || ''),Number(item.score || 0)]));
+    const canon=(ctx.canonNotes || []).map((text)=>{
+      const score=canonScores.get(String(text || '')) || 0;
+      const why=score>0 ? ' · relevancia '+score.toFixed(2) : ' · siempre incluido';
+      return '<li>'+escapeHtml(text)+' <span class="muted">'+escapeHtml(why)+'</span></li>';
+    }).join('') || '<li>Ninguno</li>';
     const previous=ctx.previousEnding
       ? '<pre class="context-prompt">'+escapeHtml(ctx.previousEnding)+'</pre>'
       : '<p class="muted">No hay un final anterior disponible.</p>';
@@ -270,16 +288,17 @@ async function showContextInspectorFromForm(){
       '<div class="card-row context-inspector-head"><div><h3>👀 Context Inspector</h3><div class="muted">Vista previa local. No llama a la IA ni gasta créditos.</div></div><button type="button" class="btn btn-ghost btn-sm" id="w-context-close">Cerrar</button></div>',
       '<div class="context-summary">',
       '<span class="pill pill-character">'+(ctx.characters?.length || 0)+' personajes</span>',
-      '<span class="pill pill-continuity">'+(ctx.memories?.length || 0)+' memorias</span>',
+      '<span class="pill pill-continuity">'+(ctx.memories?.length || 0)+'/'+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+' memorias</span>',
       '<span class="pill pill-canon">'+((ctx.lockedFacts?.length || 0)+(ctx.canonNotes?.length || 0))+' hechos/canon</span>',
       '<span class="pill pill-reference">'+(ctx.retrievedChunks?.length || 0)+' fragmentos</span>',
       '<span class="pill pill-style">≈ '+(ctx.approxInputTokens || 0).toLocaleString('es-CL')+' tokens de entrada</span>',
       '</div>',
       '<p class="context-lead"><b>Personajes cargados:</b> '+chars+'</p>',
+      '<p class="muted">🐾 Smart Context v1 seleccionó '+(ctx.memories?.length || 0)+' de '+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+' memorias de continuidad'+((ctx.memoryOmitted || 0) ? ' y dejó '+ctx.memoryOmitted+' fuera por menor prioridad.' : '. Todo el historial cabe sin recorte.')+' Los hechos bloqueados y el canon permanente siguen entrando completos.</p>',
       '<p class="muted">Proveedor/modelo configurado: '+escapeHtml(ctx.sourceProvider || 'unknown')+' · '+escapeHtml(ctx.sourceModel || '')+'</p>',
       '<details open><summary>📚 Fragmentos recuperados de documentos ('+(ctx.retrievedChunks?.length || 0)+')</summary><div class="context-details-body">'+chunks+'</div></details>',
       '<details><summary>🔎 Recuerdo directo de capítulos ('+(ctx.storyExcerpts?.length || 0)+')</summary><div class="context-details-body">'+excerpts+'</div></details>',
-      '<details><summary>🧠 Memorias de continuidad ('+(ctx.memories?.length || 0)+')</summary><div class="context-details-body"><ul>'+memories+'</ul></div></details>',
+      '<details><summary>🧠 Memorias seleccionadas ('+(ctx.memories?.length || 0)+' de '+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+')</summary><div class="context-details-body"><ul>'+memories+'</ul></div></details>',
       '<details><summary>🔒 Hechos bloqueados ('+(ctx.lockedFacts?.length || 0)+')</summary><div class="context-details-body"><ul>'+locked+'</ul></div></details>',
       '<details><summary>📜 Canon permanente ('+(ctx.canonNotes?.length || 0)+')</summary><div class="context-details-body"><ul>'+canon+'</ul></div></details>',
       '<details><summary>📄 Documentos autorizados ('+(ctx.documents?.length || 0)+')</summary><div class="context-details-body"><ul>'+docs+'</ul></div></details>',
