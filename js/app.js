@@ -90,6 +90,21 @@ async function seedDefaults() {
     await db.put('settings', refreshedSettings);
   }
 
+  // Repair the one legacy character-sheet typo so the automatic room cast
+  // can use the canonical full name without special cases.
+  if(projectId === 'original'){
+    const nameFixId='character-name-fix:original:armin-arlert-v1';
+    if(!(await db.get('settings',nameFixId))){
+      const characters=await db.getAll('characters');
+      const armin=characters.find((character)=>String(character.name || '').trim().toLowerCase()==='armin arlet');
+      if(armin){
+        armin.name='Armin Arlert';
+        await db.put('characters',armin);
+      }
+      await db.put('settings',{id:nameFixId,done:true,createdAt:new Date().toISOString()});
+    }
+  }
+
   // One-time chemistry seed for the author's original Power to Strive workspace.
   // Never overwrite hand-written chemistry and never inject these AU dynamics into
   // a different workspace/story.
