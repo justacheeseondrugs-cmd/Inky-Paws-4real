@@ -55,6 +55,7 @@ function likelyPrivateCanon(canonNotes){
     'todavia no revelado','secreto','secret bargain','what actually happened'
   ];
   return (canonNotes || []).filter((note)=>{
+    if(note?.visibility !== 'revealed') return false;
     const n=normalize(note?.text);
     return markers.some((marker)=>n.includes(normalize(marker)));
   });
@@ -105,10 +106,10 @@ export function analyzeContextGuard({
     issues.push({
       id:'possible-private-canon',
       level:'warning',
-      title:'Canon con información posiblemente aún no revelada',
-      message:'Hay canon permanente que parece contener secretos o hechos futuros. El modelo recibe esa verdad de autor junto al conocimiento de los personajes, así que existe riesgo de filtración accidental.',
+      title:'Canon revelado que parece contener información privada',
+      message:'Una nota marcada como REVELADA contiene lenguaje de secreto/futuro. Revisa si realmente debería ser conocimiento establecido o si corresponde moverla a Canon privado del autor.',
       evidence:privateLike.slice(0,3).map((n)=>String(n.text || '').slice(0,260)),
-      suggestion:'La siguiente mejora recomendada es separar Canon revelado de Canon privado del autor.',
+      suggestion:'Muévela a 🕵️ Canon privado si los personajes todavía no deberían conocer esa información.',
     });
   }
 
