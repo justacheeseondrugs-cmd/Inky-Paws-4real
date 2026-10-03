@@ -152,10 +152,49 @@ export async function buildModelTestPack({
   const userPrompt = generationMode === 'full_chapter'
     ? 'BEGIN AND COMPLETE THE CHAPTER. Write the entire cohesive English novel chapter in this single response, from opening through ending hook. Target approximately ' + targetWords + ' words. Do not stop at an intermediate beat, do not ask to continue, and do not output an outline or commentary.'
     : 'BEGIN CHAPTER. Follow the author scene order and write ONLY the opening block as English novel prose.';
+  const systemPrompt = [promptParts.stablePrompt, promptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
 
   const selectedDocNames = documents.map((d) => d.filename).filter(Boolean);
   const memoryTitles = memoryEntries.slice(-4).map((m) => m.chapterTitle || 'sin título');
   const sourceModel = settings?.models?.[settings?.provider] || '(modelo no guardado)';
+
+  const inspector = {
+    chapterTitle,
+    targetWords,
+    generationMode,
+    sourceProvider: settings?.provider || 'unknown',
+    sourceModel,
+    characters: characters.map((c) => ({ id:c.id, name:c.name || 'Sin nombre' })),
+    memories: memoryEntries.map((m) => ({
+      id:m.id || m.chapterId,
+      chapterId:m.chapterId,
+      chapterTitle:m.chapterTitle || 'sin título',
+    })),
+    lockedFacts: lockedFacts.map((f) => String(f.text || '').trim()).filter(Boolean),
+    canonNotes: canonNotes.map((n) => String(n.text || '').trim()).filter(Boolean),
+    documents: documents.map((d) => ({
+      id:d.id,
+      filename:d.filename || 'Documento',
+      type:d.type || 'REFERENCE',
+      useOnlyFor:d.useOnlyFor || '',
+    })),
+    retrievedChunks: retrievedChunks.map((chunk) => ({
+      documentId:chunk.documentId,
+      filename:chunk.document?.filename || 'Documento',
+      type:chunk.document?.type || 'REFERENCE',
+      text:String(chunk.text || '').trim(),
+      score:Number.isFinite(Number(chunk.score)) ? Number(chunk.score) : null,
+    })),
+    storyExcerpts: storyExcerpts.map((item) => ({
+      chapterId:item.chapterId,
+      chapterTitle:item.chapterTitle || 'capítulo anterior',
+      text:String(item.text || '').trim(),
+    })),
+    previousEnding:String(previousEnding.text || '').trim(),
+    systemPrompt,
+    userPrompt,
+    approxInputTokens:Math.max(1,Math.ceil((systemPrompt.length + userPrompt.length) / 4)),
+  };
 
   const markdown = [
     '# Inky Paws — AI Model Test Pack',
@@ -199,6 +238,7 @@ export async function buildModelTestPack({
 
   return {
     markdown,
+    inspector,
     filename: 'Inky-Paws-Model-Test-' + safeName(chapterTitle) + '.md',
     stats: {
       characters: characters.length,
