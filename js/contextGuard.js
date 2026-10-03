@@ -1,3 +1,5 @@
+import { hasMatchingCharacterSheet } from './characterMatch.js?v=20261003-name-match-v1';
+
 // contextGuard.js — preflight local y explicable antes de gastar API.
 // No intenta "entender" toda la historia: detecta conflictos estructurales
 // que sí podemos verificar de forma determinista con los datos actuales.
@@ -70,8 +72,7 @@ export function analyzeContextGuard({
 }={}){
   const issues=[];
   const allowedNames=splitNames(allowedCast);
-  const localNames=new Set((allCharacters || []).filter((c)=>c?.active !== false).map((c)=>normalize(c.name)));
-  const missingSheets=allowedNames.filter((name)=>!localNames.has(normalize(name)));
+  const missingSheets=allowedNames.filter((name)=>!hasMatchingCharacterSheet(allCharacters,name));
   if(missingSheets.length){
     issues.push({
       id:'missing-character-sheets',
