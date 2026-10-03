@@ -5,24 +5,26 @@ import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-mem
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
 import { buildModelTestPack } from '../modelTestPack.js?v=20261003-room-cast-canon-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-ownership-guard-v1';
-import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js?v=20261003-room-cast-v2';
+import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js?v=20261003-room-cast-v3';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 const docTypeLabel = { CANON:'Canon', CHARACTER:'Personajes', CONTINUITY:'Continuidad', STYLE_ONLY:'Solo estilo', REFERENCE:'Referencia' };
 
 export async function renderWrite(root) {
-  const [settings, active, documents, plannerDraft] = await Promise.all([
+  const [settings, active, documents, plannerDraft, lockedFacts] = await Promise.all([
     db.get('settings','main'), getActiveGenerationState(), db.getAll('documents'),
-    db.get('settings','planner-draft:' + db.getActiveProjectId())
+    db.get('settings','planner-draft:' + db.getActiveProjectId()),
+    db.getAll('lockedFacts')
   ]);
   const hasKey = !!settings?.apiKeys?.[settings.provider];
   const defaultGenerationMode = settings?.defaultGenerationMode || 'full_chapter';
   const docs = documents.filter((d) => d.active !== false).sort((a,b) => (b.priority || 0)-(a.priority || 0));
   const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>').join('');
-  const automaticRoomCast=getAutomaticReactionRoomCast(db.getActiveProjectId(),true);
+  const automaticRoomCast=getAutomaticReactionRoomCast(db.getActiveProjectId(),true,lockedFacts);
+  const autoRoomValue=formatCast(automaticRoomCast);
   const roomCastHtml=automaticRoomCast.length
-    ? '<div class="auto-cast-box"><div class="auto-cast-title">👀 Sala de reacciones · automático</div><div class="auto-cast-pills">'+automaticRoomCast.map((name)=>'<span class="pill pill-character">'+escapeHtml(name)+'</span>').join('')+'</div><p class="scene-guide">Los 13 espectadores se incluyen automáticamente. No tienes que volver a escribirlos 🥳</p></div>'
+    ? '<div class="auto-cast-box"><div class="auto-cast-title">👀 Sala de reacciones · automático</div><div class="auto-cast-pills">'+automaticRoomCast.map((name)=>'<span class="pill pill-character">'+escapeHtml(name)+'</span>').join('')+'</div><p class="scene-guide">Los 13 espectadores se incluyen automáticamente. No tienes que volver a escribirlos 🥳</p><input type="hidden" id="w-auto-room-cast" value="'+escapeHtml(autoRoomValue)+'"></div>'
     : '<label class="field-label" for="w-room-cast">👀 Personajes presentes en la sala / escena principal</label><textarea id="w-room-cast" rows="3" placeholder="Personajes físicamente presentes en la escena principal"></textarea>';
   root.innerHTML = [
     '<h2 class="section-title">Escribir</h2>',
@@ -220,9 +222,10 @@ function showPaper(state){
 
 function readCastFromForm(){
   const reactionMode=!!document.getElementById('w-reactions')?.checked;
-  const automaticRoom=getAutomaticReactionRoomCast(db.getActiveProjectId(),reactionMode);
+  const automaticRoomValue=document.getElementById('w-auto-room-cast')?.value.trim() || '';
+  const automaticRoom=automaticRoomValue ? combineCast(automaticRoomValue) : [];
   const manualRoom=document.getElementById('w-room-cast')?.value.trim() || '';
-  const roomCast=automaticRoom.length ? formatCast(automaticRoom) : (reactionMode ? manualRoom : '');
+  const roomCast=reactionMode ? (automaticRoom.length ? formatCast(automaticRoom) : manualRoom) : '';
   const onscreenCast=document.getElementById('w-onscreen-cast')?.value.trim() || '';
   const allowedCast=formatCast(combineCast(roomCast,onscreenCast));
   return {reactionMode,roomCast,onscreenCast,allowedCast};
