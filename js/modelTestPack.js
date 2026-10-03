@@ -8,6 +8,7 @@ import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js?v=20261003-smart-context-v1';
 import { analyzeContextGuard } from './contextGuard.js?v=20261003-name-match-v1';
 import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v1';
+import { combineCast, formatCast } from './storyCast.js?v=20261003-room-cast-v1';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -23,6 +24,8 @@ function firstRequestGuidance({
   requiredEnding,
   scenePlan,
   allowedCast,
+  roomCast,
+  onscreenCast,
   forbiddenCast,
   reactionMode,
   generationMode,
@@ -39,7 +42,9 @@ function firstRequestGuidance({
       : 'Write only the narrative requested by the author.',
     'References contain background, not a new scene plan. Do not introduce unrelated characters, places or plotlines just because a reference mentions them. The author instructions control the current episode.',
     'Word count is a flexible target, not a reason to end before the author-requested final event. Pace the setup to leave time for the entire climax and cliffhanger.',
-    'ALLOWED NAMED CAST FOR THIS CHAPTER: ' + (allowedCast || '(none)') + '. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them.',
+    reactionMode ? 'REACTION ROOM CAST — physically present viewers: ' + (roomCast || '(not specified)') + '. Keep these people in the room unless an approved event changes the roster.' : '',
+    'ONSCREEN CAST FOR THIS CHAPTER: ' + (onscreenCast || '(none explicitly listed)') + '. These people may appear in the future footage when the plan requires them.',
+    'ALLOWED NAMED CAST ACROSS BOTH SETTINGS: ' + (allowedCast || '(none)') + '. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them. A name being allowed does NOT move that person between the room and the footage.',
     forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: ' + forbiddenCast + '. These names must never appear in the prose.' : '',
     Array.isArray(scenePlan) && scenePlan.length
       ? (fullChapterMode
@@ -62,6 +67,8 @@ export async function buildModelTestPack({
   requiredEnding = '',
   scenePlan = [],
   allowedCast = '',
+  roomCast = '',
+  onscreenCast = '',
   forbiddenCast = '',
   documentIds = [],
   reactionMode = true,
@@ -78,7 +85,8 @@ export async function buildModelTestPack({
     db.getAll('chapters'),
   ]);
 
-  const characters = filterCharactersByAllowedCast(allCharacters,allowedCast);
+  const effectiveAllowedCast = allowedCast || formatCast(combineCast(roomCast,onscreenCast));
+  const characters = filterCharactersByAllowedCast(allCharacters,effectiveAllowedCast);
 
   const activeIds = activeChapterIds(allChapters);
   const allActiveMemoryEntries = allMemoryEntries
@@ -87,7 +95,7 @@ export async function buildModelTestPack({
     .filter((m) => m.chapterId && activeIds.has(m.chapterId));
   const smartQuery = buildSmartContextQuery({
     instructions,
-    allowedCast,
+    allowedCast:effectiveAllowedCast,
     requiredEnding,
     scenePlan,
   });
@@ -138,7 +146,9 @@ export async function buildModelTestPack({
       targetWords,
       requiredEnding,
       scenePlan,
-      allowedCast,
+      allowedCast:effectiveAllowedCast,
+      roomCast,
+      onscreenCast,
       forbiddenCast,
       reactionMode,
       generationMode,
@@ -191,8 +201,13 @@ export async function buildModelTestPack({
     smartQueryTerms:memorySelection.queryTerms,
     memories: memorySelection.details,
     lockedFacts: lockedFacts.map((f) => String(f.text || '').trim()).filter(Boolean),
+    revealedCanonNotes: canonNotes.filter((n)=>n?.visibility === 'revealed').map((n)=>String(n.text || '').trim()).filter(Boolean),
+    privateCanonNotes: canonNotes.filter((n)=>n?.visibility !== 'revealed').map((n)=>String(n.text || '').trim()).filter(Boolean),
     canonNotes: canonNotes.map((n) => String(n.text || '').trim()).filter(Boolean),
     canonRanking,
+    roomCast: roomCast || '',
+    onscreenCast: onscreenCast || '',
+    allowedCast: effectiveAllowedCast,
     documents: documents.map((d) => ({
       id:d.id,
       filename:d.filename || 'Documento',
@@ -231,6 +246,8 @@ export async function buildModelTestPack({
     '- Paws source provider: ' + (settings?.provider || 'unknown'),
     '- Paws source model: ' + sourceModel,
     '- Writing mode: ' + generationMode,
+    '- Reaction-room cast: ' + (roomCast || '(none)'),
+    '- Onscreen cast: ' + (onscreenCast || '(none explicitly listed)'),
     '- Selected character sheets: ' + (characters.map((c) => c.name).join(', ') || '(none)'),
     '- Smart Context v1: ' + memoryEntries.length + ' of ' + memorySelection.total + ' continuity memories selected (' + memorySelection.omitted + ' omitted as lower-priority context)',
     '- Continuity memories included by Paws: ' + (memoryTitles.join(' → ') || '(none)'),
