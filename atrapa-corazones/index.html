@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#ff66a3">
+<meta name="description" content="Atrapa corazones: un mini juego adorable para jugar en el celu.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Corazones">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<title>Atrapa corazones 💕</title>
+<style>
+:root{--pink:#ff4f98;--pink2:#ff8cbc;--ink:#6b2347;--muted:#9e5b79;--glass:rgba(255,255,255,.7);--glass2:rgba(255,255,255,.9);--line:rgba(255,255,255,.75);font-family:ui-rounded,"Arial Rounded MT Bold",system-ui,-apple-system,"Segoe UI",sans-serif}
+@media(prefers-color-scheme:dark){:root{--ink:#ffe8f1;--muted:#efb7ce;--glass:rgba(73,23,52,.7);--glass2:rgba(58,18,43,.9);--line:rgba(255,255,255,.12)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%}body{overflow:hidden;touch-action:none;user-select:none;color:var(--ink);background:radial-gradient(circle at 12% 10%,rgba(255,255,255,.85),transparent 28%),radial-gradient(circle at 88% 20%,rgba(255,255,255,.35),transparent 25%),linear-gradient(160deg,#fff2f8,#ffd1e3 55%,#ffafd0);overscroll-behavior:none}
+@media(prefers-color-scheme:dark){body{background:radial-gradient(circle at 12% 10%,rgba(255,255,255,.08),transparent 28%),linear-gradient(160deg,#24101b,#3f1731 55%,#682347)}}
+.app{height:100%;display:grid;grid-template-rows:auto 1fr;padding:calc(env(safe-area-inset-top) + 10px) calc(env(safe-area-inset-right) + 10px) calc(env(safe-area-inset-bottom) + 9px) calc(env(safe-area-inset-left) + 10px);position:relative}
+.top{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;padding:2px 2px 10px}.pill,.icon,.combo{border:1px solid var(--line);background:var(--glass);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 10px 28px rgba(134,36,78,.13)}.pill{height:46px;border-radius:18px;padding:0 12px;display:flex;align-items:center;gap:8px;font-weight:900}.pill.center{justify-content:center}.pill.right{justify-content:flex-end}.lbl{font-size:.68rem;color:var(--muted);line-height:1}.val{font-size:1.05rem;white-space:nowrap}.stack{display:flex;flex-direction:column;gap:3px}
+.game{min-height:0;position:relative;overflow:hidden;border-radius:30px;border:1px solid rgba(255,255,255,.5);background:linear-gradient(rgba(255,255,255,.2),rgba(255,255,255,.06));box-shadow:0 18px 50px rgba(135,38,80,.18);isolation:isolate}.game:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 20% 16%,rgba(255,255,255,.32) 0 2px,transparent 3px),radial-gradient(circle at 78% 12%,rgba(255,255,255,.3) 0 1.5px,transparent 2.5px),radial-gradient(circle at 34% 58%,rgba(255,255,255,.2) 0 1.5px,transparent 2.5px);background-size:170px 150px,190px 180px,230px 200px;pointer-events:none}canvas{position:absolute;inset:0;width:100%;height:100%;display:block}.controls{position:absolute;z-index:5;top:12px;right:12px;display:flex;gap:8px}.icon{width:42px;height:42px;border-radius:15px;border-width:1px;color:var(--ink);display:grid;place-items:center;font-size:1.05rem}.icon:active,.main:active,.install:active{transform:scale(.96)}.comboWrap{position:absolute;z-index:4;top:14px;left:14px}.combo{border-radius:999px;padding:8px 12px;font-weight:900;opacity:0;transform:translateY(-10px) scale(.9);transition:.18s}.combo.show{opacity:1;transform:none}
+.overlay{position:absolute;z-index:10;inset:0;display:grid;place-items:center;padding:18px;background:linear-gradient(rgba(255,240,247,.08),rgba(80,16,48,.09));transition:.2s}.overlay.hide{opacity:0;visibility:hidden;pointer-events:none}.card{width:min(92vw,370px);padding:25px 22px 20px;border-radius:30px;border:1px solid var(--line);background:var(--glass2);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);box-shadow:0 20px 60px rgba(122,25,67,.22);text-align:center}.tag{display:inline-flex;padding:7px 11px;border-radius:999px;background:rgba(255,79,152,.11);color:var(--pink);font-size:.76rem;font-weight:900;margin-bottom:10px}h1{margin:0;font-size:clamp(1.9rem,8vw,2.6rem);line-height:.98;letter-spacing:-.04em}p{margin:12px auto 15px;max-width:31ch;color:var(--muted);line-height:1.4;font-weight:650}.legend{display:flex;justify-content:center;gap:7px;flex-wrap:wrap;margin:12px 0 18px}.legend span{padding:7px 9px;border-radius:12px;background:rgba(255,255,255,.35);font-size:.8rem;font-weight:850}.main,.install{width:100%;border:0;border-radius:18px;padding:14px 18px;font:inherit;font-weight:950;cursor:pointer}.main{color:#fff;background:linear-gradient(135deg,var(--pink),#ff73ad);box-shadow:0 12px 25px rgba(255,79,152,.28)}.install{margin-top:9px;color:var(--pink);background:rgba(255,79,152,.1);border:1px solid rgba(255,79,152,.18);display:none}.install.show{display:block}.tip{margin-top:11px;font-size:.74rem;color:var(--muted);line-height:1.35}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:15px 0}.box{padding:10px 6px;border-radius:15px;background:rgba(255,255,255,.28)}.box b{display:block;font-size:1.2rem}.box span{font-size:.65rem;font-weight:850;color:var(--muted)}.toast{position:absolute;z-index:20;left:50%;bottom:18px;transform:translate(-50%,18px);opacity:0;background:var(--glass2);border:1px solid var(--line);border-radius:999px;padding:10px 14px;font-size:.78rem;font-weight:900;box-shadow:0 12px 30px rgba(100,20,60,.18);transition:.2s;pointer-events:none;white-space:nowrap}.toast.show{opacity:1;transform:translate(-50%,0)}@media(max-width:360px){.pill{padding:0 9px}.lbl{display:none}.val{font-size:.98rem}.game{border-radius:25px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="pill"><span>💖</span><div class="stack"><span class="lbl">PUNTOS</span><span class="val" id="score">0</span></div></div>
+    <div class="pill center"><div class="stack" style="text-align:center"><span class="lbl">RÉCORD</span><span class="val" id="best">0</span></div></div>
+    <div class="pill right"><div class="stack" style="text-align:right"><span class="lbl">VIDAS</span><span class="val" id="lives">❤️❤️❤️</span></div></div>
+  </div>
+  <div class="game" id="game">
+    <canvas id="c"></canvas>
+    <div class="comboWrap"><div class="combo" id="combo">🔥 x2</div></div>
+    <div class="controls">
+      <button class="icon" id="sound" aria-label="Sonido">🔊</button>
+      <button class="icon" id="pause" aria-label="Pausa">⏸️</button>
+    </div>
+    <div class="overlay" id="overlay">
+      <div class="card">
+        <div class="tag" id="tag">💕 MINI JUEGO</div>
+        <h1 id="title">Atrapa<br>corazones</h1>
+        <p id="msg">Mueve el dedo para llevar la canasta. Atrapa cositas lindas y esquiva los corazones rotos.</p>
+        <div class="legend" id="legend"><span>💖 +1</span><span>🍓 +2</span><span>⭐ +5</span><span>💔 -vida</span></div>
+        <div class="summary" id="summary" hidden><div class="box"><b id="fs">0</b><span>PUNTOS</span></div><div class="box"><b id="fb">0</b><span>RÉCORD</span></div><div class="box"><b id="fg">0</b><span>PARTIDAS</span></div></div>
+        <button class="main" id="play">Jugar 💗</button>
+        <button class="install" id="install">Instalar en mi celu 📲</button>
+        <div class="tip">💝 es raro: da puntos y puede devolverte una vida.</div>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+  </div>
+</div>
+<script>
+(function(){
+var cv=document.getElementById('c'),ctx=cv.getContext('2d'),q=function(id){return document.getElementById(id)};
+var S={W:0,H:0,playing:false,paused:false,score:0,lives:3,best:+localStorage.getItem('ac-best')||0,games:+localStorage.getItem('ac-games')||0,items:[],fx:[],pops:[],bx:0,tx:0,last:0,start:0,spawn:0,combo:1,lastCatch:0,sound:localStorage.getItem('ac-sound')!=='0',deferred:null};
+var audio=null,timer=null;
+q('best').textContent=S.best;
+function resize(){var r=cv.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);S.W=r.width;S.H=r.height;cv.width=Math.round(S.W*d);cv.height=Math.round(S.H*d);ctx.setTransform(d,0,0,d,0,0);if(!S.bx)S.bx=S.tx=S.W/2}
+function hud(){q('score').textContent=S.score;q('best').textContent=Math.max(S.best,S.score);q('lives').textContent='❤️'.repeat(S.lives)+'🤍'.repeat(3-S.lives);q('sound').textContent=S.sound?'🔊':'🔇';q('pause').textContent=S.paused?'▶️':'⏸️'}
+function showToast(t){q('toast').textContent=t;q('toast').classList.add('show');clearTimeout(timer);timer=setTimeout(function(){q('toast').classList.remove('show')},1500)}
+function resetOverlay(){q('tag').textContent='💕 MINI JUEGO';q('title').innerHTML='Atrapa<br>corazones';q('msg').textContent='Mueve el dedo para llevar la canasta. Atrapa cositas lindas y esquiva los corazones rotos.';q('legend').hidden=false;q('summary').hidden=true;q('play').textContent='Jugar 💗'}
+function start(){S.score=0;S.lives=3;S.items=[];S.fx=[];S.pops=[];S.combo=1;S.spawn=0;S.start=performance.now();S.last=S.start;S.playing=true;S.paused=false;q('overlay').classList.add('hide');hud();resumeAudio();requestAnimationFrame(loop)}
+function end(){S.playing=false;S.games++;localStorage.setItem('ac-games',S.games);if(S.score>S.best){S.best=S.score;localStorage.setItem('ac-best',S.best);sound('win')}else sound('end');q('tag').textContent='🎀 PARTIDA TERMINADA';q('title').innerHTML='¡Qué<br>lindo!';q('msg').textContent='Atrapaste '+S.score+' puntos. ¿Otra ronda mientras esperas?';q('legend').hidden=true;q('summary').hidden=false;q('fs').textContent=S.score;q('fb').textContent=S.best;q('fg').textContent=S.games;q('play').textContent='Otra vez 💕';q('overlay').classList.remove('hide');hud()}
+function pause(auto){if(!S.playing||S.paused)return;S.paused=true;q('tag').textContent='⏸️ PAUSITA';q('title').innerHTML='Juego<br>en pausa';q('msg').textContent=auto?'Te lo pausé mientras estabas fuera 💗':'Tu partida está esperándote.';q('legend').hidden=true;q('summary').hidden=true;q('play').textContent='Seguir jugando';q('overlay').classList.remove('hide');hud()}
+function resume(){if(!S.playing||!S.paused)return;S.paused=false;S.last=performance.now();q('overlay').classList.add('hide');hud();requestAnimationFrame(loop)}
+function add(){var r=Math.random(),sec=(performance.now()-S.start)/1000,e='💖',kind='good',pts=1;if(r<Math.min(.26,.16+sec/500)){e='💔';kind='bad';pts=0}else if(r<.31){e='🍓';pts=2}else if(r<.36){e='⭐';pts=5}else if(r>.985){e='💝';kind='gift';pts=8}S.items.push({x:32+Math.random()*(S.W-64),y:-38,v:105+Math.random()*65+sec*2.4,e:e,k:kind,p:pts,ph:Math.random()*6,rot:(Math.random()-.5)*.15})}
+function hit(i,now){i.dead=true;if(i.k==='bad'){S.lives--;S.combo=1;q('combo').classList.remove('show');S.pops.push({x:i.x,y:S.H-90,t:'💔',a:1,b:1});pulse(80);sound('bad');hud();if(S.lives<=0)end();return}var mult=S.combo>=5?3:S.combo>=3?2:1,got=i.p*mult;S.score+=got;if(now-S.lastCatch<1500)S.combo=Math.min(8,S.combo+1);else S.combo=1;S.lastCatch=now;if(S.combo>1){q('combo').textContent='🔥 x'+S.combo;q('combo').classList.add('show')}if(i.k==='gift'&&S.lives<3){S.lives++;S.pops.push({x:i.x,y:S.H-90,t:'+❤️',a:1})}else S.pops.push({x:i.x,y:S.H-90,t:'+'+got,a:1});for(var n=0;n<7;n++)S.fx.push({x:i.x,y:S.H-83,vx:(Math.random()-.5)*100,vy:-30-Math.random()*90,a:1,ch:Math.random()>.5?'✦':'·'});pulse(i.k==='gift'?[30,30,50]:25);sound(i.e==='⭐'||i.k==='gift'?'star':'good');hud()}
+function loop(now){if(!S.playing||S.paused)return;var dt=Math.min(.05,(now-S.last)/1000);S.last=now;S.spawn-=dt;if(S.spawn<=0){add();S.spawn=Math.max(.34,.88-(now-S.start)/95000)}S.bx+=(S.tx-S.bx)*Math.min(1,dt*14);ctx.clearRect(0,0,S.W,S.H);var by=S.H-55;ctx.textAlign='center';ctx.textBaseline='middle';
+for(var a=0;a<S.items.length;a++){var i=S.items[a];i.y+=i.v*dt;var ix=i.x+Math.sin(i.y/42+i.ph)*7;ctx.save();ctx.translate(ix,i.y);ctx.rotate(i.rot);ctx.shadowColor=i.k==='bad'?'rgba(110,25,55,.25)':'rgba(255,70,150,.22)';ctx.shadowBlur=10;ctx.font='36px "Apple Color Emoji","Segoe UI Emoji",sans-serif';ctx.fillText(i.e,0,0);ctx.restore();if(i.y>by-30&&i.y<by+22&&Math.abs(ix-S.bx)<47)hit(i,now);else if(i.y>S.H+45)i.dead=true;if(!S.playing)return}S.items=S.items.filter(function(i){return !i.dead});
+ctx.save();ctx.translate(S.bx,by+Math.sin(now/170)*1.5);ctx.shadowColor='rgba(110,25,65,.2)';ctx.shadowBlur=14;ctx.font='58px "Apple Color Emoji","Segoe UI Emoji",sans-serif';ctx.fillText('🧺',0,0);ctx.restore();
+for(var f=0;f<S.fx.length;f++){var x=S.fx[f];x.x+=x.vx*dt;x.y+=x.vy*dt;x.vy+=100*dt;x.a-=dt*1.5;ctx.save();ctx.globalAlpha=Math.max(0,x.a);ctx.fillStyle='#ff4f98';ctx.font='900 17px system-ui';ctx.fillText(x.ch,x.x,x.y);ctx.restore()}S.fx=S.fx.filter(function(x){return x.a>0});
+for(var p=0;p<S.pops.length;p++){var z=S.pops[p];z.y-=42*dt;z.a-=dt*1.35;ctx.save();ctx.globalAlpha=Math.max(0,z.a);ctx.fillStyle=z.b?'#8b3d61':'#ff3d8f';ctx.font='900 23px system-ui';ctx.fillText(z.t,z.x,z.y);ctx.restore()}S.pops=S.pops.filter(function(z){return z.a>0});
+if(now-S.lastCatch>1700&&S.combo>1){S.combo=1;q('combo').classList.remove('show')}requestAnimationFrame(loop)}
+function move(e){var r=cv.getBoundingClientRect();S.tx=Math.max(34,Math.min(S.W-34,e.clientX-r.left))}
+cv.addEventListener('pointerdown',function(e){move(e);try{cv.setPointerCapture(e.pointerId)}catch(x){}});
+cv.addEventListener('pointermove',move);
+window.addEventListener('keydown',function(e){if(e.key==='ArrowLeft')S.tx=Math.max(34,S.tx-70);if(e.key==='ArrowRight')S.tx=Math.min(S.W-34,S.tx+70);if(e.key===' '||e.key.toLowerCase()==='p'){e.preventDefault();S.paused?resume():pause(false)}});
+q('play').onclick=function(){S.playing&&S.paused?resume():start()};
+q('pause').onclick=function(){S.paused?resume():pause(false)};
+q('sound').onclick=function(){S.sound=!S.sound;localStorage.setItem('ac-sound',S.sound?'1':'0');hud();if(S.sound){resumeAudio();sound('good');showToast('Sonido activado 🎵')}else showToast('Sonido desactivado 🔇')};
+document.addEventListener('visibilitychange',function(){if(document.hidden&&S.playing&&!S.paused)pause(true)});
+window.addEventListener('resize',resize);window.addEventListener('orientationchange',function(){setTimeout(resize,120)});
+window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();S.deferred=e;q('install').classList.add('show')});
+q('install').onclick=async function(){if(!S.deferred){showToast('Menú del navegador → Añadir a pantalla principal 📲');return}S.deferred.prompt();await S.deferred.userChoice;S.deferred=null;q('install').classList.remove('show')};
+window.addEventListener('appinstalled',function(){q('install').classList.remove('show');showToast('¡Instalada! 💕')});
+function pulse(p){try{if(navigator.vibrate)navigator.vibrate(p)}catch(e){}}
+function resumeAudio(){if(!S.sound)return;try{audio=audio||new(window.AudioContext||window.webkitAudioContext)();if(audio.state==='suspended')audio.resume()}catch(e){}}
+function tone(freq,dur,delay){if(!audio||!S.sound)return;var t=audio.currentTime+(delay||0),o=audio.createOscillator(),g=audio.createGain();o.frequency.setValueAtTime(freq,t);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.025,t+.008);g.gain.exponentialRampToValueAtTime(.0001,t+dur);o.connect(g);g.connect(audio.destination);o.start(t);o.stop(t+dur+.02)}
+function sound(k){resumeAudio();if(k==='good'){tone(620,.06,0);tone(820,.07,.045)}else if(k==='star'){tone(760,.06,0);tone(980,.08,.05);tone(1180,.09,.105)}else if(k==='bad')tone(190,.13,0);else if(k==='win'){tone(660,.07,0);tone(880,.08,.06);tone(1100,.12,.12)}else{tone(420,.1,0);tone(320,.14,.08)}}
+if('serviceWorker'in navigator&&location.protocol.indexOf('http')===0)window.addEventListener('load',function(){navigator.serviceWorker.register('./sw.js').catch(function(){})});
+resetOverlay();hud();resize();
+})();
+</script>
+</body>
+</html>
