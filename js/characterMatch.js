@@ -25,6 +25,15 @@ export function characterNameMatches(characterName, requestedName){
   if(!full || !requested) return false;
   if(full===requested) return true;
 
+  // Legacy typo kept in some local databases from older Inky builds.
+  // Treat it as the same canonical Attack on Titan character so old data
+  // cannot silently drop Armin from an automatic reaction-room cast.
+  const legacyAliases = new Map([
+    ['armin arlet','armin arlert'],
+    ['armin arlert','armin arlet'],
+  ]);
+  if(legacyAliases.get(full) === requested || legacyAliases.get(requested) === full) return true;
+
   const fullParts=full.split(' ');
   const requestedParts=requested.split(' ');
 
