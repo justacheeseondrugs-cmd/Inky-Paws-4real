@@ -291,11 +291,15 @@ async function showContextInspectorFromForm(){
     }).join('') || '<p class="muted">No se recuperaron extractos directos de capítulos anteriores.</p>';
     const locked=(ctx.lockedFacts || []).map((text)=>'<li>'+escapeHtml(text)+'</li>').join('') || '<li>Ninguno</li>';
     const canonScores=new Map((ctx.canonRanking || []).map((item)=>[String(item.text || ''),Number(item.score || 0)]));
-    const canon=(ctx.canonNotes || []).map((text)=>{
+    const renderCanonList=(items,mode)=>(items || []).map((text)=>{
       const score=canonScores.get(String(text || '')) || 0;
-      const why=score>0 ? ' · relevancia '+score.toFixed(2) : ' · siempre incluido';
+      const why=mode==='private'
+        ? (score>0 ? ' · verdad privada · relevancia '+score.toFixed(2) : ' · verdad privada')
+        : (score>0 ? ' · revelado · relevancia '+score.toFixed(2) : ' · revelado');
       return '<li>'+escapeHtml(text)+' <span class="muted">'+escapeHtml(why)+'</span></li>';
     }).join('') || '<li>Ninguno</li>';
+    const revealedCanon=renderCanonList(ctx.revealedCanonNotes,'revealed');
+    const privateCanon=renderCanonList(ctx.privateCanonNotes,'private');
     const previous=ctx.previousEnding
       ? '<pre class="context-prompt">'+escapeHtml(ctx.previousEnding)+'</pre>'
       : '<p class="muted">No hay un final anterior disponible.</p>';
@@ -323,14 +327,17 @@ async function showContextInspectorFromForm(){
       '<span class="pill pill-style">≈ '+(ctx.approxInputTokens || 0).toLocaleString('es-CL')+' tokens de entrada</span>',
       '</div>',
       '<details open><summary>🛡️ Context Guard · revisión antes de generar</summary><div class="context-details-body">'+preflightHtml+'</div></details>',
+      '<p class="context-lead"><b>👀 Sala de reacciones:</b> '+escapeHtml(ctx.roomCast || '(sin reparto automático)')+'</p>',
+      '<p class="context-lead"><b>🎬 Onscreen:</b> '+escapeHtml(ctx.onscreenCast || '(ninguno anotado)')+'</p>',
       '<p class="context-lead"><b>Personajes cargados:</b> '+chars+'</p>',
-      '<p class="muted">🐾 Smart Context v1 seleccionó '+(ctx.memories?.length || 0)+' de '+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+' memorias de continuidad'+((ctx.memoryOmitted || 0) ? ' y dejó '+ctx.memoryOmitted+' fuera por menor prioridad.' : '. Todo el historial cabe sin recorte.')+' Los hechos bloqueados y el canon permanente siguen entrando completos.</p>',
+      '<p class="muted">🐾 Smart Context v1 seleccionó '+(ctx.memories?.length || 0)+' de '+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+' memorias de continuidad'+((ctx.memoryOmitted || 0) ? ' y dejó '+ctx.memoryOmitted+' fuera por menor prioridad.' : '. Todo el historial cabe sin recorte.')+' El canon revelado y privado se mantienen separados en el prompt.</p>',
       '<p class="muted">Proveedor/modelo configurado: '+escapeHtml(ctx.sourceProvider || 'unknown')+' · '+escapeHtml(ctx.sourceModel || '')+'</p>',
       '<details open><summary>📚 Fragmentos recuperados de documentos ('+(ctx.retrievedChunks?.length || 0)+')</summary><div class="context-details-body">'+chunks+'</div></details>',
       '<details><summary>🔎 Recuerdo directo de capítulos ('+(ctx.storyExcerpts?.length || 0)+')</summary><div class="context-details-body">'+excerpts+'</div></details>',
       '<details><summary>🧠 Memorias seleccionadas ('+(ctx.memories?.length || 0)+' de '+(ctx.memoryTotal ?? ctx.memories?.length ?? 0)+')</summary><div class="context-details-body"><ul>'+memories+'</ul></div></details>',
       '<details><summary>🔒 Hechos bloqueados ('+(ctx.lockedFacts?.length || 0)+')</summary><div class="context-details-body"><ul>'+locked+'</ul></div></details>',
-      '<details><summary>📜 Canon permanente ('+(ctx.canonNotes?.length || 0)+')</summary><div class="context-details-body"><ul>'+canon+'</ul></div></details>',
+      '<details><summary>📖 Canon revelado ('+(ctx.revealedCanonNotes?.length || 0)+')</summary><div class="context-details-body"><ul>'+revealedCanon+'</ul></div></details>',
+      '<details><summary>🕵️ Canon privado del autor ('+(ctx.privateCanonNotes?.length || 0)+')</summary><div class="context-details-body"><ul>'+privateCanon+'</ul></div></details>',
       '<details><summary>📄 Documentos autorizados ('+(ctx.documents?.length || 0)+')</summary><div class="context-details-body"><ul>'+docs+'</ul></div></details>',
       '<details><summary>📖 Final del capítulo anterior</summary><div class="context-details-body">'+previous+'</div></details>',
       '<details><summary>🧾 Prompt completo</summary><div class="context-details-body"><div class="muted">System prompt</div><pre class="context-prompt">'+escapeHtml(ctx.systemPrompt || '')+'</pre><div class="muted">User prompt</div><pre class="context-prompt">'+escapeHtml(ctx.userPrompt || '')+'</pre></div></details>',
