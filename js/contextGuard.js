@@ -1,4 +1,4 @@
-import { hasMatchingCharacterSheet } from './characterMatch.js?v=20261003-name-match-v1';
+import { hasMatchingCharacterSheet } from './characterMatch.js?v=20261003-name-match-v2';
 
 // contextGuard.js — preflight local y explicable antes de gastar API.
 // No intenta "entender" toda la historia: detecta conflictos estructurales
@@ -66,6 +66,7 @@ export function analyzeContextGuard({
   canonNotes=[],
   allCharacters=[],
   allowedCast='',
+  onscreenCast='',
   instructions='',
   scenePlan=[],
   reactionMode=true,
@@ -85,6 +86,18 @@ export function analyzeContextGuard({
   }
 
   if(reactionMode){
+    const sourceText=normalize([instructions,...(Array.isArray(scenePlan)?scenePlan:[])].filter(Boolean).join('\n'));
+    const explicitlyMentionsScreen=['onscreen','on screen','future footage','episode','pantalla','metraje'].some((term)=>sourceText.includes(normalize(term)));
+    if(explicitlyMentionsScreen && !String(onscreenCast || '').trim()){
+      issues.push({
+        id:'onscreen-cast-empty',
+        level:'info',
+        title:'Reparto onscreen sin especificar',
+        message:'Las instrucciones hablan de la pantalla/episodio, pero el reparto ONSCREEN está vacío. Inky no adivina automáticamente ubicaciones para evitar mover personajes al espacio equivocado.',
+        suggestion:'Anota sólo quienes aparecen físicamente en el episodio de este capítulo (por ejemplo: Levi, Joseph, Anya).',
+      });
+    }
+
     const excluded=extractReactionRoomExclusions(lockedFacts);
     for(const name of excluded){
       const evidence=locationConflictFor(name,instructions,scenePlan);
