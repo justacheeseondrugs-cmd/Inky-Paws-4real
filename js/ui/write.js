@@ -3,7 +3,7 @@ import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '.
 import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding, polishPendingBlock } from '../generation.js?v=20260928-ownership-guard-v1';
 import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-memory-v1';
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
-import { buildModelTestPack } from '../modelTestPack.js?v=20260928-author-brain-v1';
+import { buildModelTestPack } from '../modelTestPack.js?v=20261003-context-inspector-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-ownership-guard-v1';
 
 let isRunning = false;
@@ -46,7 +46,8 @@ export async function renderWrite(root) {
     '<div class="grid-2"><div><label class="field-label" for="w-words">Extensión orientativa</label><select id="w-words"><option value="3000">3.000 palabras</option><option value="5000" selected>5.000 palabras</option><option value="7000">7.000 palabras</option></select></div>',
     '<div><label class="field-label" for="w-generation-mode">Modo de escritura</label><select id="w-generation-mode"><option value="full_chapter" '+(defaultGenerationMode === 'full_chapter' ? 'selected' : '')+'>📖 Capítulo completo · una sola llamada</option><option value="blocks" '+(defaultGenerationMode === 'blocks' ? 'selected' : '')+'>🧩 Por bloques · revisar paso a paso</option></select></div></div>',
     '<p class="scene-guide" id="w-mode-help">'+(defaultGenerationMode === 'full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.')+'</p>',
-    '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Escribir</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button><button class="btn btn-ghost" id="w-export-test-pack-btn">🧪 Exportar pack para otro modelo</button></div><p class="scene-guide">«Add an ending» da al primer tramo un cierre natural. «Exportar pack» NO usa API ni créditos: descarga el lore/contexto que Paws usaría para este capítulo.</p></div>',
+    '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Escribir</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button><button class="btn btn-ghost" id="w-context-inspector-btn">👀 Ver contexto</button><button class="btn btn-ghost" id="w-export-test-pack-btn">🧪 Exportar pack</button></div><p class="scene-guide">«Ver contexto» muestra qué sabe Inky antes de escribir y NO usa API ni créditos. «Exportar pack» descarga ese contexto en Markdown.</p></div>',
+    '<div id="w-context-inspector-slot"></div>',
     '<div class="card paper" id="w-paper-card" style="display:none"><div class="paper-title" id="w-paper-title"></div><div class="muted" id="w-paper-meta"></div><div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="w-copy-chapter-btn">📋 Copiar capítulo</button></div><hr><div class="paper-readonly manuscript-rendered" id="w-paper-text"></div></div>'
   ].join('');
   // An explicitly chosen brainstorm suggestion is only a draft: the author
@@ -59,6 +60,7 @@ export async function renderWrite(root) {
   document.getElementById('w-generation-mode')?.addEventListener('change',(e)=>{ const help=document.getElementById('w-mode-help'); if(help) help.textContent=e.target.value==='full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.'; });
   document.getElementById('w-generate-btn')?.addEventListener('click',()=>onGenerateClick('continue'));
   document.getElementById('w-generate-ending-btn')?.addEventListener('click',()=>onGenerateClick('ending'));
+  document.getElementById('w-context-inspector-btn')?.addEventListener('click',showContextInspectorFromForm);
   document.getElementById('w-export-test-pack-btn')?.addEventListener('click',exportModelTestPackFromForm);
   if(active){ renderBanner(active); showPaper(active); }
 }
@@ -207,6 +209,95 @@ function showPaper(state){
         toast('Capítulo copiado al portapapeles.');
       }catch(err){toast(err.message || 'No se pudo copiar el capítulo.',{error:true});}
     };
+  }
+}
+
+async function showContextInspectorFromForm(){
+  const title=document.getElementById('w-title')?.value.trim() || '';
+  const instructions=document.getElementById('w-instructions')?.value.trim() || '';
+  const targetWords=Number(document.getElementById('w-words')?.value || 5000);
+  const generationMode=document.getElementById('w-generation-mode')?.value || 'full_chapter';
+  const requiredEnding=document.getElementById('w-ending')?.value.trim() || '';
+  const scenePlan=lines(document.getElementById('w-scenes')?.value || '');
+  const allowedCast=document.getElementById('w-cast')?.value.trim() || '';
+  const forbiddenCast=document.getElementById('w-forbidden')?.value.trim() || '';
+  const reactionMode=!!document.getElementById('w-reactions')?.checked;
+  const documentIds=Array.from(document.querySelectorAll('.w-doc:checked')).map((el)=>el.value);
+
+  if(!title || !instructions)return toast('Escribe título e instrucciones antes de revisar el contexto.',{error:true});
+  if(!allowedCast)return toast('Indica el reparto autorizado para ver las fichas que Inky cargará.',{error:true,ms:6500});
+
+  const btn=document.getElementById('w-context-inspector-btn');
+  const slot=document.getElementById('w-context-inspector-slot');
+  if(!slot)return;
+  if(btn){btn.disabled=true;btn.textContent='👀 Preparando…';}
+  try{
+    const pack=await buildModelTestPack({
+      chapterTitle:title,
+      instructions,
+      targetWords,
+      requiredEnding,
+      scenePlan,
+      allowedCast,
+      forbiddenCast,
+      documentIds,
+      reactionMode,
+      generationMode,
+    });
+    const ctx=pack.inspector || {};
+    const chars=(ctx.characters || []).map((item)=>escapeHtml(item.name)).join(', ') || 'Ninguno';
+    const memories=(ctx.memories || []).map((item)=>'<li>'+escapeHtml(item.chapterTitle)+'</li>').join('') || '<li>Ninguna</li>';
+    const docs=(ctx.documents || []).map((item)=>'<li><b>'+escapeHtml(item.filename)+'</b> <span class="muted">('+escapeHtml(item.type)+')</span></li>').join('') || '<li>Ninguno</li>';
+    const chunks=(ctx.retrievedChunks || []).map((item)=>{
+      const raw=String(item.text || '');
+      const snippet=raw.length>750 ? raw.slice(0,749).trimEnd()+'…' : raw;
+      const score=item.score===null || item.score===undefined ? '' : ' · relevancia '+Number(item.score).toFixed(2);
+      return '<div class="context-snippet"><b>'+escapeHtml(item.filename)+'</b><span class="muted">'+escapeHtml(score)+'</span><div>'+escapeHtml(snippet)+'</div></div>';
+    }).join('') || '<p class="muted">No se recuperó ningún fragmento.</p>';
+    const excerpts=(ctx.storyExcerpts || []).map((item)=>{
+      const raw=String(item.text || '');
+      const snippet=raw.length>650 ? raw.slice(0,649).trimEnd()+'…' : raw;
+      return '<div class="context-snippet"><b>'+escapeHtml(item.chapterTitle)+'</b><div>'+escapeHtml(snippet)+'</div></div>';
+    }).join('') || '<p class="muted">No se recuperaron extractos directos de capítulos anteriores.</p>';
+    const locked=(ctx.lockedFacts || []).map((text)=>'<li>'+escapeHtml(text)+'</li>').join('') || '<li>Ninguno</li>';
+    const canon=(ctx.canonNotes || []).map((text)=>'<li>'+escapeHtml(text)+'</li>').join('') || '<li>Ninguno</li>';
+    const previous=ctx.previousEnding
+      ? '<pre class="context-prompt">'+escapeHtml(ctx.previousEnding)+'</pre>'
+      : '<p class="muted">No hay un final anterior disponible.</p>';
+
+    slot.innerHTML=[
+      '<div class="card context-inspector" id="w-context-inspector">',
+      '<div class="card-row context-inspector-head"><div><h3>👀 Context Inspector</h3><div class="muted">Vista previa local. No llama a la IA ni gasta créditos.</div></div><button type="button" class="btn btn-ghost btn-sm" id="w-context-close">Cerrar</button></div>',
+      '<div class="context-summary">',
+      '<span class="pill pill-character">'+(ctx.characters?.length || 0)+' personajes</span>',
+      '<span class="pill pill-continuity">'+(ctx.memories?.length || 0)+' memorias</span>',
+      '<span class="pill pill-canon">'+((ctx.lockedFacts?.length || 0)+(ctx.canonNotes?.length || 0))+' hechos/canon</span>',
+      '<span class="pill pill-reference">'+(ctx.retrievedChunks?.length || 0)+' fragmentos</span>',
+      '<span class="pill pill-style">≈ '+(ctx.approxInputTokens || 0).toLocaleString('es-CL')+' tokens de entrada</span>',
+      '</div>',
+      '<p class="context-lead"><b>Personajes cargados:</b> '+chars+'</p>',
+      '<p class="muted">Proveedor/modelo configurado: '+escapeHtml(ctx.sourceProvider || 'unknown')+' · '+escapeHtml(ctx.sourceModel || '')+'</p>',
+      '<details open><summary>📚 Fragmentos recuperados de documentos ('+(ctx.retrievedChunks?.length || 0)+')</summary><div class="context-details-body">'+chunks+'</div></details>',
+      '<details><summary>🔎 Recuerdo directo de capítulos ('+(ctx.storyExcerpts?.length || 0)+')</summary><div class="context-details-body">'+excerpts+'</div></details>',
+      '<details><summary>🧠 Memorias de continuidad ('+(ctx.memories?.length || 0)+')</summary><div class="context-details-body"><ul>'+memories+'</ul></div></details>',
+      '<details><summary>🔒 Hechos bloqueados ('+(ctx.lockedFacts?.length || 0)+')</summary><div class="context-details-body"><ul>'+locked+'</ul></div></details>',
+      '<details><summary>📜 Canon permanente ('+(ctx.canonNotes?.length || 0)+')</summary><div class="context-details-body"><ul>'+canon+'</ul></div></details>',
+      '<details><summary>📄 Documentos autorizados ('+(ctx.documents?.length || 0)+')</summary><div class="context-details-body"><ul>'+docs+'</ul></div></details>',
+      '<details><summary>📖 Final del capítulo anterior</summary><div class="context-details-body">'+previous+'</div></details>',
+      '<details><summary>🧾 Prompt completo</summary><div class="context-details-body"><div class="muted">System prompt</div><pre class="context-prompt">'+escapeHtml(ctx.systemPrompt || '')+'</pre><div class="muted">User prompt</div><pre class="context-prompt">'+escapeHtml(ctx.userPrompt || '')+'</pre></div></details>',
+      '<div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="w-context-copy">📋 Copiar reporte</button></div>',
+      '</div>'
+    ].join('');
+    document.getElementById('w-context-close')?.addEventListener('click',()=>{slot.innerHTML='';});
+    document.getElementById('w-context-copy')?.addEventListener('click',async()=>{
+      try{await copyTextToClipboard(pack.markdown);toast('Contexto copiado al portapapeles.');}
+      catch(err){toast(err.message || 'No se pudo copiar el contexto.',{error:true});}
+    });
+    slot.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(err){
+    toast('No se pudo preparar el contexto: '+(err.message || err),{error:true,ms:9000});
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='👀 Ver contexto';}
   }
 }
 
