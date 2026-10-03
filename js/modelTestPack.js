@@ -5,6 +5,7 @@ import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928-ownership-guard-v1';
+import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js?v=20261003-smart-context-v1';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -79,20 +80,27 @@ export async function buildModelTestPack({
   const characters = allCharacters.filter((c) => permittedNames.includes(String(c.name || '').trim().toLowerCase()) && c.active !== false);
 
   const activeIds = activeChapterIds(allChapters);
-  const memoryEntries = allMemoryEntries
+  const allActiveMemoryEntries = allMemoryEntries
     .slice()
     .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
     .filter((m) => m.chapterId && activeIds.has(m.chapterId));
+  const smartQuery = buildSmartContextQuery({
+    instructions,
+    allowedCast,
+    requiredEnding,
+    scenePlan,
+  });
+  const memorySelection = selectSmartMemories(allActiveMemoryEntries,smartQuery);
+  const memoryEntries = memorySelection.selected;
+  const canonRanking = rankCanonNotes(canonNotes,smartQuery);
 
   const mainChapters = allChapters
     .filter((chapter) => activeIds.has(chapter.id) && String(chapter.content || '').trim())
     .slice()
     .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const continuityQuery = [
-    instructions,
-    allowedCast,
-    requiredEnding,
-    Array.isArray(scenePlan) ? scenePlan.join(' ') : '',
+    smartQuery,
+    canonQueryBoost(canonNotes,smartQuery),
     memoryEntries.slice(-2).map((m) => [m.events,m.openThreads,m.whoKnowsWhat].filter(Boolean).join(' ')).join(' ')
   ].filter(Boolean).join(' ');
   const storyExcerpts = getRelevantStoryExcerpts(mainChapters, continuityQuery, {
@@ -102,7 +110,7 @@ export async function buildModelTestPack({
   const previousEnding = getPreviousChapterEnding(mainChapters, '', 4200);
 
   const documents = allDocuments.filter((d) => Array.isArray(documentIds) ? documentIds.includes(d.id) : true);
-  const queryText = [instructions, allowedCast, memoryEntries.slice(-2).map((m) => m.events).join(' ')].join(' ');
+  const queryText = continuityQuery;
   const safeDocuments = documents.filter((d) => d.type !== 'STYLE_ONLY');
   const retrievedChunks = getRelevantChunks(safeDocuments, allChunks, queryText, { context: 'chapter_generation' });
 
@@ -165,13 +173,14 @@ export async function buildModelTestPack({
     sourceProvider: settings?.provider || 'unknown',
     sourceModel,
     characters: characters.map((c) => ({ id:c.id, name:c.name || 'Sin nombre' })),
-    memories: memoryEntries.map((m) => ({
-      id:m.id || m.chapterId,
-      chapterId:m.chapterId,
-      chapterTitle:m.chapterTitle || 'sin título',
-    })),
+    smartContextVersion:'v1',
+    memoryTotal:memorySelection.total,
+    memoryOmitted:memorySelection.omitted,
+    smartQueryTerms:memorySelection.queryTerms,
+    memories: memorySelection.details,
     lockedFacts: lockedFacts.map((f) => String(f.text || '').trim()).filter(Boolean),
     canonNotes: canonNotes.map((n) => String(n.text || '').trim()).filter(Boolean),
+    canonRanking,
     documents: documents.map((d) => ({
       id:d.id,
       filename:d.filename || 'Documento',
@@ -189,6 +198,7 @@ export async function buildModelTestPack({
       chapterId:item.chapterId,
       chapterTitle:item.chapterTitle || 'capítulo anterior',
       text:String(item.text || '').trim(),
+      score:Number.isFinite(Number(item.score)) ? Number(item.score) : null,
     })),
     previousEnding:String(previousEnding.text || '').trim(),
     systemPrompt,
@@ -210,6 +220,7 @@ export async function buildModelTestPack({
     '- Paws source model: ' + sourceModel,
     '- Writing mode: ' + generationMode,
     '- Selected character sheets: ' + (characters.map((c) => c.name).join(', ') || '(none)'),
+    '- Smart Context v1: ' + memoryEntries.length + ' of ' + memorySelection.total + ' continuity memories selected (' + memorySelection.omitted + ' omitted as lower-priority context)',
     '- Continuity memories included by Paws: ' + (memoryTitles.join(' → ') || '(none)'),
     '- Selected documents: ' + (selectedDocNames.join(', ') || '(none)'),
     '- Direct prior-chapter excerpts recalled: ' + storyExcerpts.length,
