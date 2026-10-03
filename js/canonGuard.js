@@ -80,8 +80,23 @@ function sampleEvenly(items, maxItems = 18) {
 
 export function buildContinuityBlock(memoryEntries, canonNotes, recentChapterExcerpt, storyExcerpts = []) {
   const blocks = [];
-  if (canonNotes?.length) {
-    blocks.push('📜 CANON PERMANENTE:\n' + canonNotes.map((n) => `- ${n.text}`).join('\n'));
+  const revealedCanon = (canonNotes || []).filter((n) => n?.visibility === 'revealed');
+  const privateCanon = (canonNotes || []).filter((n) => n?.visibility !== 'revealed');
+
+  if (revealedCanon.length) {
+    blocks.push(
+      '📖 CANON REVELADO / ESTABLECIDO:\n' +
+      'Estos hechos ya pueden tratarse como información establecida por la historia. Aun así, respeta los límites de conocimiento individuales de cada personaje cuando una ficha o memoria diga algo más específico.\n' +
+      revealedCanon.map((n) => `- ${n.text}`).join('\n')
+    );
+  }
+
+  if (privateCanon.length) {
+    blocks.push(
+      '🕵️ CANON PRIVADO DEL AUTOR — VERDAD DEL AU, NO CONOCIMIENTO AUTOMÁTICO DE LOS PERSONAJES:\n' +
+      'Usa esta sección para mantener coherente la verdad subyacente de la historia, el narrador y las consecuencias futuras. NUNCA permitas que un personaje conozca, afirme, revele, recuerde o deduzca un dato sólo porque aparece aquí. Para saber qué conoce cada personaje, usa sus fichas y, sobre todo, la continuidad de capítulos aprobados. Si esta sección contiene redacción antigua que contradice un HECHO BLOQUEADO, el hecho bloqueado gana siempre; conserva sólo la verdad narrativa compatible y no copies la redacción obsoleta.\n' +
+      privateCanon.map((n) => `- ${n.text}`).join('\n')
+    );
   }
 
   if (memoryEntries?.length) {
@@ -177,7 +192,7 @@ export function assembleSystemPromptParts({
   extraGuidance,
 }) {
   const stableSections = [
-    'Eres la IA de escritura de "Power to Strive Studio", una herramienta personal de fanfiction largo. Sigue estrictamente el siguiente orden de prioridad si hay algún conflicto entre secciones: (1) Hechos bloqueados, (2) instrucciones del capítulo actual, (3) fichas de personaje, (4) memoria de continuidad, (5) documentos de referencia.',
+    'Eres la IA de escritura de "Power to Strive Studio", una herramienta personal de fanfiction largo. Sigue estrictamente el siguiente orden de prioridad si hay algún conflicto entre secciones: (1) Hechos bloqueados, (2) instrucciones del capítulo actual, (3) fichas de personaje y sus límites de conocimiento, (4) continuidad de capítulos aprobados / canon revelado, (5) canon privado del autor sólo como verdad subyacente, (6) documentos de referencia.',
     buildLockedFactsBlock(lockedFacts),
     chapterInstructions ? `✍️ INSTRUCCIONES DEL CAPÍTULO ACTUAL:\n${chapterInstructions}` : '',
     buildCharacterBlock(characters),
