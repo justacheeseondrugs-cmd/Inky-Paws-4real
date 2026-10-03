@@ -13,7 +13,7 @@ export const POWER_TO_STRIVE_ROOM_CAST = [
   'Connie Springer',
   'Jean Kirstein',
   'Mikasa Ackerman',
-  'Armin Arlet',
+  'Armin Arlert',
   'Eren Yeager',
 ];
 
