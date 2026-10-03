@@ -5,6 +5,7 @@ import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-mem
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
 import { buildModelTestPack } from '../modelTestPack.js?v=20261003-name-match-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-ownership-guard-v1';
+import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js?v=20261003-room-cast-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -19,6 +20,10 @@ export async function renderWrite(root) {
   const defaultGenerationMode = settings?.defaultGenerationMode || 'full_chapter';
   const docs = documents.filter((d) => d.active !== false).sort((a,b) => (b.priority || 0)-(a.priority || 0));
   const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>').join('');
+  const automaticRoomCast=getAutomaticReactionRoomCast(db.getActiveProjectId(),true);
+  const roomCastHtml=automaticRoomCast.length
+    ? '<div class="auto-cast-box"><div class="auto-cast-title">👀 Sala de reacciones · automático</div><div class="auto-cast-pills">'+automaticRoomCast.map((name)=>'<span class="pill pill-character">'+escapeHtml(name)+'</span>').join('')+'</div><p class="scene-guide">Los 13 espectadores se incluyen automáticamente. No tienes que volver a escribirlos 🥳</p></div>'
+    : '<label class="field-label" for="w-room-cast">👀 Personajes presentes en la sala / escena principal</label><textarea id="w-room-cast" rows="3" placeholder="Personajes físicamente presentes en la escena principal"></textarea>';
   root.innerHTML = [
     '<h2 class="section-title">Escribir</h2>',
     '<p class="section-hint">Planifica el capítulo y aprueba cada bloque antes de que la IA continúe. Los bloques descartados NO pasan al capítulo.</p>',
@@ -31,9 +36,10 @@ export async function renderWrite(root) {
     '<label class="field-label" for="w-scenes">🎬 Plan de escenas, una por línea (en orden)</label>',
     '<textarea id="w-scenes" rows="5" placeholder="Viaje a la capital&#10;Conversaciones en la plaza y reacciones&#10;Anya aparece en el perro&#10;Anya llega a Erwin, habla y se corta el episodio"></textarea>',
     '<p class="scene-guide">Inky pesa los beats automáticamente. Si quieres control extra, puedes prefijar una línea con <code>[BOMB]</code>, <code>[BRIDGE]</code>, <code>[TEXTURE]</code> o <code>[HOOK]</code>.</p>',
-    '<label class="field-label" for="w-cast">👥 Reparto permitido en este capítulo (obligatorio)</label>',
-    '<textarea id="w-cast" rows="3" placeholder="Levi, Joseph, Erwin, Eren, Anya, Hange, Mike, Petra, Jean, Connie, Sasha, Armin, Ymir, Historia, Mikasa, Candy, Zackly"></textarea>',
-    '<p class="scene-guide">Se enviarán fichas solo de estos nombres. Los extras sin nombre siguen permitidos si la trama los necesita.</p>',
+    roomCastHtml,
+    '<label class="field-label" for="w-onscreen-cast">🎬 Personajes que aparecen ONSCREEN en este capítulo</label>',
+    '<textarea id="w-onscreen-cast" rows="2" placeholder="Ej: Levi, Joseph, Anya"></textarea>',
+    '<p class="scene-guide">Aquí sólo anota quién aparece en el episodio/pantalla. Inky combina esto con la sala automática para cargar las fichas necesarias, pero mantiene ambos espacios separados.</p>',
     '<label class="field-label" for="w-forbidden">🚫 Personajes prohibidos (opcional)</label>',
     '<input id="w-forbidden" type="text" placeholder="Kael, Luciana">',
     '<p class="scene-guide">Si aparece uno de estos nombres en un bloque, no se incorporará al capítulo.</p>',
@@ -212,6 +218,16 @@ function showPaper(state){
   }
 }
 
+function readCastFromForm(){
+  const reactionMode=!!document.getElementById('w-reactions')?.checked;
+  const automaticRoom=getAutomaticReactionRoomCast(db.getActiveProjectId(),reactionMode);
+  const manualRoom=document.getElementById('w-room-cast')?.value.trim() || '';
+  const roomCast=automaticRoom.length ? formatCast(automaticRoom) : (reactionMode ? manualRoom : '');
+  const onscreenCast=document.getElementById('w-onscreen-cast')?.value.trim() || '';
+  const allowedCast=formatCast(combineCast(roomCast,onscreenCast));
+  return {reactionMode,roomCast,onscreenCast,allowedCast};
+}
+
 async function showContextInspectorFromForm(){
   const title=document.getElementById('w-title')?.value.trim() || '';
   const instructions=document.getElementById('w-instructions')?.value.trim() || '';
@@ -219,9 +235,8 @@ async function showContextInspectorFromForm(){
   const generationMode=document.getElementById('w-generation-mode')?.value || 'full_chapter';
   const requiredEnding=document.getElementById('w-ending')?.value.trim() || '';
   const scenePlan=lines(document.getElementById('w-scenes')?.value || '');
-  const allowedCast=document.getElementById('w-cast')?.value.trim() || '';
+  const {reactionMode,roomCast,onscreenCast,allowedCast}=readCastFromForm();
   const forbiddenCast=document.getElementById('w-forbidden')?.value.trim() || '';
-  const reactionMode=!!document.getElementById('w-reactions')?.checked;
   const documentIds=Array.from(document.querySelectorAll('.w-doc:checked')).map((el)=>el.value);
 
   if(!title || !instructions)return toast('Escribe título e instrucciones antes de revisar el contexto.',{error:true});
@@ -239,6 +254,8 @@ async function showContextInspectorFromForm(){
       requiredEnding,
       scenePlan,
       allowedCast,
+      roomCast,
+      onscreenCast,
       forbiddenCast,
       documentIds,
       reactionMode,
@@ -340,9 +357,8 @@ async function exportModelTestPackFromForm(){
   const generationMode=document.getElementById('w-generation-mode')?.value || 'full_chapter';
   const requiredEnding=document.getElementById('w-ending')?.value.trim() || '';
   const scenePlan=lines(document.getElementById('w-scenes')?.value || '');
-  const allowedCast=document.getElementById('w-cast')?.value.trim() || '';
+  const {reactionMode,roomCast,onscreenCast,allowedCast}=readCastFromForm();
   const forbiddenCast=document.getElementById('w-forbidden')?.value.trim() || '';
-  const reactionMode=!!document.getElementById('w-reactions')?.checked;
   const documentIds=Array.from(document.querySelectorAll('.w-doc:checked')).map((el)=>el.value);
 
   if(!title || !instructions)return toast('Escribe título e instrucciones antes de exportar el pack.',{error:true});
@@ -358,6 +374,8 @@ async function exportModelTestPackFromForm(){
       requiredEnding,
       scenePlan,
       allowedCast,
+      roomCast,
+      onscreenCast,
       forbiddenCast,
       documentIds,
       reactionMode,
@@ -387,9 +405,8 @@ async function onGenerateClick(generationIntent='continue'){
   const generationMode=document.getElementById('w-generation-mode')?.value || 'full_chapter';
   const requiredEnding=document.getElementById('w-ending').value.trim();
   const scenePlan=lines(document.getElementById('w-scenes').value);
-  const allowedCast=document.getElementById('w-cast').value.trim();
+  const {reactionMode,roomCast,onscreenCast,allowedCast}=readCastFromForm();
   const forbiddenCast=document.getElementById('w-forbidden').value.trim();
-  const reactionMode=document.getElementById('w-reactions').checked;
   const documentIds=Array.from(document.querySelectorAll('.w-doc:checked')).map((el)=>el.value);
   if(!title || !instructions)return toast('Escribe título e instrucciones.',{error:true});
   if(!allowedCast)return toast('Indica el reparto autorizado del capítulo.',{error:true,ms:6500});
@@ -428,7 +445,7 @@ async function onGenerateClick(generationIntent='continue'){
   const nextOrder=mainChapters.length ? Math.max(...mainChapters.map((chapter)=>chapter.order ?? 0)) + 1 : 0;
   const chapter={id:db.uid(),title,content:'',wordCount:0,status:'draft',order:nextOrder,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   await db.put('chapters',chapter);
-  await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,forbiddenCast,documentIds,reactionMode,generationIntent,generationMode});
+  await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,roomCast,onscreenCast,forbiddenCast,documentIds,reactionMode,generationIntent,generationMode});
 }
 
 async function runGeneration(options){
