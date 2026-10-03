@@ -6,7 +6,8 @@ import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reactio
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928-ownership-guard-v1';
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js?v=20261003-smart-context-v1';
-import { analyzeContextGuard } from './contextGuard.js?v=20261003-context-guard-v1';
+import { analyzeContextGuard } from './contextGuard.js?v=20261003-name-match-v1';
+import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v1';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -77,8 +78,7 @@ export async function buildModelTestPack({
     db.getAll('chapters'),
   ]);
 
-  const permittedNames = String(allowedCast || '').split(/[,;\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
-  const characters = allCharacters.filter((c) => permittedNames.includes(String(c.name || '').trim().toLowerCase()) && c.active !== false);
+  const characters = filterCharactersByAllowedCast(allCharacters,allowedCast);
 
   const activeIds = activeChapterIds(allChapters);
   const allActiveMemoryEntries = allMemoryEntries
