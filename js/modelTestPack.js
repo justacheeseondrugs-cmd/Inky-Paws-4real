@@ -6,6 +6,7 @@ import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reactio
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928-ownership-guard-v1';
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js?v=20261003-smart-context-v1';
+import { analyzeContextGuard } from './contextGuard.js?v=20261003-context-guard-v1';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -165,6 +166,16 @@ export async function buildModelTestPack({
   const selectedDocNames = documents.map((d) => d.filename).filter(Boolean);
   const memoryTitles = memoryEntries.slice(-4).map((m) => m.chapterTitle || 'sin título');
   const sourceModel = settings?.models?.[settings?.provider] || '(modelo no guardado)';
+  const preflight = analyzeContextGuard({
+    lockedFacts,
+    canonNotes,
+    allCharacters,
+    allowedCast,
+    instructions,
+    scenePlan,
+    reactionMode,
+    selectedDocuments:documents,
+  });
 
   const inspector = {
     chapterTitle,
@@ -172,6 +183,7 @@ export async function buildModelTestPack({
     generationMode,
     sourceProvider: settings?.provider || 'unknown',
     sourceModel,
+    preflight,
     characters: characters.map((c) => ({ id:c.id, name:c.name || 'Sin nombre' })),
     smartContextVersion:'v1',
     memoryTotal:memorySelection.total,
@@ -225,6 +237,7 @@ export async function buildModelTestPack({
     '- Selected documents: ' + (selectedDocNames.join(', ') || '(none)'),
     '- Direct prior-chapter excerpts recalled: ' + storyExcerpts.length,
     '- Inky author brain: Writing DNA + learned feedback + relationship chemistry + local pressure map',
+    '- Context Guard: ' + (preflight.ok ? 'no critical conflicts detected' : preflight.criticalCount + ' critical conflict(s) detected') + '; ' + preflight.warningCount + ' warning(s); ' + preflight.infoCount + ' info note(s)',
     '',
     '---',
     '',
