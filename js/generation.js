@@ -19,7 +19,7 @@ import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactio
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js?v=20260928-ownership-guard-v1';
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost } from './smartContext.js?v=20261003-smart-context-v1';
-import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v1';
+import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v2';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
