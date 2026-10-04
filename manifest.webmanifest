@@ -2,7 +2,7 @@
   "name": "Inky Paws",
   "short_name": "Inky Paws",
   "description": "Donde las historias florecen despacito. Tu rincón acogedor para escribir fanfics.",
-  "start_url": "./index.html?installed=inky-paws-v2",
+  "start_url": "./index.html?installed=inky-paws-v3",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
@@ -28,5 +28,5 @@
       "purpose": "maskable"
     }
   ],
-  "id": "/Inky-Paws-4real/inky-paws-v2"
+  "id": "/Inky-Paws-4real/inky-paws-v3"
 }
