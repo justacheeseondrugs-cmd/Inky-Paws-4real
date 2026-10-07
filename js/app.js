@@ -159,6 +159,85 @@ async function renderWorkspaces() {
   select.value = db.getActiveProjectId();
   document.getElementById('workspace-label').textContent = list.find((p) => p.id === select.value)?.name || ORIGINAL.name;
 }
+
+function cleanStoryPackCharacter(raw) {
+  const fields = ['name','pronouns','personality','speechStyle','hardRules','currentKnowledge','relationships','chemistry','neverDoRules','active'];
+  const out = {};
+  for (const field of fields) if (raw && raw[field] !== undefined) out[field] = raw[field];
+  out.name = String(out.name || '').trim();
+  out.pronouns = String(out.pronouns || '').trim();
+  out.personality = String(out.personality || '').trim();
+  out.speechStyle = String(out.speechStyle || '').trim();
+  out.hardRules = String(out.hardRules || '').trim();
+  out.currentKnowledge = String(out.currentKnowledge || '').trim();
+  out.relationships = String(out.relationships || '').trim();
+  out.chemistry = String(out.chemistry || '').trim();
+  out.neverDoRules = String(out.neverDoRules || '').trim();
+  out.active = out.active !== false;
+  return out;
+}
+
+async function importStoryPackFile(file) {
+  const projectId = db.getActiveProjectId();
+  if (projectId === 'original') throw new Error('Crea o selecciona primero una historia nueva. El importador de packs nunca escribe sobre la historia original.');
+  const text = await file.text();
+  const pack = JSON.parse(text);
+  const meta = pack?.__meta || pack?.meta || {};
+  if (meta.app && !['inky-paws-story-pack','pts-story-pack'].includes(String(meta.app))) {
+    throw new Error('Este JSON no parece un pack de historia de Inky Paws.');
+  }
+
+  const existingCharacters = await db.getAll('characters');
+  const existingFacts = await db.getAll('lockedFacts');
+  const existingCanon = await db.getAll('canonNotes');
+  const characterByName = new Map(existingCharacters.map((c) => [String(c.name || '').trim().toLowerCase(), c]));
+  const factTexts = new Set(existingFacts.map((f) => String(f.text || '').trim()));
+  const canonKeys = new Set(existingCanon.map((n) => (n.visibility === 'revealed' ? 'revealed|' : 'private|') + String(n.text || '').trim()));
+
+  let characters = 0, facts = 0, canon = 0;
+  for (const raw of Array.isArray(pack.characters) ? pack.characters : []) {
+    const incoming = cleanStoryPackCharacter(raw);
+    if (!incoming.name) continue;
+    const key = incoming.name.toLowerCase();
+    const previous = characterByName.get(key);
+    const saved = await db.put('characters', previous ? { ...previous, ...incoming, id:previous.id } : incoming);
+    characterByName.set(key, saved);
+    characters += 1;
+  }
+
+  for (const raw of Array.isArray(pack.lockedFacts) ? pack.lockedFacts : []) {
+    const textValue = String(typeof raw === 'string' ? raw : raw?.text || '').trim();
+    if (!textValue || factTexts.has(textValue)) continue;
+    await db.put('lockedFacts', { text:textValue, isCore:typeof raw === 'object' ? raw?.isCore === true : false });
+    factTexts.add(textValue);
+    facts += 1;
+  }
+
+  for (const raw of Array.isArray(pack.canonNotes) ? pack.canonNotes : []) {
+    const textValue = String(typeof raw === 'string' ? raw : raw?.text || '').trim();
+    if (!textValue) continue;
+    const visibility = typeof raw === 'object' && raw?.visibility === 'revealed' ? 'revealed' : 'private';
+    const key = visibility + '|' + textValue;
+    if (canonKeys.has(key)) continue;
+    await db.put('canonNotes', { text:textValue, visibility, createdAt:new Date().toISOString() });
+    canonKeys.add(key);
+    canon += 1;
+  }
+
+  if (pack.authorBrain && typeof pack.authorBrain === 'object') {
+    const current = await db.get('settings', 'author-brain:' + projectId);
+    await db.put('settings', {
+      ...(current || {}),
+      ...pack.authorBrain,
+      id:'author-brain:' + projectId,
+      feedbackCounts:current?.feedbackCounts || pack.authorBrain.feedbackCounts || {},
+      editSignals:current?.editSignals || pack.authorBrain.editSignals || { approvals:0, substantialEdits:0, totalReduction:0 },
+    });
+  }
+
+  return { characters, facts, canon, title:String(meta.title || pack.title || '').trim() };
+}
+
 async function initWorkspaces() {
   const select = document.getElementById('workspace-select');
   await renderWorkspaces();
@@ -190,6 +269,29 @@ async function initWorkspaces() {
     await renderWorkspaces();
     switchView('chapters');
     toast('Historia nueva creada con canon neutral. La original y su memoria siguen intactas.');
+  });
+
+  const packButton = document.getElementById('workspace-import-pack');
+  const packInput = document.getElementById('workspace-pack-input');
+  packButton?.addEventListener('click', async () => {
+    const active = await getActiveGenerationState();
+    if (active?.status === 'in_progress') return toast('Detén primero la generación en curso.', {error:true});
+    if (db.getActiveProjectId() === 'original') return toast('Crea o selecciona una historia nueva antes de importar un pack. La historia original está protegida.', {error:true, ms:6500});
+    packInput?.click();
+  });
+  packInput?.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const workspaceName = document.getElementById('workspace-label')?.textContent?.trim() || 'esta historia';
+    if (!confirm('Importar este pack dentro de “' + workspaceName + '”? Se mezclarán fichas y canon SOLO en esta historia; no se tocará Power to Strive ni otras historias.')) return;
+    try {
+      const result = await importStoryPackFile(file);
+      switchView('characters');
+      toast('Pack importado ✨ ' + result.characters + ' personajes · ' + result.facts + ' hechos bloqueados · ' + result.canon + ' notas de canon.', {ms:8000});
+    } catch (err) {
+      toast('No se pudo importar el pack: ' + (err?.message || err), {error:true, ms:8000});
+    }
   });
 }
 
