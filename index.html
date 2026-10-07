@@ -37,7 +37,7 @@
     <button class="tab-btn" data-view="settings">⚙️ Ajustes</button>
   </nav>
 
-  <div class="workspace-bar" aria-label="Proyecto de escritura"><div class="workspace-bar-inner"><label for="workspace-select">📚 Historia:</label><select id="workspace-select" aria-label="Historia activa"><option value="original">Historia original (mis datos actuales)</option></select><button type="button" id="workspace-create" class="btn btn-ghost btn-sm">+ Nueva historia</button></div><span class="workspace-current" id="workspace-label">Historia original (mis datos actuales)</span></div>
+  <div class="workspace-bar" aria-label="Proyecto de escritura"><div class="workspace-bar-inner"><label for="workspace-select">📚 Historia:</label><select id="workspace-select" aria-label="Historia activa"><option value="original">Historia original (mis datos actuales)</option></select><button type="button" id="workspace-create" class="btn btn-ghost btn-sm">+ Nueva historia</button><button type="button" id="workspace-import-pack" class="btn btn-ghost btn-sm">📦 Importar pack</button><input type="file" id="workspace-pack-input" accept="application/json,.json" hidden></div><span class="workspace-current" id="workspace-label">Historia original (mis datos actuales)</span></div>
 
   <main>
     <section id="view-write" class="view"></section>
@@ -52,6 +52,6 @@
   <footer class="app-footer">Inky Paws · tus datos viven sólo en este navegador (IndexedDB)</footer>
 </div>
 
-<script type="module" src="js/app.js?v=20261003-armin-onscreen-v1"></script>
+<script type="module" src="js/app.js?v=20261007-story-pack-v1"></script>
 </body>
 </html>
