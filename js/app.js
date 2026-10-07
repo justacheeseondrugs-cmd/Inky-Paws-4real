@@ -9,7 +9,8 @@ import { renderPlanner } from './ui/planner.js?v=20260928-long-memory-v1';
 import { bus, toast } from './utils.js';
 import { getActiveGenerationState } from './generation.js?v=20261003-room-cast-canon-v1';
 import { initAppearance } from './ui/appearance.js';
-import { isPowerToStriveStory } from './storyCast.js?v=20261003-room-cast-v3';
+import { isPowerToStriveStory } from './storyCast.js?v=20261007-kael-au-v1';
+import { ensureKaelAuWorkspace, KAEL_AU_PROJECT } from './kaelAu.js?v=20261007-kael-au-v1';
 
 const VIEWS = { write: renderWrite, planner: renderPlanner, chapters: renderChapters, characters: renderCharacters, documents: renderDocuments, memory: renderMemory, settings: renderSettings };
 
@@ -298,6 +299,17 @@ async function initWorkspaces() {
 function switchView(name) { document.querySelectorAll('.view').forEach((v) => v.classList.remove('active')); document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === name)); const el = document.getElementById('view-' + name); el.classList.add('active'); localStorage.setItem('pts_last_view', name); VIEWS[name](el); }
 function initNav() { document.getElementById('tabbar').addEventListener('click', (e) => { const btn = e.target.closest('.tab-btn'); if (!btn) return; switchView(btn.dataset.view); }); bus.on('navigate', (name) => switchView(name)); }
 async function initServiceWorker() { if ('serviceWorker' in navigator) { try { await navigator.serviceWorker.register('sw.js'); } catch { } } }
-async function boot() { await db.openDb(); await seedDefaults(); initNav(); await initWorkspaces(); initServiceWorker(); const last = localStorage.getItem('pts_last_view') || 'write'; switchView(VIEWS[last] ? last : 'write'); }
+async function boot() {
+  await db.openDb();
+  const kaelCreated = await ensureKaelAuWorkspace(db);
+  if (kaelCreated) db.setActiveProjectId(KAEL_AU_PROJECT.id);
+  await seedDefaults();
+  initNav();
+  await initWorkspaces();
+  initServiceWorker();
+  const last = localStorage.getItem('pts_last_view') || 'write';
+  switchView(VIEWS[last] ? last : 'write');
+  if (kaelCreated) toast('Kael AU listo ✨ 13 fichas, canon y reglas cargados. Tú sólo escribe el prompt.', {ms:8000});
+}
 initAppearance();
 boot();
