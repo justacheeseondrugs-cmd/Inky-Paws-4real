@@ -1,6 +1,22 @@
 // storyCast.js — reparto estructural de la historia original Power to Strive.
 // Evita que la autora tenga que volver a escribir los 13 espectadores en cada capítulo.
 
+export const KAEL_AU_ROOM_CAST = [
+  'Petra Ral',
+  'Erwin Smith',
+  'Levi',
+  'Hange Zoë',
+  'Ymir',
+  'Historia Reiss / Christa Lenzz',
+  'Sasha Braus',
+  'Connie Springer',
+  'Jean Kirstein',
+  'Mikasa Ackerman',
+  'Armin Arlert',
+  'Eren Yeager',
+  'Kael',
+];
+
 export const POWER_TO_STRIVE_ROOM_CAST = [
   'Petra Ral',
   'Erwin Smith',
@@ -48,9 +64,9 @@ export function isPowerToStriveStory(projectId,lockedFacts=[]){
 }
 
 export function getAutomaticReactionRoomCast(projectId,reactionMode=true,lockedFacts=[]){
-  return reactionMode && isPowerToStriveStory(projectId,lockedFacts)
-    ? POWER_TO_STRIVE_ROOM_CAST.slice()
-    : [];
+  if(!reactionMode) return [];
+  if(projectId === 'kael-au') return KAEL_AU_ROOM_CAST.slice();
+  return isPowerToStriveStory(projectId,lockedFacts) ? POWER_TO_STRIVE_ROOM_CAST.slice() : [];
 }
 
 export function combineCast(...groups){
