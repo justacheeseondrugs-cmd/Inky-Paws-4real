@@ -5,7 +5,7 @@ import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-mem
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
 import { buildModelTestPack } from '../modelTestPack.js?v=20261003-room-cast-canon-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-ownership-guard-v1';
-import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js?v=20261003-room-cast-v3';
+import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js?v=20261022-violet-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -20,11 +20,11 @@ export async function renderWrite(root) {
   const hasKey = !!settings?.apiKeys?.[settings.provider];
   const defaultGenerationMode = settings?.defaultGenerationMode || 'full_chapter';
   const docs = documents.filter((d) => d.active !== false).sort((a,b) => (b.priority || 0)-(a.priority || 0));
-  const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>').join('');
+  const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) || d.defaultSelected === true ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>').join('');
   const automaticRoomCast=getAutomaticReactionRoomCast(db.getActiveProjectId(),true,lockedFacts);
   const autoRoomValue=formatCast(automaticRoomCast);
   const roomCastHtml=automaticRoomCast.length
-    ? '<div class="auto-cast-box"><div class="auto-cast-title">👀 Sala de reacciones · automático</div><div class="auto-cast-pills">'+automaticRoomCast.map((name)=>'<span class="pill pill-character">'+escapeHtml(name)+'</span>').join('')+'</div><p class="scene-guide">Los 13 espectadores se incluyen automáticamente. No tienes que volver a escribirlos 🥳</p><input type="hidden" id="w-auto-room-cast" value="'+escapeHtml(autoRoomValue)+'"></div>'
+    ? '<div class="auto-cast-box"><div class="auto-cast-title">👀 Sala de reacciones · automático</div><div class="auto-cast-pills">'+automaticRoomCast.map((name)=>'<span class="pill pill-character">'+escapeHtml(name)+'</span>').join('')+'</div><p class="scene-guide">Los '+automaticRoomCast.length+' espectadores se incluyen automáticamente. No tienes que volver a escribirlos 🥳</p><input type="hidden" id="w-auto-room-cast" value="'+escapeHtml(autoRoomValue)+'"></div>'
     : '<label class="field-label" for="w-room-cast">👀 Personajes presentes en la sala / escena principal</label><textarea id="w-room-cast" rows="3" placeholder="Personajes físicamente presentes en la escena principal"></textarea>';
   root.innerHTML = [
     '<h2 class="section-title">Escribir</h2>',
@@ -472,3 +472,4 @@ async function runGeneration(options){
   }catch(err){toast('No se pudo generar: '+err.message,{error:true,ms:10000});}
   finally{isRunning=false;await renderWrite(root);}
 }
+

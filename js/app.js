@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { renderWrite } from './ui/write.js?v=20261003-armin-onscreen-v1';
+import { renderWrite } from './ui/write.js?v=20261022-violet-v1';
 import { renderChapters } from './ui/chapters.js?v=20260928-economy-mini-v1';
 import { renderCharacters } from './ui/characters.js?v=20260928-author-brain-v1';
 import { renderDocuments } from './ui/documents.js?v=20260926-spanish-ui-v1';
@@ -11,6 +11,7 @@ import { getActiveGenerationState } from './generation.js?v=20261003-room-cast-c
 import { initAppearance } from './ui/appearance.js';
 import { isPowerToStriveStory } from './storyCast.js?v=20261007-kael-au-v1';
 import { ensureKaelAuWorkspace, KAEL_AU_PROJECT } from './kaelAu.js?v=20261007-kael-au-v1';
+import { ensureVioletWorkspace } from './violet.js?v=20261022-violet-v1';
 
 const VIEWS = { write: renderWrite, planner: renderPlanner, chapters: renderChapters, characters: renderCharacters, documents: renderDocuments, memory: renderMemory, settings: renderSettings };
 
@@ -303,13 +304,24 @@ async function boot() {
   await db.openDb();
   const kaelCreated = await ensureKaelAuWorkspace(db);
   if (kaelCreated) db.setActiveProjectId(KAEL_AU_PROJECT.id);
+  let violetCreated = null;
+  try {
+    violetCreated = await ensureVioletWorkspace(db);
+    if (violetCreated) db.setActiveProjectId(violetCreated.id);
+  } catch (error) {
+    // A missing reference must not prevent access to existing stories. The
+    // atomic setup leaves no marker on failure, so next launch retries safely.
+    toast('No se pudo preparar Violet. Vuelve a abrir con conexión: ' + error.message, {error:true,ms:9000});
+  }
   await seedDefaults();
   initNav();
   await initWorkspaces();
   initServiceWorker();
   const last = localStorage.getItem('pts_last_view') || 'write';
   switchView(VIEWS[last] ? last : 'write');
-  if (kaelCreated) toast('Kael AU listo ✨ 13 fichas, canon y reglas cargados. Tú sólo escribe el prompt.', {ms:8000});
+  if (violetCreated) toast('Violet listo ✨ Solo los 12 originales, Character Bible y The Power to Strive I cargados.', {ms:9000});
+  else if (kaelCreated) toast('Kael AU listo ✨ 13 fichas, canon y reglas cargados. Tú sólo escribe el prompt.', {ms:8000});
 }
 initAppearance();
 boot();
+
