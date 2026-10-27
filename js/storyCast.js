@@ -66,6 +66,7 @@ export function isPowerToStriveStory(projectId,lockedFacts=[]){
 
 export function getAutomaticReactionRoomCast(projectId,reactionMode=true,lockedFacts=[]){
   if(!reactionMode) return [];
+  if(projectId === 'a-day-off') return VIOLET_ROOM_CAST.slice();
   if(isVioletStory(projectId,lockedFacts)) return VIOLET_ROOM_CAST.slice();
   if(projectId === 'kael-au') return KAEL_AU_ROOM_CAST.slice();
   return isPowerToStriveStory(projectId,lockedFacts) ? POWER_TO_STRIVE_ROOM_CAST.slice() : [];
