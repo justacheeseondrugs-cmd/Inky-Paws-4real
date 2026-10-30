@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-30",
+  "format": "Three PDFs; no ZIP, TAR, RAR or 7z supplied",
+  "sources": [
+    {
+      "received_filename": "1-Snow-AU-.pdf",
+      "author_display_name": "Snow AU .pdf",
+      "original": "archives/originals/1-Snow-AU-.pdf",
+      "original_bytes": 312088,
+      "sha256": "ef71f4ca44f3fab4ac1704fd38180f3e225170684464a563448bb9c25fb26329",
+      "working_text": "archives/extracted/snow-au.txt",
+      "text_sha256": "d9054d728e60040c88cafaeda8ddee923df0748f63417abc13bee7ccf2f62584",
+      "role": "AU-specific authoritative dossier"
+    },
+    {
+      "received_filename": "2-FF-CHARACTER-BIBLE.pdf",
+      "author_display_name": "FF- CHARACTER BIBLE.pdf",
+      "original": "archives/originals/2-FF-CHARACTER-BIBLE.pdf",
+      "original_bytes": 348933,
+      "sha256": "58d4b18dcfb5aa877d5d36d3a1ca4130075d7429fb6b52cb7a398cde12cb973f",
+      "working_text": "archives/extracted/base-character-bible.txt",
+      "text_sha256": "a5091832a779c128f8538828d220fa024a1a8441a9e8926faf451dea1ccb8b62",
+      "role": "General characterization; Snow-specific overrides apply"
+    },
+    {
+      "received_filename": "3-Power_to_Strive_by_ii-Phoenix-ii-PEtnW5Vg-1-.pdf",
+      "author_display_name": "Power_to_Strive_by_ii-Phoenix-ii-PEtnW5Vg (1).pdf",
+      "original": "archives/originals/3-Power_to_Strive_by_ii-Phoenix-ii-PEtnW5Vg-1-.pdf",
+      "original_bytes": 2072887,
+      "sha256": "e6d1fb07e4658d73e71b27397b2c5e8de134de387c0ac76e65cb8878d74ab4c0",
+      "working_text": "archives/extracted/power-to-strive.txt",
+      "text_sha256": "bfa96e3fc6968fc1eee49db909de660ae02b0e46bdd21810d08292803dce556e",
+      "role": "Third-party reference fiction, not Snow AU chapter continuity"
+    }
+  ]
+}

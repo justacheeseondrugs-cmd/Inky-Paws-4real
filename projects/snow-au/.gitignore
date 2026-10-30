@@ -1,0 +1,14 @@
+# Precaution only: no Git repository has been initialized here.
+.env
+.env.*
+!.env.example
+**/.aws/
+**/.codex/
+**/.agents/
+**/credentials*
+**/*token*
+**/*secret*
+**/*backup*.json
+**/__pycache__/
+*.pyc
+.DS_Store

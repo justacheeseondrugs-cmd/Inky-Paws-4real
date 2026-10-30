@@ -1,0 +1,204 @@
+{
+  "__meta": {
+    "app": "inky-paws-story-pack",
+    "title": "Snow AU — reference preparation"
+  },
+  "characters": [
+    {
+      "name": "Petra Ral",
+      "pronouns": "she/her",
+      "personality": "Practical experienced Scout and emotionally attentive observer. Warm without passivity; capable of tactical disagreement.",
+      "speechStyle": "Calm, respectful, direct and sometimes playful; brief grounded observations.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Professional trust with Levi, mentorship toward Eren, practical judgment valued by Erwin.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Erwin Smith",
+      "pronouns": "he/him",
+      "personality": "Controlled strategist who asks what events reveal, who benefits and what can change. Intelligent, fallible and emotionally affected without public display.",
+      "speechStyle": "Precise, measured, formal without robotic speeches; quieter when angry.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Levi: considerable trust and growing emotional closeness, NOT an established romantic relationship. Snow: initially an unfamiliar political figure, potentially capable of pleasant intellectual conversation. Notice Levi’s reaction without inventing its cause.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Hange Zoë",
+      "pronouns": "they/them",
+      "personality": "Curious scientist, veteran and officer. Playfulness, scientific interest, ethical concern and perceptiveness coexist.",
+      "speechStyle": "Quick and excited during discovery, sharp when confronting cruelty, capable of gentleness; not always shouting.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Trusted long-standing colleagues in Erwin and Levi; can notice unusual recognition without knowing Levi’s past.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Levi Ackerman",
+      "pronouns": "he/him",
+      "personality": "Practical, observant, blunt and emotionally guarded without being incapable of affection. Keeps agency, moral boundaries, competence and an independent life.",
+      "speechStyle": "Economical, dry and sarcastic; vulgar when natural, not in every sentence; emotion often through action.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied. Privately knows his own past with Snow; do not erase that memory. Does not automatically know Snow’s eight-year biography. The surname on this author-facing profile is not a public reveal.",
+      "relationships": "Snow: genuine former lover and cohabiting partner. Levi welcomed and reciprocated affection, but permanently ended the relationship over harmful moral choices. Recognizes him immediately at the trial, owes no renewal or forgiveness. Erwin: trust and growing closeness, NOT already his partner.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Ymir",
+      "pronouns": "she/her",
+      "personality": "Perceptive about hypocrisy and hidden feelings; provocative, guarded and protective. Care and cynicism coexist.",
+      "speechStyle": "Informal, sharp, sarcastic when natural, gentler with Christa.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied. Privately retains her own past and Titan identity; others do not share those secrets. This is not comprehensive current intelligence.",
+      "relationships": "Christa is her central emotional connection. Does not expose private identities merely to inform the audience.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Historia Reiss / Christa Lenz",
+      "pronouns": "she/her",
+      "personality": "Initially performs agreeable, self-sacrificing Christa while an independent identity gradually emerges. Empathy does not make her passive or unintelligent.",
+      "speechStyle": "Gentle and encouraging as Christa; increasing directness develops gradually.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied. Privately retains her birth name and childhood; uses Christa publicly. Do not infer knowledge of the complete royal truth.",
+      "relationships": "Ymir is a central emotional anchor. Her author-facing identity does not authorize a public birth-name reveal.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Sasha Blouse",
+      "pronouns": "she/her",
+      "personality": "Sincere, practical and attentive to ordinary people and emotional shifts; not limited to food jokes.",
+      "speechStyle": "Natural, literal and emotionally sincere; can ask a socially awkward question without cruelty.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Friendship and humor with Connie coexist with care and seriousness about home and family.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Connie Springer",
+      "pronouns": "he/him",
+      "personality": "Direct, funny and emotionally invested. Confusion or bluntness is not stupidity.",
+      "speechStyle": "Simple, candid questions, spontaneous humor and genuine emotion; no permanent comic-relief role.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Sasha is a close friend; both can comfort each other as well as joke.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Jean Kirstein",
+      "pronouns": "he/him",
+      "personality": "Skeptical and concerned with survival and consequences; capable of vulnerability and emerging leadership.",
+      "speechStyle": "Blunt, argumentative and occasionally inadvertently revealing; can become sincere.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Eren: arguments about action, freedom and consequences can coexist with developing respect.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Mikasa Ackerman",
+      "pronouns": "she/her",
+      "personality": "Reserved, observant and protective; notices physical danger and who protects whom, with independent judgment.",
+      "speechStyle": "Restrained and direct, often economical; not only Eren’s name.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Eren and Armin are central bonds, but do not make her incapable of independent observation.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Armin Arlert",
+      "pronouns": "he/him",
+      "personality": "Curious, analytical and emotionally vulnerable. Connects evidence without possessing omniscience.",
+      "speechStyle": "Questions and compact reasoning; avoid turning every insight into a lecture.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Eren and Mikasa are a family-like unit with distinct responses. Insight into Snow must follow evidence.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Eren Yeager",
+      "pronouns": "he/him",
+      "personality": "Driven by conviction and freedom, emotionally reactive but capable of thought.",
+      "speechStyle": "Blunt and impassioned; can be confused or vulnerable without constant shouting.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied.",
+      "relationships": "Mikasa and Armin are central bonds. His upcoming military trial is a future screen event at the room opening.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    },
+    {
+      "name": "Coriolanus Snow / Edmund Voss",
+      "pronouns": "he/him",
+      "personality": "Young Tom Blyth Snow, not elderly President Snow. Charming, articulate, ambitious, socially perceptive, sincerely warm and affectionate, yet self-interested, possessive and capable of rationalizing harm. Voss is the same man adapted to the Walls. Power means security and agency to him; acquiring it is not evidence of moral repair.",
+      "speechStyle": "Intelligent, measured and natural. Diplomatic with officials, capable of humor and pleasant engagement with Erwin, warmer and familiar with Levi. No nonstop philosophical speeches or generic dark-romance villain voice.",
+      "hardRules": "Snow AU only. The watching-room opening is immediately before Eren’s trial. Snow-specific dossier overrides incompatible general-bible assumptions. Erwin and Levi are NOT a couple. Author references and profiles are not automatic character knowledge. A profile is not an assignment to the watching room; full room roster remains unresolved. Do not import other Inky Paws workspaces or write/reconstruct missing approved chapters.",
+      "currentKnowledge": "Only personal experience and information actually witnessed or disclosed at the pre-trial opening. Do not import post-trial events, later AOT secrets or another character’s private thoughts as shared knowledge. The exact opening scene and previously approved chapter revelations cannot be verified until Chapter One is supplied. Knows his own life and former relationship; does not accept Levi intended permanent separation. No omniscient access to Levi’s present feelings, room events or unwitnessed military secrets.",
+      "relationships": "Levi: genuine former partner. Snow misreads the permanent breakup and believes he is coming home. Returns from love and self-justification rather than revenge. Erwin may gradually be perceived as a rival, but Snow can respect and enjoy him. Village friendships were real; specific people and job remain unresolved.",
+      "chemistry": "",
+      "neverDoRules": "Do not invent finalized chapter events, silently approve suggestions, expose private knowledge or import unrelated AU relationships.",
+      "active": true
+    }
+  ],
+  "lockedFacts": [
+    {
+      "text": "SNOW AU AUTHOR RULE: dossier is private author reference, not shared room knowledge. Start immediately before Eren’s trial, superseding the base bible’s later pre-expedition starting point.",
+      "isCore": true
+    },
+    {
+      "text": "Erwin and Levi are NOT an established couple in Snow AU. Snow and Edmund Voss are one man, based on young Tom Blyth Snow. Full room roster and Snow’s room presence are not decided by the character-profile list.",
+      "isCore": true
+    },
+    {
+      "text": "Preserve all approved chapters exactly. No approved Snow Chapter One has been supplied with this pack. Do not generate, reconstruct, summarize as established, or replace missing chapters from a reference story.",
+      "isCore": true
+    },
+    {
+      "text": "Keep ESTABLISHED facts distinct from PROPOSED options, UNRESOLVED questions and explicitly DISCARDED ideas. Current author instructions and Snow-specific dossier override conflicting general reference or unrelated Inky Paws AU material.",
+      "isCore": true
+    }
+  ],
+  "canonNotes": [
+    {
+      "text": "# Snow AU — master assistant context\n\n**ESTABLISHED source:** the author's Snow AU dossier. This context is private author reference, not a package of facts every viewer already knows. Consult STORY_BIBLE, TIMELINE, CONTINUITY_NOTES and approved chapters before future writing. This preparation task authorizes no chapter generation.\n\nYoung Coriolanus Snow, based on Tom Blyth's portrayal, lives in the AOT world and now publicly uses **Edmund Voss**. He and Levi were genuine lovers and cohabited in the Underground. Snow was more openly affectionate; Levi welcomed and reciprocated it. Preserve their real happiness alongside Snow's later ruthlessness.\n\nSnow's harmful choices affecting other people caused the permanent breakup. Levi could have killed him, spared him, arranged a way aboveground and said never to return. Levi meant a permanent end; Snow did not accept it. The exact triggering incident and harmed people remain UNRESOLVED.\n\nThey have been apart eight years: three peaceful village years, then news that Levi is alive and Humanity's Strongest, then five years building wealth, connections and the Voss identity. Village occupation, precise political office and exact dates require approval. The first-meeting dating wording is inconsistent; do not invent a fix.\n\nThe story's watching-room opening is immediately before **Eren's military trial**, where Snow legitimately attends as a political representative. Both men recognize each other immediately. Erwin and Hange can notice Levi's reaction without knowing its history. **Erwin and Levi are NOT a couple**; they have growing trust and emotional closeness.\n\nSnow believes he is coming home, not seeking revenge. His warmth and love are sincere, yet can coexist with possessiveness and entitlement. Levi is not waiting for him and owes no reunion, forgiveness or touch. Do not confuse a stronger public position with moral repair or make Voss politically omnipotent.\n\nReveal history gradually through footage, observations and Candy's selective revelations; no instant shared omniscience or total backstory dump. Levi keeps his own memories. Other viewers do not know his past automatically. The complete Snow room roster and Snow's room membership are UNRESOLVED. The source's generic pre-expedition opening does not override the Snow pre-trial opening.\n\nUse the general AOT bible for compatible voices and *Power to Strive* for reference structure, not Snow chapter canon or copied prose. Do not import unrelated app AU characters, relationships, body swaps, families or memories.\n\n**Chapter status:** no approved Snow Chapter One or chapter export supplied. Do not reconstruct or replace it. Latest approved chapter and next planned chapter are UNRESOLVED. Do not write continuation chapters until their exact sources and scope are confirmed.\n\nSource authority: current author instructions → Snow AU-specific dossier → compatible general character bible. Source suggestions remain PROPOSED, questions UNRESOLVED, and only explicit author rejection earns DISCARDED.\n",
+      "visibility": "private"
+    },
+    {
+      "text": "# Story bible\n\nSource of AU-specific facts: [Snow AU original](archives/originals/1-Snow-AU-.pdf), titled **MASTER CHARACTER AND RELATIONSHIP DOSSIER — CORIOLANUS SNOW / EDMUND VOSS**. Section references below refer to that dossier. No finalized Snow chapter text was supplied.\n\n## Premise and setting — ESTABLISHED\n\nCoriolanus Snow, based on young Snow as portrayed by Tom Blyth in *The Ballad of Songbirds and Snakes*, exists within the world of *Attack on Titan*. Write neither elderly President Snow nor a generic omnipotent villain. How he came to exist in this setting is **UNRESOLVED**; the dossier does not establish a transport mechanism or import Panem's institutions. [I–II, pp. 1–4]\n\nSnow and Levi were genuine lovers and lived together in the Underground. Their life included safety, mutual competence, affection and ordinary domestic happiness. Snow was the more openly affectionate partner; Levi welcomed and reciprocated his touch. Their relationship was not manipulation from the outset. [III, pp. 4–8]\n\nSnow's growing ruthlessness and willingness to sacrifice others made their values incompatible. Levi did not fear Snow would kill him. In their final confrontation Levi could have killed him, but could not bring himself to do it. Levi provided a way aboveground and explicitly told Snow never to return. Levi meant a permanent breakup; Snow failed to accept that permanence. [IV, pp. 8–10]\n\nThe present reunion occurs eight years after the separation. Snow spent the first three years living peacefully in a village, then learned Levi was alive and known as Captain Levi, Humanity's Strongest Soldier. He spent the following five years building influence and a respectable identity, **Edmund Voss**. Voss is the same person, not another personality. [I; V–VI, pp. 1–2, 11–15]\n\nVoss is a political adviser and representative connected to the Crown's administrative circles. His influence comes from competence, reputation and connections, not unlimited command over the Crown or military. His exact office and responsibilities require approval. [VI, pp. 13–15; XIII]\n\nHe and Levi reunite at Eren Yeager's military trial, which Snow attends for legitimate political reasons. Both recognize each other immediately. Snow is genuinely delighted; Levi's recognition is subtle but certain. Erwin and Hange can notice his reaction without knowing its cause. [VII, pp. 15–18]\n\nErwin and Levi **are not a couple**. They have considerable trust and growing emotional closeness, with no established romantic relationship. Snow can admire and respect Erwin before interpreting him as a rival. [VII.4; XII.21–23]\n\n## Emotional and narrative rules — ESTABLISHED\n\nThe dossier's central statement is preserved verbatim:\n\n> Snow believes that he and Levi have a future.\n>\n> Levi believes that they had a past.\n\n[X, pp. 22–23]\n\nSnow returns because he believes he is coming home, not to exact revenge. His love, warmth, possessiveness and capacity for harm coexist. Greater money and status do not demonstrate that he understands or has repaired his moral failures. Levi is not waiting for him and owes neither forgiveness nor renewed intimacy. Old consent does not confer present permission. [I–II; VIII; X]\n\nThe watching-room story begins **immediately before Eren's trial**. Viewers learn through footage, selective revelations by Candy and their own observations. Private thoughts and memories may be revealed selectively; no single opening exposition dump should explain everything. [VII.1; XI, pp. 23–24]\n\nThe general character bible's starting point, approximately two days before the 57th Expedition, conflicts with this AU-specific starting point and is superseded for Snow. Preserve each character's actual personal knowledge; never treat dossier text, reference fiction or another character's memories as shared room knowledge.\n\n## Unapproved options — PROPOSED\n\nThe village job might be teaching, administration or civic work. Teaching is described as an interesting possibility, not a decision. Money and supplies in Levi's farewell assistance are possible additions, while providing a way aboveground is established. Suggested habits, sample greetings and possible remembered domestic gestures are characterization examples, not completed chapter events. [III.3–4; IV.4; V; VII.3; IX]\n\n## Missing decisions — UNRESOLVED\n\nThe precise breakup incident, harmed people, exact dialogue, first-meeting details, village occupation, official office, trial remit, first private reunion conversation, reveal order and full watching-room roster require approval. See [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).\n\nNo supplied idea or draft is classified **DISCARDED**. Explicit “do not” rules constrain characterization; they do not prove that a rejected draft once existed.\n",
+      "visibility": "private"
+    },
+    {
+      "text": "# Timeline\n\nReference point **T0** is Eren Yeager's military trial and the onscreen reunion. No calendar year, exact date or character age has been established in the supplied dossier. Do not supply those from canon assumptions.\n\n| Relative order | Status | Event | Source |\n| --- | --- | --- | --- |\n| Underground period, before the permanent separation | ESTABLISHED | Snow and Levi meet, become partners and lovers, share a home and experience genuine happiness. | III |\n| Later in their relationship | ESTABLISHED | Snow increasingly sacrifices other people and their values diverge. | IV.1–2 |\n| Approximately T0 minus eight years | ESTABLISHED | Final confrontation; Levi spares Snow, arranges a way aboveground and tells him never to return. Levi means a permanent end; Snow misreads it. | I; IV |\n| First three years after separation | ESTABLISHED | Snow builds a real, peaceful village life with work, routines and friendships. This is not uninterrupted obsession. | V, Years 1–3 |\n| About three years after separation, roughly T0 minus five years | ESTABLISHED | Learns Levi is alive and has become Captain Levi, Humanity's Strongest Soldier; his priorities change. | V, The Discovery |\n| Following five years, through the present | ESTABLISHED | Builds influence, wealth, connections and the Edmund Voss identity. Exact internal milestones are unspecified. | V, Years 4–8; VI |\n| Immediately before T0 | ESTABLISHED | Watching-room starting point. This supersedes the general bible's pre-expedition opening. | VII.1; XI |\n| T0 | ESTABLISHED, not confirmed as already written | Reunion at Eren's trial; immediate mutual recognition; legitimate political reason for Voss's presence. | VII |\n| After the trial | UNRESOLVED | First private conversation and later relational or political developments. | XIII.13–15 |\n\n## Dating conflicts requiring care\n\n**UNRESOLVED:** III.1 says they met “Eight years before the present,” while I, IV–V and XII establish a meaningful shared relationship followed by eight years apart. Do not silently make the meeting and breakup the same date or compress away their relationship. The duration of their courtship/cohabitation and exact meeting date need the author.\n\n**UNRESOLVED wording:** X says Snow spent eight years constructing his return narrative, while V explicitly gives him three genuinely peaceful village years before five years of deliberate reinvention. Preserve the concrete three-plus-five sequence; ask whether X describes retrospective self-justification rather than an eight-year active campaign.\n\n**PROPOSED:** Once Chapter One is supplied, maintain a scene-by-scene record of screen date/order and room revelation order separately. Historical facts may be shown out of chronological order; that does not reorder their occurrence.\n",
+      "visibility": "private"
+    },
+    {
+      "text": "# Continuity notes\n\n## Established invariants\n\n1. Coriolanus Snow and Edmund Voss are one man. Voss is an acquired public identity, not another personality. [Snow VI]\n2. Use young Tom Blyth Snow. Love and tenderness are real; so are possessiveness, entitlement and harm. Do not flatten him into either an innocent romantic hero or a caricature. [II]\n3. The Underground relationship was genuinely mutual and happy for a meaningful period. Snow was more openly affectionate; Levi genuinely reciprocated. Do not retroactively make every past gesture a scheme. [III]\n4. The breakup is about incompatible moral choices affecting others, not poverty, Levi's naivety or fear Snow would kill him. Its specific precipitating event remains open. [IV]\n5. Levi could have killed Snow, spared him, provided a way aboveground and told him never to return. Levi meant a permanent goodbye. [IV.4]\n6. Keep three peaceful village years followed by five years of deliberate reinvention. Snow is capable of a life that is not constant obsession. [V]\n7. At Eren's trial both recognize each other immediately. Snow's public presence has a legitimate political rationale; details still need approval. [VII]\n8. Erwin and Levi are NOT already a couple. Their growing closeness does not grant Snow a claim over Levi. [VII.4; XII.21–24]\n9. Snow returns expecting renewed love, not revenge. Levi has moved forward and owes no renewed relationship. Past intimacy is not present consent. [I; VIII; X]\n10. Avoid unlimited political authority, generic villain speeches or an opening backstory dump. [VI; IX; XI–XII]\n\n## Source authority and conflicts\n\nCurrent author instructions govern preparation and Chapter One preservation. The Snow dossier governs its AU-specific continuity; the general bible supplies compatible characterization. *Power to Strive* is an external reference, not an established Snow chapter or automatic canon.\n\n- **Resolved by source specificity:** Snow's immediately-pre-trial room opening supersedes the base bible's two-days-before-the-57th-Expedition opening. Reassess what each character has actually experienced at the earlier point.\n- **Explicit override:** “Erwin and Levi are NOT a couple” must survive any import of the general bible or app's unrelated relationship rules.\n- **UNRESOLVED:** exact first-meeting date versus eight years apart; see TIMELINE.\n- **UNRESOLVED:** exact role/authority of Voss, roster, display names and revealed knowledge in an already-approved Chapter One.\n- **Scope correction:** “The characters do not know Snow” in XI cannot erase Levi's own memories. Levi knows his past; the uninformed viewers discover it.\n- **Possible wording tension:** eight years of return-narrative construction versus three peaceful years and five deliberate years. Do not silently replace the latter.\n\n## Knowledge ledger\n\n| Information | Author-facing status | Character access at opening |\n| --- | --- | --- |\n| Underground relationship, breakup and mutual affection | ESTABLISHED historical canon | Levi and Snow know their own experiences; other viewers do not automatically know. |\n| Snow's village years and Voss-building work | ESTABLISHED broad history | Snow knows his life; Levi and viewers need actual revelation. |\n| Levi's intended permanent goodbye | ESTABLISHED | Levi knows; Snow misinterprets it. |\n| Trial recognition and reunion | ESTABLISHED planned screen event | Room opens before it; knowledge requires footage/revelation. |\n| General AOT secrets listed in the base bible | Author reference, not shared room facts | Keep individual private knowledge distinct; do not import future revelations. |\n| Proposed incidents, jobs, dialogue and gestures | PROPOSED or UNRESOLVED | Not facts merely because a reference mentions them. |\n\n## Chapter preservation\n\n**UNRESOLVED:** no approved Snow Chapter One text is available. No Snow chapter has been rewritten, paraphrased or replaced. Preservation can be certified only after receiving its exact file and hashing it. No story passage is generated as a placeholder.\n\n**PROPOSED workflow:** each approved chapter should have an original, an author approval record, a content hash, and a separate continuity entry listing events, state changes, who learned what and unresolved threads. Earlier drafts remain distinct and intact.\n",
+      "visibility": "private"
+    },
+    {
+      "text": "# Relationships\n\n| Pair or connection | ESTABLISHED | Limits / unresolved detail |\n| --- | --- | --- |\n| Snow ↔ Levi, Underground | Genuine mutual love, shared home, complementary competence and real happiness. Snow is more tactile and verbally affectionate; Levi trusts and reciprocates. [III] | Exact meeting, courtship, home details and relationship duration remain open. Do not retroactively make all affection manipulative. |\n| Snow ↔ Levi, breakup | Incompatible moral choices; Levi spares him and intends permanent separation. Snow fails to accept the finality. [IV] | Triggering incident, affected people and dialogue are not finalized. |\n| Snow → Levi, present | Still loves him, remembers ordinary details, expects a renewed future and returns from a sense of coming home. [VIII; X] | Love is not entitlement or present consent. No automatic reconciliation. |\n| Levi → Snow, present | Recognizes him immediately; remembers a meaningful past; has built his own life and can refuse him. [VII–VIII] | Possible nostalgia or tenderness is not a promise of renewed romance. Exact response belongs to unwritten/unsupplied chapters. |\n| Erwin ↔ Levi | Comrades and colleagues with trust and growing emotional closeness; NOT an established couple. [VII.4; XII] | Do not import the Your Name AU's established relationship. Future outcome is not established. |\n| Snow ↔ Erwin | Can converse pleasantly and respect each other; Snow may gradually perceive rivalry as he recognizes Levi's closeness to Erwin. [VII.4; IX] | No instant hatred, omniscient understanding or already-decided contest outcome. |\n| Erwin / Hange → Levi | Perceptive enough to notice unusual behavior at recognition. [VII.2] | Not automatic knowledge of Snow or the past relationship. |\n| Snow ↔ village community | Real friendships, work and community belonging during three peaceful years. [V] | Individual people, job and exact interactions unspecified. |\n| Voss ↔ patrons / Crown circles | Acquired respectability and influence through work and relationships. [V–VI] | Exact patrons, office and powers require approval. |\n\nThe general AOT relationships in the character bible remain reference material where compatible. The dossier does not finalize a romantic endgame, restore Snow's relationship by default or make Levi a prize between men.\n",
+      "visibility": "private"
+    }
+  ]
+}

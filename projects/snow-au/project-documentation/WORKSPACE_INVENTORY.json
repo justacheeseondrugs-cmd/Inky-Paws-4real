@@ -1,0 +1,343 @@
+{
+  "root": "/workspace/inky-paws",
+  "scope": "App code and unrelated existing AU data; no Snow project before supplied PDFs",
+  "files": [
+    {
+      "path": ".github/workflows/build-logo-icons.yml",
+      "bytes": 979,
+      "sha256": "82a687f2d91c189a50ce7a124e101ab8aaf7cd02206d7b5745dca992b04f5b54",
+      "snow_project_source": false
+    },
+    {
+      "path": ".github/workflows/check-copy-buttons.yml",
+      "bytes": 1655,
+      "sha256": "ae720099943c1b2d06683cc5839d68a9ad208be0792e0c390618fb53e96404ef",
+      "snow_project_source": false
+    },
+    {
+      "path": ".github/workflows/check-inky-paws.yml",
+      "bytes": 2038,
+      "sha256": "6c8e556be8f59e61e6f0f41a8db7e92aa85d0ffd6e7c721efcbd19ca15e01cb0",
+      "snow_project_source": false
+    },
+    {
+      "path": ".github/workflows/check-planner.yml",
+      "bytes": 2080,
+      "sha256": "1b2b116085966cf47eef3815988189ff52d53442484cca16f9ebf21c94b2e0e9",
+      "snow_project_source": false
+    },
+    {
+      "path": ".github/workflows/check-spanish-ui.yml",
+      "bytes": 3940,
+      "sha256": "42e529b2cee5fbf9407299996bad7ddfd6cb26abad94644c607b7c09259b6536",
+      "snow_project_source": false
+    },
+    {
+      "path": ".github/workflows/deploy-pages.yml",
+      "bytes": 716,
+      "sha256": "229133bbc63387b455d051631e710997081dc2bedb63c68be6d0abed7fe9bc14",
+      "snow_project_source": false
+    },
+    {
+      "path": ".nojekyll",
+      "bytes": 3,
+      "sha256": "16647954c146404e2b7418ad84f45ea5430a2b844ae367ccb8ad371b8b8465f5",
+      "snow_project_source": false
+    },
+    {
+      "path": "css/style.css",
+      "bytes": 20901,
+      "sha256": "41dcbdda72316fe4d0fe0ed209b5f5ce5c2a0af004555f66a7e8051dfaf904b8",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/a-day-off/character-bible-supplement.md",
+      "bytes": 11911,
+      "sha256": "b172970ebc79b2659e14beb70575105364f02d48d4acd965fc30cf325f87368b",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/a-day-off/plot-and-watching-room.md",
+      "bytes": 6726,
+      "sha256": "045b5990e97a613377a84ab8d3b00727b855bb7e7bfd8a7dcf449cf0acac4a65",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/violet/character-bible.txt",
+      "bytes": 34368,
+      "sha256": "273e7cdd72d82a7f8fe2987c6b84c783636dc0d2073d53d8ad4900186d02d489",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/violet/pack.json",
+      "bytes": 35594,
+      "sha256": "790937428c8c13789394f15e7bfaeb0ab48a37a1693759c3b3c4f37b030eccd3",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/violet/power-to-strive-i.txt",
+      "bytes": 1133457,
+      "sha256": "bfa96e3fc6968fc1eee49db909de660ae02b0e46bdd21810d08292803dce556e",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/your-name/character-bible-supplement.txt",
+      "bytes": 29467,
+      "sha256": "282bd68d53e962d4a507371ceb99aca3f8f4d29b3e14b4c7ddbf99be555173d1",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/your-name/pack.json",
+      "bytes": 49152,
+      "sha256": "d42ecb050e0919d4b83974edb1550e67c03c216fa66803919dc4c36db2344587",
+      "snow_project_source": false
+    },
+    {
+      "path": "data/your-name/zeke-au.txt",
+      "bytes": 22171,
+      "sha256": "5777bdb4c57284109d450906abb122b2b564a52844a7f6ccf05fd46b0d777c53",
+      "snow_project_source": false
+    },
+    {
+      "path": "icons/black-cat.svg",
+      "bytes": 1254,
+      "sha256": "d2247ec146536413c52150414bd3ee6355c70b26552159d6f55a3413d2ab476d",
+      "snow_project_source": false
+    },
+    {
+      "path": "icons/icon.svg",
+      "bytes": 413,
+      "sha256": "7dca6756c3b4bf4d45ec126c48b87f86d51a8f4f0a35f6eaa3314ed722dffcb2",
+      "snow_project_source": false
+    },
+    {
+      "path": "icons/user-cat-logo.svg",
+      "bytes": 14097,
+      "sha256": "be4ef79c446fd1f949cb5c555a4cfd929817348b9b64863a557f7a293caf53a4",
+      "snow_project_source": false
+    },
+    {
+      "path": "index.html",
+      "bytes": 3216,
+      "sha256": "80006b96709346b5517be4f022d81cc14a91f017b4e6711c4fe106b63ad4028e",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/adayoff.js",
+      "bytes": 15341,
+      "sha256": "9ef3a40abb2e73ba6450efa85d3104a86c7c0ddd4857ec9a19ee3d3a186ad277",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/app.js",
+      "bytes": 20594,
+      "sha256": "8aaa601e1d20a24e78912677e84d902923d4a26d82bc79dca7c78b95c172cba9",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/authorBrain.js",
+      "bytes": 14124,
+      "sha256": "29f12df788bc09cc07bbf0d8c368878c709c4944739d65e243d94ec63b68d177",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/canonGuard.js",
+      "bytes": 10399,
+      "sha256": "6eeb7dcb3b0ef06dd904949c06e630c66073ded4cca6dcdde31f3c90c2b28ed0",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/characterMatch.js",
+      "bytes": 2338,
+      "sha256": "4b37310c5b61b3cade15147178c43d5fabd3afe65983a79ab61d2438bfc5324c",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/contextGuard.js",
+      "bytes": 6083,
+      "sha256": "13b001b9f684cf577ac485dfebd78017513e2b9253092f744d9a82414b584ab4",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/db.js",
+      "bytes": 6367,
+      "sha256": "2eb40cc0f4f03ff21a8fd2fa83d313bb9743b2c2dca52faef92d1c04be8d0e59",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/generation.js",
+      "bytes": 36171,
+      "sha256": "6fb78fd1d1047e36485b23b54e0ff264fff51037438241e0396fb43fa5cf7e8f",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/kaelAu.js",
+      "bytes": 22672,
+      "sha256": "8839f98045b94c3b040e677271252e2f2299ec554e7e93dd85109aab15b09038",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/memoryEngine.js",
+      "bytes": 6092,
+      "sha256": "e80212419178873cbb35ac266eade8041650e643c6a8ded91031ca42610002b4",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/modelTestPack.js",
+      "bytes": 13879,
+      "sha256": "e812ed69ddc9f475ec1571c549630b856d1e682b28119e95ea58de59b2d9ab6f",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/providers/base.js",
+      "bytes": 1314,
+      "sha256": "3c23411ea885d892a1e6729821bff12d1eb3aba76c2157c6c4c69d6989034d5a",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/providers/gemini.js",
+      "bytes": 3456,
+      "sha256": "d75e92e845496eada819ae84803901b0611c650387666d7f88a9d339375bd5c9",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/providers/index.js",
+      "bytes": 1338,
+      "sha256": "2fb36a6ee9ecd643cab1f4eeb8db5941a973769936329ca7d4c4dfac1abf5e3e",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/providers/openai.js",
+      "bytes": 8150,
+      "sha256": "13a935d5ddc6130c9c37f9cef89e7f527d80d98f5f48aada6cd269af70ff9811",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/providers/openrouter.js",
+      "bytes": 3543,
+      "sha256": "85073ac4c642ba19f417379e2e1166f7ffe8061d40ab3490a30e081bc0d8f0d7",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/reactionGuidance.js",
+      "bytes": 2801,
+      "sha256": "e2a30b51e4b234dfe057c503ce4883eaf7530416e2411a0a075952243897c520",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/retrieval.js",
+      "bytes": 4368,
+      "sha256": "1d98424bdc71eea97bb894d08099888f88768b6a8e8f776a7d86b3248bdefc88",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/smartContext.js",
+      "bytes": 6739,
+      "sha256": "a46fc8e0b7d27d013864808fe6de06e532e172653ae765faf6c7124f334a8042",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/storyCast.js",
+      "bytes": 2860,
+      "sha256": "d224f4f573a5b392205f2250bbc475a1c8437cc52d6839e94f63cce206deeba3",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/storyRecall.js",
+      "bytes": 3822,
+      "sha256": "b350878e714504657384bee9716e4cdb8ef48b4b67fa866bb2682bb7eb459902",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/timeline.js",
+      "bytes": 1483,
+      "sha256": "922ad0c1594a23f5d21b3638a92a399b6dcabfe60632f57f15f736acf22f1054",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/ui/appearance.js",
+      "bytes": 6623,
+      "sha256": "6177cd2140f80c5d589eaa3b55d78ce4bc072d990c4f594b531e9e84694e309d",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/ui/chapters.js",
+      "bytes": 18869,
+      "sha256": "991cb91e31d43659e7ee389d14c2dc877ca152998ce005cc07ad06a0632f9210",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/ui/memory.js",
+      "bytes": 7984,
+      "sha256": "ca80822a5d6914cc782e6d34bbb587ba169bb676a565c1f44a5990577aa7821e",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/ui/planner.js",
+      "bytes": 13508,
+      "sha256": "402e3979e6c1760e190d9d8b26b1a8171493919101dc6f0d3d0304adb1939bcb",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/ui/settings.js",
+      "bytes": 9247,
+      "sha256": "bd3d9a3b97fb4a98750c34377e954ddb69c541b107bff571c3950a63598b8ddf",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/ui/write.js",
+      "bytes": 37475,
+      "sha256": "db3fbc49e9f46989f32ff35295aacc97f31a3f71ec64422995af44c512b5e421",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/utils.js",
+      "bytes": 3433,
+      "sha256": "3b026686cb189823254bb6952a8cde2556b7373553ed1526e0ab0aaf6bd15c26",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/violet.js",
+      "bytes": 6285,
+      "sha256": "d15161bf59444d19bb300e59d1179994a749f2352d6b5a0e7832e8f363485da3",
+      "snow_project_source": false
+    },
+    {
+      "path": "js/yourName.js",
+      "bytes": 4127,
+      "sha256": "709706e71870bca0bab495ebc62381a8da2ec1541c8caac2cc89514793f3fa32",
+      "snow_project_source": false
+    },
+    {
+      "path": "manifest.webmanifest",
+      "bytes": 799,
+      "sha256": "0caff958c04aaf7b8f78fa17f79b592af7eb8754d7eb400de6147852279e7c27",
+      "snow_project_source": false
+    },
+    {
+      "path": "scripts/build-logo-icons.py",
+      "bytes": 1207,
+      "sha256": "cb99028b8600170238713e51fd7256648a694670cd73e1eef46bae43cc986737",
+      "snow_project_source": false
+    },
+    {
+      "path": "sw.js",
+      "bytes": 2720,
+      "sha256": "7d9e67d741e35bb2b7491cf2408d6e70092856fc48df2a8fadd5fc030d62b84b",
+      "snow_project_source": false
+    },
+    {
+      "path": "tests/violet-browser.py",
+      "bytes": 7059,
+      "sha256": "4e077f512837511eec841bc1ac60ef87a3dd3741a517a6946e0191f9b556d179",
+      "snow_project_source": false
+    },
+    {
+      "path": "tests/your-name-browser.py",
+      "bytes": 6913,
+      "sha256": "bff44db21e10610b3e27db560e299a4a1f9834b7ec819156672c54b545dc3bef",
+      "snow_project_source": false
+    }
+  ],
+  "byte_identical_duplicate_groups": []
+}
