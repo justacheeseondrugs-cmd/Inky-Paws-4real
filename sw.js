@@ -1,7 +1,7 @@
 // sw.js — cachea sólo el "shell" de la app (HTML/CSS/JS propios) para que
 // abra offline. Las llamadas a la API de IA siempre necesitan red y nunca
 // se cachean aquí.
-const CACHE = 'inky-paws-es-v42-a-day-off-v1';
+const CACHE = 'inky-paws-es-v43-your-name-v1';
 const SHELL = [
   './',
   './index.html',
@@ -24,6 +24,10 @@ const SHELL = [
   './js/kaelAu.js',
   './js/violet.js',
   './js/adayoff.js',
+  './js/yourName.js',
+  './data/your-name/pack.json',
+  './data/your-name/character-bible-supplement.txt',
+  './data/your-name/zeke-au.txt',
   './data/a-day-off/character-bible-supplement.md',
   './data/a-day-off/plot-and-watching-room.md',
   './data/violet/pack.json',
@@ -83,4 +87,5 @@ self.addEventListener('fetch', (event) => {
     }).catch(async () => (await caches.match(event.request)) || Response.error())
   );
 });
+
 
