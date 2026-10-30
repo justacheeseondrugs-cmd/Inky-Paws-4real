@@ -1,6 +1,7 @@
 // storyCast.js — reparto estructural de la historia original Power to Strive.
 // Evita que la autora tenga que volver a escribir los 13 espectadores en cada capítulo.
 import { isVioletStory, VIOLET_ROOM_CAST } from './violet.js?v=20261022-violet-v1';
+import { isYourNameStory, YOUR_NAME_ROOM_CAST } from './yourName.js?v=20261030-your-name-v1';
 
 export const KAEL_AU_ROOM_CAST = [
   'Petra Ral',
@@ -66,6 +67,7 @@ export function isPowerToStriveStory(projectId,lockedFacts=[]){
 
 export function getAutomaticReactionRoomCast(projectId,reactionMode=true,lockedFacts=[]){
   if(!reactionMode) return [];
+  if(isYourNameStory(projectId,lockedFacts)) return YOUR_NAME_ROOM_CAST.slice();
   if(projectId === 'a-day-off') return VIOLET_ROOM_CAST.slice();
   if(isVioletStory(projectId,lockedFacts)) return VIOLET_ROOM_CAST.slice();
   if(projectId === 'kael-au') return KAEL_AU_ROOM_CAST.slice();
@@ -90,4 +92,5 @@ export function combineCast(...groups){
 export function formatCast(names){
   return (names || []).join(', ');
 }
+
 
