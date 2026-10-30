@@ -5,7 +5,7 @@ import { generateContinuityMemory } from '../memoryEngine.js?v=20260928-long-mem
 import { isMainTimelineChapter } from '../timeline.js?v=20260928-chapter-variants-v1';
 import { buildModelTestPack } from '../modelTestPack.js?v=20261003-room-cast-canon-v1';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js?v=20260928-ownership-guard-v1';
-import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js?v=20261026-a-day-off-v1';
+import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js?v=20261030-your-name-v1';
 
 let isRunning = false;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -472,4 +472,5 @@ async function runGeneration(options){
   }catch(err){toast('No se pudo generar: '+err.message,{error:true,ms:10000});}
   finally{isRunning=false;await renderWrite(root);}
 }
+
 
