@@ -10,16 +10,16 @@
 // mucho la recuperación fiable sin un backend propio).
 
 import { db } from './db.js';
-import { getProvider } from './providers/index.js?v=20260928-economy-mini-v1';
-import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js?v=20261003-canon-scope-v1';
+import { getProvider } from './providers/index.js';
+import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
 import { wordCount } from './utils.js';
-import { chaptersBefore, memoriesForChapters } from './timeline.js?v=20260928-chapter-variants-v1';
-import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
-import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
-import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js?v=20260928-ownership-guard-v1';
-import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost } from './smartContext.js?v=20261003-smart-context-v1';
-import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v2';
+import { chaptersBefore, memoriesForChapters } from './timeline.js';
+import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js';
+import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
+import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js';
+import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost } from './smartContext.js';
+import { filterCharactersByAllowedCast } from './characterMatch.js';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.

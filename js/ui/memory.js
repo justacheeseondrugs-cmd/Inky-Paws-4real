@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import { escapeHtml, toast, fmtDate, openModal, closeModal } from '../utils.js';
-import { filterActiveMemories } from '../timeline.js?v=20260928-chapter-variants-v1';
+import { filterActiveMemories } from '../timeline.js';
 
 export async function renderMemory(root) {
   const [lockedFacts, canonNotes, allMemoryEntries, chapters] = await Promise.all([db.getAll('lockedFacts'), db.getAll('canonNotes'), db.getAll('memoryEntries'), db.getAll('chapters')]);

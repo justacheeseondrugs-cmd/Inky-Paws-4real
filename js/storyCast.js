@@ -1,7 +1,7 @@
 // storyCast.js — reparto estructural de la historia original Power to Strive.
 // Evita que la autora tenga que volver a escribir los 13 espectadores en cada capítulo.
-import { isVioletStory, VIOLET_ROOM_CAST } from './violet.js?v=20261022-violet-v1';
-import { isYourNameStory, YOUR_NAME_ROOM_CAST } from './yourName.js?v=20261030-your-name-v1';
+import { isVioletStory, VIOLET_ROOM_CAST } from './violet.js';
+import { isYourNameStory, YOUR_NAME_ROOM_CAST } from './yourName.js';
 
 export const KAEL_AU_ROOM_CAST = [
   'Petra Ral',

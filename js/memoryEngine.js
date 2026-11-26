@@ -1,9 +1,9 @@
 import { db } from './db.js';
-import { getProvider } from './providers/index.js?v=20260928-economy-mini-v1';
-import { assembleSystemPrompt } from './canonGuard.js?v=20260928-long-memory-v1';
+import { getProvider } from './providers/index.js';
+import { assembleSystemPrompt } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
 import { isLikelyInvalidProse } from './providers/base.js';
-import { filterActiveMemories } from './timeline.js?v=20260928-chapter-variants-v1';
+import { filterActiveMemories } from './timeline.js';
 
 const MEMORY_FIELDS = [
   ['EVENTS', 'events'],
