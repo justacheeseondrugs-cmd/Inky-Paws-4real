@@ -14,7 +14,7 @@ import { getProvider } from './providers/index.js?v=20260928-economy-mini-v1';
 import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js?v=20261003-canon-scope-v1';
 import { getRelevantChunks } from './retrieval.js';
 import { wordCount } from './utils.js';
-import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
+import { chaptersBefore, memoriesForChapters } from './timeline.js?v=20260928-chapter-variants-v1';
 import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
 import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js?v=20260928-ownership-guard-v1';
@@ -113,9 +113,8 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     const isLastStretch = fullChapterMode || remaining <= blockWords;
 
     const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
-    const activeIds = activeChapterIds(allChapters);
-    const allActiveMemoryEntries = allMemoryEntries.slice().sort((a,b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
-      .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
+    const priorChapters = chaptersBefore(allChapters,state.chapterId);
+    const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries,priorChapters);
     const smartQuery = buildSmartContextQuery({
       instructions:state.instructions,
       allowedCast:state.allowedCast,
@@ -127,10 +126,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
     const memorySelection = selectSmartMemories(allActiveMemoryEntries,smartQuery);
     const memoryEntries = memorySelection.selected;
     const canonBoost = canonQueryBoost(canonNotes,smartQuery);
-    const mainPreviousChapters = allChapters
-      .filter((chapter) => chapter.id !== state.chapterId && activeIds.has(chapter.id) && String(chapter.content || '').trim())
-      .slice()
-      .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+    const mainPreviousChapters = priorChapters;
     const continuityQuery = [
       smartQuery,
       canonBoost,
@@ -362,9 +358,8 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   ]);
 
   const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
-  const activeIds = activeChapterIds(allChapters);
-  const allActiveMemoryEntries = allMemoryEntries.slice().sort((a,b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
-    .filter((m) => m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
+  const priorChapters = chaptersBefore(allChapters,state.chapterId);
+    const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries,priorChapters);
   const smartQuery = buildSmartContextQuery({
     instructions:state.instructions,
     allowedCast:state.allowedCast,
@@ -375,10 +370,7 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   });
   const memoryEntries = selectSmartMemories(allActiveMemoryEntries,smartQuery).selected;
   const continuityQuery = [smartQuery,canonQueryBoost(canonNotes,smartQuery)].filter(Boolean).join(' ');
-  const mainPreviousChapters = allChapters
-    .filter((chapter) => chapter.id !== state.chapterId && activeIds.has(chapter.id) && String(chapter.content || '').trim())
-    .slice()
-    .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const mainPreviousChapters = priorChapters;
   const storyExcerpts = getRelevantStoryExcerpts(mainPreviousChapters, continuityQuery, { excludeChapterId:state.chapterId,maxExcerpts:4,maxPerChapter:2 });
   const previousEnding = getPreviousChapterEnding(mainPreviousChapters,state.chapterId,3200);
   const documents = allDocuments.filter((d) => Array.isArray(state.documentIds) ? state.documentIds.includes(d.id) : true);
@@ -484,9 +476,8 @@ export async function polishPendingBlock(chapterId, editedText) {
   ]);
 
   const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
-  const activeIds = activeChapterIds(allChapters);
-  const allActiveMemoryEntries = allMemoryEntries.slice().sort((a,b)=>String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
-    .filter((m)=>m.chapterId !== state.chapterId && activeIds.has(m.chapterId));
+  const priorChapters = chaptersBefore(allChapters,state.chapterId);
+    const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries,priorChapters);
   const smartQuery = buildSmartContextQuery({
     instructions:state.instructions,
     allowedCast:state.allowedCast,
@@ -497,9 +488,7 @@ export async function polishPendingBlock(chapterId, editedText) {
   });
   const memoryEntries = selectSmartMemories(allActiveMemoryEntries,smartQuery).selected;
   const continuityQuery = [smartQuery,canonQueryBoost(canonNotes,smartQuery)].filter(Boolean).join(' ');
-  const mainPreviousChapters = allChapters
-    .filter((chapter)=>chapter.id !== state.chapterId && activeIds.has(chapter.id) && String(chapter.content || '').trim())
-    .slice().sort((a,b)=>(a.order ?? 0)-(b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const mainPreviousChapters = priorChapters;
   const storyExcerpts = getRelevantStoryExcerpts(
     mainPreviousChapters,
     continuityQuery,
