@@ -749,6 +749,18 @@ function openRelationshipModal(existing, mainChapters, root, projectId) {
   });
 }
 
+function formatArcSecretLabel(s) {
+  if (typeof s === 'string') return s;
+  const tag = s.authorOnly ? '[Solo autor] ' : '';
+  const who = s.knownBy?.length ? ` (saben: ${s.knownBy.join(', ')})` : '';
+  return `${tag}${s.title || s.truth}${who}`;
+}
+
+function formatArcPromiseLabel(p) {
+  if (typeof p === 'string') return p;
+  return `[${p.status || 'open'}] ${p.text}`;
+}
+
 function renderArcSummaries(arcs, mainChapters, root, projectId) {
   const el = document.getElementById('arc-summaries-list');
   if (!el) return;
@@ -766,8 +778,8 @@ function renderArcSummaries(arcs, mainChapters, root, projectId) {
         </div>
       </div>
       ${a.summary ? `<div style="font-size:13px; margin:4px 0;">${escapeHtml(a.summary)}</div>` : ''}
-      ${a.preservedSecrets?.length ? `<div class="muted" style="font-size:12px;"><b>Secretos preservados:</b> ${escapeHtml(a.preservedSecrets.join(' · '))}</div>` : ''}
-      ${a.preservedPromises?.length ? `<div class="muted" style="font-size:12px;"><b>Promesas preservadas:</b> ${escapeHtml(a.preservedPromises.join(' · '))}</div>` : ''}
+      ${a.preservedSecrets?.length ? `<div class="muted" style="font-size:12px;"><b>Secretos preservados:</b> ${escapeHtml(a.preservedSecrets.map(formatArcSecretLabel).join(' · '))}</div>` : ''}
+      ${a.preservedPromises?.length ? `<div class="muted" style="font-size:12px;"><b>Promesas preservadas:</b> ${escapeHtml(a.preservedPromises.map(formatArcPromiseLabel).join(' · '))}</div>` : ''}
       ${a.openThreads?.length ? `<div class="muted" style="font-size:12px;"><b>Hilos abiertos:</b> ${escapeHtml(a.openThreads.join(' · '))}</div>` : ''}
       <div class="btn-row" style="margin-top:6px;">
         <button type="button" class="btn btn-ghost btn-sm act-arc-edit">Editar</button>
@@ -803,9 +815,9 @@ function openArcSummaryModal(existing, root, projectId) {
     <label class="field-label">Resumen narrativo</label>
     <textarea id="arc-summary" rows="3">${escapeHtml(a.summary || '')}</textarea>
     <label class="field-label">Secretos preservados (uno por línea)</label>
-    <textarea id="arc-secrets" rows="2">${escapeHtml((a.preservedSecrets || []).join('\n'))}</textarea>
+    <textarea id="arc-secrets" rows="2">${escapeHtml((a.preservedSecrets || []).map((s) => (typeof s === 'string' ? s : (s.truth || s.title || ''))).join('\n'))}</textarea>
     <label class="field-label">Promesas preservadas (una por línea)</label>
-    <textarea id="arc-promises" rows="2">${escapeHtml((a.preservedPromises || []).join('\n'))}</textarea>
+    <textarea id="arc-promises" rows="2">${escapeHtml((a.preservedPromises || []).map((p) => (typeof p === 'string' ? p : (p.text || ''))).join('\n'))}</textarea>
     <label class="field-label">Hilos abiertos (uno por línea)</label>
     <textarea id="arc-threads" rows="2">${escapeHtml((a.openThreads || []).join('\n'))}</textarea>
     <div class="btn-row">

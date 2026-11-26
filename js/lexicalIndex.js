@@ -4,15 +4,22 @@
 // Reglas fundamentales:
 // - Solo indexa capítulos de la línea principal (`isMainTimelineChapter`): los capítulos
 //   alternativos NUNCA contaminan el índice de continuidad principal.
-// - Guarda la revisión (`contentFingerprint`) de cada capítulo fuente para actualizaciones
-//   incrementales y trazabilidad exacta.
-// - Soporta búsqueda léxica BM25 (EN + ES), búsqueda exacta por número de capítulo
-//   (p.ej. "capítulo 7" / "chapter 7"), filtrado cronológico estricto (`maxChapterOrder`)
-//   y explicación determinista de cada resultado (`matchedTerms`, `bm25Score`, `whyRetrieved`).
+// - Reutiliza la lógica exacta de numeración por título y prólogo de `storyRecall.js`
+//   (español e inglés, números saltados, capítulos renombrados o reordenados).
+// - Valida revisiones de capítulos y firmas de documentos antes de consumir un índice
+//   persistido: los documentos inactivos, modificados o eliminados nunca se sirven desde
+//   un índice obsoleto.
+// - Los índices son datos derivados y reconstruibles desde las fuentes aprobadas.
 
 import { db } from './db.js';
-import { isMainTimelineChapter } from './timeline.js';
+import { isMainTimelineChapter, sortMainTimelineChapters } from './timeline.js';
 import { contentFingerprint } from './utils.js';
+import {
+  requestedChapterNumbers,
+  isPrologueTitle,
+  chapterNumberFromTitle,
+  requestsPrologue,
+} from './storyRecall.js';
 
 const BM25_K1 = 1.5;
 const BM25_B = 0.75;
@@ -57,14 +64,39 @@ export function tokenizeForBm25(text) {
 }
 
 export function extractExactChapterNumber(query) {
-  const text = String(query || '');
-  const m = text.match(/\b(?:cap[íi]tulo|cap\.?|chapter|ch\.?)\s*#?\s*(\d{1,4})\b/i);
-  if (!m) return null;
-  const num = parseInt(m[1], 10);
-  return Number.isFinite(num) && num >= 0 ? num : null;
+  const nums = [...requestedChapterNumbers(query)];
+  return nums.length ? nums[0] : null;
 }
 
-export function segmentChapterPassages(chapter, { targetChars = TARGET_PASSAGE_CHARS } = {}) {
+/**
+ * Anota los capítulos de la línea principal con numeración consciente de prólogos y
+ * títulos explícitos (EN/ES), igual que `storyRecall.js`.
+ */
+export function annotateMainChaptersNumbering(chapters) {
+  const ordered = sortMainTimelineChapters(chapters).filter((ch) => String(ch?.content || '').trim());
+  let numberedPos = 0;
+  const annotated = ordered.map((chapter, timelineRank) => {
+    const prologue = isPrologueTitle(chapter.title);
+    const titleNum = chapterNumberFromTitle(chapter.title);
+    if (!prologue) numberedPos += 1;
+    return {
+      chapter,
+      timelineRank,
+      isPrologue: prologue,
+      titleChapterNumber: titleNum,
+      fallbackChapterNumber: prologue ? null : numberedPos,
+    };
+  });
+  return annotated;
+}
+
+export function segmentChapterPassages(chapter, {
+  targetChars = TARGET_PASSAGE_CHARS,
+  isPrologue = null,
+  titleChapterNumber = undefined,
+  fallbackChapterNumber = null,
+  timelineRank = null,
+} = {}) {
   const content = String(chapter?.content || '').trim();
   if (!content) return [];
   const paragraphs = content.split(/\n\s*\n+/).map((p) => p.trim()).filter(Boolean);
@@ -95,10 +127,17 @@ export function segmentChapterPassages(chapter, { targetChars = TARGET_PASSAGE_C
 
   const rev = contentFingerprint(content);
   const order = Number.isFinite(Number(chapter.order)) ? Number(chapter.order) : 0;
+  const resolvedPrologue = isPrologue !== null ? Boolean(isPrologue) : isPrologueTitle(chapter.title);
+  const resolvedTitleNum = titleChapterNumber !== undefined ? titleChapterNumber : chapterNumberFromTitle(chapter.title);
+
   return passages.map((text, passageIndex) => ({
     docId: `${chapter.id}#p${passageIndex}`,
     chapterId: chapter.id,
     chapterOrder: order,
+    timelineRank,
+    isPrologue: resolvedPrologue,
+    titleChapterNumber: resolvedTitleNum,
+    fallbackChapterNumber,
     chapterTitle: String(chapter.title || `Capítulo ${order}`),
     chapterRevision: rev,
     passageIndex,
@@ -107,7 +146,7 @@ export function segmentChapterPassages(chapter, { targetChars = TARGET_PASSAGE_C
   }));
 }
 
-function buildInvertedFromDocs(rawDocs, { id, projectId, kind, chapterRevisions = {} }) {
+function buildInvertedFromDocs(rawDocs, { id, projectId, kind, chapterRevisions = {}, documentSignatures = {} }) {
   const docs = [];
   const postingsMap = new Map();
   let totalLength = 0;
@@ -137,6 +176,10 @@ function buildInvertedFromDocs(rawDocs, { id, projectId, kind, chapterRevisions 
       docId: item.docId,
       chapterId: item.chapterId || null,
       chapterOrder: item.chapterOrder ?? null,
+      timelineRank: item.timelineRank ?? null,
+      isPrologue: Boolean(item.isPrologue),
+      titleChapterNumber: item.titleChapterNumber ?? null,
+      fallbackChapterNumber: item.fallbackChapterNumber ?? null,
       chapterTitle: item.chapterTitle || '',
       chapterRevision: item.chapterRevision || '',
       documentId: item.documentId || null,
@@ -159,10 +202,11 @@ function buildInvertedFromDocs(rawDocs, { id, projectId, kind, chapterRevisions 
     id,
     projectId,
     kind,
-    schemaVersion: 1,
+    schemaVersion: 2,
     totalDocs: docs.length,
     avgdl: docs.length ? totalLength / docs.length : 0,
     chapterRevisions,
+    documentSignatures,
     docs,
     df,
     postings,
@@ -176,21 +220,28 @@ function buildInvertedFromDocs(rawDocs, { id, projectId, kind, chapterRevisions 
  */
 export function buildChapterLexicalIndex(chapters, { projectId = '' } = {}) {
   const effectiveProject = projectId || db.getActiveProjectId();
-  const mainChapters = (chapters || [])
-    .filter((ch) => isMainTimelineChapter(ch) && String(ch.content || '').trim())
-    .slice()
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const annotated = annotateMainChaptersNumbering(chapters);
 
   const rawDocs = [];
   const chapterRevisions = {};
-  for (const ch of mainChapters) {
+  for (const entry of annotated) {
+    const ch = entry.chapter;
     const rev = contentFingerprint(ch.content);
     chapterRevisions[ch.id] = {
       rev,
       order: Number.isFinite(Number(ch.order)) ? Number(ch.order) : 0,
+      timelineRank: entry.timelineRank,
       title: String(ch.title || ''),
+      isPrologue: entry.isPrologue,
+      titleChapterNumber: entry.titleChapterNumber,
+      fallbackChapterNumber: entry.fallbackChapterNumber,
     };
-    const passages = segmentChapterPassages(ch);
+    const passages = segmentChapterPassages(ch, {
+      isPrologue: entry.isPrologue,
+      titleChapterNumber: entry.titleChapterNumber,
+      fallbackChapterNumber: entry.fallbackChapterNumber,
+      timelineRank: entry.timelineRank,
+    });
     for (const p of passages) rawDocs.push(p);
   }
 
@@ -203,43 +254,88 @@ export function buildChapterLexicalIndex(chapters, { projectId = '' } = {}) {
 }
 
 /**
- * Actualiza incrementalmente un índice existente si solo cambiaron algunos capítulos,
- * evitando retokenizar los capítulos sin cambios.
+ * Valida si un índice persistido de capítulos coincide exactamente con las revisiones,
+ * títulos, orden y membresía de la línea principal actual.
+ */
+export function isChapterLexicalIndexFresh(existingIndex, chapters) {
+  if (!existingIndex || existingIndex.schemaVersion !== 2 || !existingIndex.chapterRevisions) return false;
+  const annotated = annotateMainChaptersNumbering(chapters);
+  const prevRevs = existingIndex.chapterRevisions;
+  if (Object.keys(prevRevs).length !== annotated.length) return false;
+  for (const entry of annotated) {
+    const ch = entry.chapter;
+    const prev = prevRevs[ch.id];
+    if (!prev) return false;
+    const rev = contentFingerprint(ch.content);
+    const order = Number.isFinite(Number(ch.order)) ? Number(ch.order) : 0;
+    if (
+      prev.rev !== rev ||
+      prev.order !== order ||
+      prev.timelineRank !== entry.timelineRank ||
+      prev.title !== String(ch.title || '') ||
+      prev.titleChapterNumber !== entry.titleChapterNumber ||
+      prev.fallbackChapterNumber !== entry.fallbackChapterNumber
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Actualiza incrementalmente un índice existente cuando cambian algunos capítulos,
+ * evitando retokenizar capítulos sin cambios mientras mantiene metadatos de orden y
+ * numeración exactamente sincronizados.
  */
 export function updateChapterLexicalIndexIncremental(existingIndex, chapters, { projectId = '' } = {}) {
   const effectiveProject = projectId || existingIndex?.projectId || db.getActiveProjectId();
-  const mainChapters = (chapters || [])
-    .filter((ch) => isMainTimelineChapter(ch) && String(ch.content || '').trim())
-    .slice()
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const annotated = annotateMainChaptersNumbering(chapters);
 
-  if (!existingIndex || !Array.isArray(existingIndex.docs) || !existingIndex.chapterRevisions) {
-    return { index: buildChapterLexicalIndex(mainChapters, { projectId: effectiveProject }), rebuilt: true, changedChapterIds: mainChapters.map((c) => c.id) };
+  if (!existingIndex || existingIndex.schemaVersion !== 2 || !Array.isArray(existingIndex.docs) || !existingIndex.chapterRevisions) {
+    return { index: buildChapterLexicalIndex(chapters, { projectId: effectiveProject }), rebuilt: true, changedChapterIds: annotated.map((a) => a.chapter.id) };
   }
 
   const prevRevs = existingIndex.chapterRevisions;
   const nextRevs = {};
-  const changedIds = new Set();
+  const annotatedById = new Map();
+  const contentChangedIds = new Set();
+  const metaChangedIds = new Set();
   const currentIds = new Set();
 
-  for (const ch of mainChapters) {
+  for (const entry of annotated) {
+    const ch = entry.chapter;
     currentIds.add(ch.id);
+    annotatedById.set(ch.id, entry);
     const rev = contentFingerprint(ch.content);
     const order = Number.isFinite(Number(ch.order)) ? Number(ch.order) : 0;
     const title = String(ch.title || '');
-    nextRevs[ch.id] = { rev, order, title };
+    nextRevs[ch.id] = {
+      rev,
+      order,
+      timelineRank: entry.timelineRank,
+      title,
+      isPrologue: entry.isPrologue,
+      titleChapterNumber: entry.titleChapterNumber,
+      fallbackChapterNumber: entry.fallbackChapterNumber,
+    };
     const prev = prevRevs[ch.id];
-    if (!prev || prev.rev !== rev || prev.order !== order || prev.title !== title) {
-      changedIds.add(ch.id);
+    if (!prev || prev.rev !== rev || prev.title !== title) {
+      contentChangedIds.add(ch.id);
+    } else if (
+      prev.order !== order ||
+      prev.timelineRank !== entry.timelineRank ||
+      prev.titleChapterNumber !== entry.titleChapterNumber ||
+      prev.fallbackChapterNumber !== entry.fallbackChapterNumber
+    ) {
+      metaChangedIds.add(ch.id);
     }
   }
   const removedIds = new Set(Object.keys(prevRevs).filter((id) => !currentIds.has(id)));
 
-  if (changedIds.size === 0 && removedIds.size === 0) {
+  if (contentChangedIds.size === 0 && metaChangedIds.size === 0 && removedIds.size === 0) {
     return { index: existingIndex, rebuilt: false, changedChapterIds: [] };
   }
 
-  // Reconstrucción incremental eficiente: conservar postings intactos para docs no modificados
   const oldDocs = existingIndex.docs;
   const oldPostings = existingIndex.postings || {};
   const keptOldIdxToNewIdx = new Map();
@@ -247,9 +343,17 @@ export function updateChapterLexicalIndexIncremental(existingIndex, chapters, { 
 
   for (let i = 0; i < oldDocs.length; i += 1) {
     const d = oldDocs[i];
-    if (removedIds.has(d.chapterId) || changedIds.has(d.chapterId)) continue;
+    if (removedIds.has(d.chapterId) || contentChangedIds.has(d.chapterId)) continue;
     keptOldIdxToNewIdx.set(i, newDocs.length);
-    newDocs.push(d);
+    const meta = annotatedById.get(d.chapterId);
+    newDocs.push(meta ? {
+      ...d,
+      chapterOrder: Number.isFinite(Number(meta.chapter.order)) ? Number(meta.chapter.order) : 0,
+      timelineRank: meta.timelineRank,
+      isPrologue: meta.isPrologue,
+      titleChapterNumber: meta.titleChapterNumber,
+      fallbackChapterNumber: meta.fallbackChapterNumber,
+    } : d);
   }
 
   const nextPostingsMap = new Map();
@@ -264,10 +368,16 @@ export function updateChapterLexicalIndexIncremental(existingIndex, chapters, { 
     if (filtered.length) nextPostingsMap.set(term, filtered);
   }
 
-  // Tokenizar únicamente los capítulos nuevos o modificados
-  for (const ch of mainChapters) {
-    if (!changedIds.has(ch.id)) continue;
-    const passages = segmentChapterPassages(ch);
+  // Tokenizar únicamente los capítulos cuyo contenido o título cambió
+  for (const entry of annotated) {
+    const ch = entry.chapter;
+    if (!contentChangedIds.has(ch.id)) continue;
+    const passages = segmentChapterPassages(ch, {
+      isPrologue: entry.isPrologue,
+      titleChapterNumber: entry.titleChapterNumber,
+      fallbackChapterNumber: entry.fallbackChapterNumber,
+      timelineRank: entry.timelineRank,
+    });
     for (const item of passages) {
       const docIdx = newDocs.length;
       const tokens = tokenizeForBm25(`${item.chapterTitle} ${item.text}`);
@@ -288,6 +398,10 @@ export function updateChapterLexicalIndexIncremental(existingIndex, chapters, { 
         docId: item.docId,
         chapterId: item.chapterId,
         chapterOrder: item.chapterOrder,
+        timelineRank: item.timelineRank,
+        isPrologue: item.isPrologue,
+        titleChapterNumber: item.titleChapterNumber,
+        fallbackChapterNumber: item.fallbackChapterNumber,
         chapterTitle: item.chapterTitle,
         chapterRevision: item.chapterRevision,
         documentId: null,
@@ -314,22 +428,61 @@ export function updateChapterLexicalIndexIncremental(existingIndex, chapters, { 
       id: `${effectiveProject}::chapters`,
       projectId: effectiveProject,
       kind: 'chapters',
-      schemaVersion: 1,
+      schemaVersion: 2,
       totalDocs: newDocs.length,
       avgdl: newDocs.length ? totalLength / newDocs.length : 0,
       chapterRevisions: nextRevs,
+      documentSignatures: {},
       docs: newDocs,
       df,
       postings,
       updatedAt: new Date().toISOString(),
     },
     rebuilt: true,
-    changedChapterIds: [...changedIds, ...removedIds],
+    changedChapterIds: [...new Set([...contentChangedIds, ...metaChangedIds, ...removedIds])],
   };
 }
 
+function computeDocumentSignatures(documents, docChunks) {
+  const chunksByDoc = new Map();
+  for (const c of (docChunks || [])) {
+    if (!c?.documentId) continue;
+    (chunksByDoc.get(c.documentId) || chunksByDoc.set(c.documentId, []).get(c.documentId)).push(c);
+  }
+  const sigs = {};
+  for (const doc of (documents || [])) {
+    if (!doc?.id || doc.active === false) continue;
+    const chunks = (chunksByDoc.get(doc.id) || []).slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    const joined = chunks.map((c) => `${c.id}:${contentFingerprint(c.text || '')}`).join('|');
+    sigs[doc.id] = {
+      filename: String(doc.filename || ''),
+      type: String(doc.type || 'REFERENCE'),
+      active: doc.active !== false,
+      chunkCount: chunks.length,
+      chunkHash: contentFingerprint(joined),
+    };
+  }
+  return sigs;
+}
+
+export function isDocumentLexicalIndexFresh(existingIndex, documents, docChunks) {
+  if (!existingIndex || existingIndex.schemaVersion !== 2 || !existingIndex.documentSignatures) return false;
+  const currentSigs = computeDocumentSignatures(documents, docChunks);
+  const prevSigs = existingIndex.documentSignatures;
+  const curKeys = Object.keys(currentSigs);
+  if (curKeys.length !== Object.keys(prevSigs).length) return false;
+  for (const id of curKeys) {
+    const cur = currentSigs[id];
+    const prev = prevSigs[id];
+    if (!prev || prev.filename !== cur.filename || prev.type !== cur.type || prev.active !== cur.active || prev.chunkCount !== cur.chunkCount || prev.chunkHash !== cur.chunkHash) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
- * Construye un índice BM25 sobre fragmentos de documentos de referencia (`docChunks`).
+ * Construye un índice BM25 únicamente sobre documentos ACTIVOS y sus fragmentos actuales.
  */
 export function buildDocumentLexicalIndex(documents, docChunks, { projectId = '' } = {}) {
   const effectiveProject = projectId || db.getActiveProjectId();
@@ -354,22 +507,25 @@ export function buildDocumentLexicalIndex(documents, docChunks, { projectId = ''
     id: `${effectiveProject}::documents`,
     projectId: effectiveProject,
     kind: 'documents',
+    documentSignatures: computeDocumentSignatures(documents, docChunks),
   });
 }
 
 /**
  * Consulta BM25 determinista y explicable con soporte para:
- * - Filtrado cronológico estricto (`maxChapterOrder`: excluye capítulos >= maxChapterOrder).
- * - Exclusión de un capítulo específico (`excludeChapterId`).
- * - Búsqueda exacta por número de capítulo (`exactChapterNumber` o detectado en `query`).
- * - Filtrado por tipo de documento (`excludeDocTypes`, p.ej. excluir `STYLE_ONLY` en memoria factual).
+ * - Filtrado cronológico estricto (`eligibleChapterIds` o `maxChapterOrder`).
+ * - Búsqueda exacta consciente de prólogos y numeración real de títulos (EN/ES),
+ *   evitando el fallo off-by-one o por números saltados/reordenados.
+ * - Filtrado por tipo de documento (`excludeDocTypes`, `includeDocTypes`).
  */
 export function searchLexicalIndex(index, query, {
   topK = 8,
   maxChapterOrder = null,
+  eligibleChapterIds = null,
   excludeChapterId = null,
   exactChapterNumber = null,
   excludeDocTypes = [],
+  includeDocTypes = null,
   chaptersById = null,
   maxPerChapter = 2,
 } = {}) {
@@ -377,9 +533,35 @@ export function searchLexicalIndex(index, query, {
   const N = index.totalDocs || index.docs.length;
   const avgdl = index.avgdl || 1;
   const excludeTypesSet = new Set(excludeDocTypes || []);
-  const explicitChNum = exactChapterNumber !== null && exactChapterNumber !== undefined
-    ? Number(exactChapterNumber)
-    : extractExactChapterNumber(query);
+  const includeTypesSet = Array.isArray(includeDocTypes) && includeDocTypes.length ? new Set(includeDocTypes) : null;
+  const eligibleSet = eligibleChapterIds instanceof Set
+    ? eligibleChapterIds
+    : (Array.isArray(eligibleChapterIds) ? new Set(eligibleChapterIds) : null);
+
+  const requestedNums = new Set(requestedChapterNumbers(query));
+  if (exactChapterNumber !== null && exactChapterNumber !== undefined && Number.isFinite(Number(exactChapterNumber))) {
+    requestedNums.add(Number(exactChapterNumber));
+  }
+  const wantsPrologue = requestsPrologue(query);
+
+  // Recopilar qué números explícitos de título existen en el índice (misma lógica que storyRecall.js)
+  const explicitTitleNums = new Set();
+  for (let i = 0; i < index.docs.length; i += 1) {
+    const d = index.docs[i];
+    if (d?.titleChapterNumber !== null && d?.titleChapterNumber !== undefined) {
+      explicitTitleNums.add(d.titleChapterNumber);
+    }
+  }
+
+  const isDocAllowed = (doc) => {
+    if (!doc) return false;
+    if (excludeChapterId && doc.chapterId === excludeChapterId) return false;
+    if (eligibleSet && doc.chapterId && !eligibleSet.has(doc.chapterId)) return false;
+    if (!eligibleSet && maxChapterOrder !== null && doc.chapterOrder !== null && doc.chapterOrder >= maxChapterOrder) return false;
+    if (doc.docType && excludeTypesSet.has(doc.docType)) return false;
+    if (includeTypesSet && doc.docType && !includeTypesSet.has(doc.docType)) return false;
+    return true;
+  };
 
   const queryTerms = [...new Set(tokenizeForBm25(query))];
   const scores = new Map();
@@ -396,10 +578,7 @@ export function searchLexicalIndex(index, query, {
       const docIdx = posting[j];
       const tf = posting[j + 1];
       const doc = index.docs[docIdx];
-      if (!doc) continue;
-      if (excludeChapterId && doc.chapterId === excludeChapterId) continue;
-      if (maxChapterOrder !== null && doc.chapterOrder !== null && doc.chapterOrder >= maxChapterOrder) continue;
-      if (doc.docType && excludeTypesSet.has(doc.docType)) continue;
+      if (!isDocAllowed(doc)) continue;
 
       const denom = tf + BM25_K1 * (1 - BM25_B + BM25_B * ((doc.dl || 1) / avgdl));
       const contribution = idf * ((tf * (BM25_K1 + 1)) / (denom || 1));
@@ -413,16 +592,23 @@ export function searchLexicalIndex(index, query, {
     }
   }
 
-  // Búsqueda exacta por número de capítulo (respetando maxChapterOrder)
+  // Búsqueda exacta consciente de prólogos y títulos reales (EN/ES)
   const exactHits = new Set();
-  if (explicitChNum !== null && Number.isFinite(explicitChNum)) {
+  if (requestedNums.size > 0 || wantsPrologue) {
     for (let docIdx = 0; docIdx < index.docs.length; docIdx += 1) {
       const doc = index.docs[docIdx];
-      if (!doc || doc.chapterOrder !== explicitChNum) continue;
-      if (excludeChapterId && doc.chapterId === excludeChapterId) continue;
-      if (maxChapterOrder !== null && doc.chapterOrder >= maxChapterOrder) continue;
-      exactHits.add(docIdx);
-      scores.set(docIdx, (scores.get(docIdx) || 0) + 6.0);
+      if (!isDocAllowed(doc) || !doc.chapterId) continue;
+      const matchesPrologue = wantsPrologue && doc.isPrologue === true;
+      const matchesTitleNum = doc.titleChapterNumber !== null && doc.titleChapterNumber !== undefined && requestedNums.has(doc.titleChapterNumber);
+      const matchesFallback = (doc.titleChapterNumber === null || doc.titleChapterNumber === undefined) &&
+        doc.fallbackChapterNumber !== null && doc.fallbackChapterNumber !== undefined &&
+        requestedNums.has(doc.fallbackChapterNumber) &&
+        !explicitTitleNums.has(doc.fallbackChapterNumber);
+
+      if (matchesPrologue || matchesTitleNum || matchesFallback) {
+        exactHits.add(docIdx);
+        scores.set(docIdx, (scores.get(docIdx) || 0) + 12.0);
+      }
     }
   }
 
@@ -432,12 +618,18 @@ export function searchLexicalIndex(index, query, {
       const matchedTerms = matchedByDoc.get(docIdx) || [];
       const exactChapterHit = exactHits.has(docIdx);
       const whyParts = [];
-      if (exactChapterHit) whyParts.push(`coincidencia exacta con capítulo ${doc.chapterOrder}`);
+      if (exactChapterHit) {
+        whyParts.push(doc.isPrologue
+          ? 'coincidencia exacta con prólogo'
+          : `coincidencia exacta con capítulo ${doc.titleChapterNumber ?? doc.fallbackChapterNumber ?? doc.chapterOrder}`);
+      }
       if (matchedTerms.length) whyParts.push(`términos BM25: [${matchedTerms.join(', ')}]`);
       return {
         docId: doc.docId,
         chapterId: doc.chapterId,
         chapterOrder: doc.chapterOrder,
+        titleChapterNumber: doc.titleChapterNumber,
+        isPrologue: doc.isPrologue,
         chapterTitle: doc.chapterTitle,
         chapterRevision: doc.chapterRevision,
         documentId: doc.documentId,
@@ -451,9 +643,8 @@ export function searchLexicalIndex(index, query, {
         whyRetrieved: whyParts.join(' · ') || 'relevancia léxica',
       };
     })
-    .sort((a, b) => b.bm25Score - a.bm25Score || (a.chapterOrder ?? 0) - (b.chapterOrder ?? 0));
+    .sort((a, b) => Number(b.exactChapterHit) - Number(a.exactChapterHit) || b.bm25Score - a.bm25Score || (a.chapterOrder ?? 0) - (b.chapterOrder ?? 0));
 
-  // Evitar que un único capítulo acapare todos los resultados
   const perChapter = new Map();
   const out = [];
   const passageCache = new Map();
@@ -463,7 +654,7 @@ export function searchLexicalIndex(index, query, {
     if (count >= maxPerChapter) continue;
     perChapter.set(groupKey, count + 1);
 
-    // Enriquecer extracto con el texto real centrado ÚNICAMENTE para los topK finales
+    // Enriquecer extracto centrado ÚNICAMENTE para los topK finales
     if (chaptersById && hit.chapterId && chaptersById.has(hit.chapterId) && hit.matchedTerms.length) {
       let passages = passageCache.get(hit.chapterId);
       if (!passages) {
@@ -488,14 +679,22 @@ export function searchLexicalIndex(index, query, {
   return out;
 }
 
-/**
- * Sincroniza y persiste en IndexedDB el índice léxico BM25 de capítulos de una historia.
- */
-export async function syncPersistedChapterIndex({ projectId = '', chapters = null } = {}) {
+export async function invalidatePersistedLexicalIndex({ projectId = '', kind = 'all' } = {}) {
+  const effectiveProject = projectId || db.getActiveProjectId();
+  const scope = { projectId: effectiveProject };
+  if (kind === 'all' || kind === 'chapters') {
+    await db.del('lexicalIndexes', `${effectiveProject}::chapters`, scope);
+  }
+  if (kind === 'all' || kind === 'documents') {
+    await db.del('lexicalIndexes', `${effectiveProject}::documents`, scope);
+  }
+}
+
+export async function syncPersistedChapterIndex({ projectId = '', chapters = null, forceRebuild = false } = {}) {
   const effectiveProject = projectId || db.getActiveProjectId();
   const scope = { projectId: effectiveProject };
   const allChapters = chapters || await db.getAll('chapters', scope);
-  const existing = await db.get('lexicalIndexes', `${effectiveProject}::chapters`, scope);
+  const existing = forceRebuild ? null : await db.get('lexicalIndexes', `${effectiveProject}::chapters`, scope);
   const { index, rebuilt, changedChapterIds } = updateChapterLexicalIndexIncremental(existing, allChapters, { projectId: effectiveProject });
   if (rebuilt || !existing) {
     await db.put('lexicalIndexes', index, scope);
@@ -503,14 +702,18 @@ export async function syncPersistedChapterIndex({ projectId = '', chapters = nul
   return { index, rebuilt, changedChapterIds };
 }
 
-export async function syncPersistedDocumentIndex({ projectId = '', documents = null, docChunks = null } = {}) {
+export async function syncPersistedDocumentIndex({ projectId = '', documents = null, docChunks = null, forceRebuild = false } = {}) {
   const effectiveProject = projectId || db.getActiveProjectId();
   const scope = { projectId: effectiveProject };
   const [docs, chunks] = await Promise.all([
     documents ? Promise.resolve(documents) : db.getAll('documents', scope),
     docChunks ? Promise.resolve(docChunks) : db.getAll('docChunks', scope),
   ]);
+  const existing = forceRebuild ? null : await db.get('lexicalIndexes', `${effectiveProject}::documents`, scope);
+  if (existing && isDocumentLexicalIndexFresh(existing, docs, chunks)) {
+    return { index: existing, rebuilt: false };
+  }
   const index = buildDocumentLexicalIndex(docs, chunks, { projectId: effectiveProject });
   await db.put('lexicalIndexes', index, scope);
-  return { index };
+  return { index, rebuilt: true };
 }

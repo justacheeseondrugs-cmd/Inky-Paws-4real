@@ -35,7 +35,7 @@ export function chapterNumberFromTitle(title) {
   return null;
 }
 
-function requestsPrologue(query) {
+export function requestsPrologue(query) {
   return /\b(?:prologue|prologo)\b/i.test(normalize(query));
 }
 

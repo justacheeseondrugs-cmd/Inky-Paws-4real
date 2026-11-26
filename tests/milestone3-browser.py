@@ -305,6 +305,32 @@ def main():
 
             backup_check = page.evaluate('''async () => {
               const { db, DB_VERSION } = await import('/js/db.js');
+              const { saveKnowledgeFact, updateCharacterBelief } = await import('/js/knowledgeLedger.js');
+              const { markChapterMemoriesStale } = await import('/js/memoryEngine.js');
+              const { syncPersistedChapterIndex } = await import('/js/lexicalIndex.js');
+
+              // Verify atomic invalidation when Ch 2 changes: a fact originated in Ch 1 whose belief was learned in Ch 2 MUST be invalidated,
+              // AND the persisted chapter lexical index MUST be deleted in the same atomic transaction!
+              await syncPersistedChapterIndex({ projectId: 'story-m3-a' });
+              const beforeIdx = await db.get('lexicalIndexes', 'story-m3-a::chapters', { projectId: 'story-m3-a' });
+              const fCross = await saveKnowledgeFact({
+                id: 'kf-cross-ch',
+                title: 'Fact from Ch 1 learned by Hange in Ch 2',
+                truth: 'Erwin hid a cipher key in Ch 1.',
+                scope: 'room_event',
+                sourceChapterId: 'ch-m3-1',
+                firstEffectiveChapterOrder: 1,
+              }, { projectId: 'story-m3-a' });
+              await updateCharacterBelief(fCross.id, 'hange@room', {
+                state: 'knows',
+                evidence: 'Hange spotted it in Chapter 2',
+                effectiveChapterOrder: 2,
+                sourceChapterId: 'ch-m3-2',
+              }, { projectId: 'story-m3-a' });
+              const staleRes = await markChapterMemoriesStale('ch-m3-2', { projectId: 'story-m3-a', reason: 'edited_ch2' });
+              const fAfter = await db.get('knowledgeFacts', 'kf-cross-ch', { projectId: 'story-m3-a' });
+              const afterIdx = await db.get('lexicalIndexes', 'story-m3-a::chapters', { projectId: 'story-m3-a' });
+
               const dump = await db.exportAll();
               const mainExported = dump.settings.find(s => s.id === 'main');
               await db.importAll(dump, { merge: false });
@@ -314,21 +340,24 @@ def main():
               const arcsA = await db.getAll('arcSummaries', { projectId: 'story-m3-a' });
               return {
                 metaV3: dump.__meta.version === DB_VERSION && dump.__meta.schemaVersion === 3,
+                derivedExcludedByDefault: dump.__meta.derivedIndexesExcluded === true && !('lexicalIndexes' in dump),
+                crossChapterBeliefInvalidated: staleRes.knowledgeFacts >= 1 && fAfter?.stale === true && fAfter?.beliefHistoryByCharacter?.['hange@room']?.[0]?.stale === true,
+                lexicalIndexInvalidatedAtomically: Boolean(beforeIdx) && afterIdx === null,
                 keysExcluded: Object.keys(mainExported?.apiKeys || {}).length === 0,
                 keysPreserved: mainAfter?.apiKeys?.openai === 'LOCAL-M3-V2-KEY',
-                factsSurvived: factsA.length === 1 && factsA[0].stale === false,
+                factsSurvived: factsA.length === 2,
                 relsSurvived: relsA.length === 1,
                 arcsSurvived: arcsA.length === 1,
               };
             }''')
-            assert all(backup_check.values()), f'v3 backup check failed: {backup_check}'
+            assert all(backup_check.values()), f'v3 backup / atomic invalidation check failed: {backup_check}'
             assert not network_external, f'Unexpected external network/API requests made: {network_external}'
             assert not errors, f'Unexpected page errors: {errors}'
             assert not csp_errs, f'CSP violations: {csp_errs}'
 
             ctx.close()
             browser.close()
-            print('PASS: all Milestone 3 browser integration tests passed (v2->v3 upgrade, epistemic ledger & false beliefs UI, qualitative relationships, 0-token arc compression, explainable BM25 search, cross-store stale propagation, workspace isolation, v3 backup round-trip, 0 external API calls).')
+            print('PASS: all Milestone 3 + Part A browser integration tests passed (v2->v3 upgrade, epistemic ledger & false beliefs UI, qualitative relationships, 0-token arc compression, explainable BM25 search, atomic cross-store & cross-chapter belief invalidation, derived index lifecycle, workspace isolation, v3 backup round-trip, 0 external API calls).')
     finally:
         server.shutdown()
 

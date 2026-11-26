@@ -1,22 +1,21 @@
-// knowledgeLedger.js — Libro epistémico de conocimiento, secretos, falsas creencias,
-// aislamiento espacial/temporal (sala vs pantalla vs exterior vs flashback) y
-// continuidad emocional/relacional cualitativa (sin puntuaciones numéricas).
+// knowledgeLedger.js — Libro epistémico temporal (append-only) de conocimiento,
+// secretos, falsas creencias, ocultamiento deliberado, aislamiento espacial/temporal
+// (sala vs pantalla vs exterior vs flashback) y continuidad emocional/relacional
+// cualitativa con historial por capítulo y escena (sin puntuaciones numéricas).
 //
-// Invariantes fundamentales del Hito 3:
-// 1. La verdad objetiva del canon (`truth`) y las creencias individuales (`beliefsByCharacter`)
-//    son entidades estrictamente separadas: una falsa creencia de un personaje JAMÁS se
-//    convierte en verdad canónica.
-// 2. Cada personaje actualiza sus creencias de forma independiente cuando llega evidencia.
-// 3. El conocimiento se resuelve estrictamente en el punto narrativo (capítulo/checkpoint)
-//    y capa espacial/versión (`room`, `screen`, `outside`, `flashback`):
-//    - Sin filtración de spoilers futuros.
-//    - Ver un evento en pantalla NO equivale a haberlo vivido (`watched_not_lived`).
-//    - Levi de la sala (`levi@room`) y Levi de la pantalla (`levi@screen`) jamás comparten
-//      automáticamente experiencias, recuerdos ni relaciones.
-//    - Un invitado tardío (p.ej. Joseph al llegar en el capítulo N) no hereda episodios
-//      vistos antes de su llegada salvo evidencia explícita posterior.
-// 4. Hechos o relaciones marcados como `stale` o `disputed` tras editar un capítulo
-//    se excluyen del canon autoritativo actual pero se conservan íntegros para revisión.
+// Invariantes fundamentales:
+// 1. La verdad objetiva (`truth`) y las creencias individuales (`beliefHistoryByCharacter`)
+//    son estrictamente independientes: una falsa creencia JAMÁS altera el canon objetivo.
+// 2. Cada transición de creencia se añade al historial temporal (`append-only`), nunca
+//    borra estados anteriores: reescribir el Cap. 10 recupera la sospecha de Hange del
+//    Cap. 5 y NO su descubrimiento posterior del Cap. 20 ni un estado vacío.
+// 3. Misma temporalidad para relaciones (`stateHistory`), promesas (`statusHistory`),
+//    evolución emocional e historial de divulgación (`disclosureHistory`), con orden por
+//    capítulo, escena (`sceneOrder`) y checkpoint.
+// 4. Metadatos temporales ambiguos o faltantes en hechos/transiciones ligados a eventos
+//    NO se autorizan silenciosamente para capítulos pasados.
+// 5. Fuentes provenientes de capítulos alternativos (`branchRole === 'alternative'`)
+//    nunca se promueven a conocimiento de la línea principal.
 
 import { db } from './db.js';
 import { extractLogicalId } from './characterLibrary.js';
@@ -90,17 +89,33 @@ function cleanStringArray(value) {
   return out;
 }
 
-function toPositiveOrder(value) {
+function toOrder(value) {
   if (value === undefined || value === null || value === '') return null;
   const num = Number(value);
   return Number.isFinite(num) && num >= 0 ? Math.floor(num) : null;
 }
 
-/**
- * Construye una clave canónica de personaje + versión espacial opcional.
- * Ejemplos: `makeCharacterVersionKey('levi', 'screen')` -> `'levi@screen'`,
- *           `makeCharacterVersionKey('levi', 'any')` -> `'levi'`.
- */
+function compareTemporalPoint(a, b) {
+  const ordA = toOrder(a?.effectiveChapterOrder ?? a?.learnedAtChapterOrder);
+  const ordB = toOrder(b?.effectiveChapterOrder ?? b?.learnedAtChapterOrder);
+  if (ordA !== ordB) {
+    if (ordA === null) return -1;
+    if (ordB === null) return 1;
+    return ordA - ordB;
+  }
+  const scA = toOrder(a?.sceneOrder);
+  const scB = toOrder(b?.sceneOrder);
+  if (scA !== scB) {
+    if (scA === null) return -1;
+    if (scB === null) return 1;
+    return scA - scB;
+  }
+  const cpA = PTS_CHECKPOINT_ORDER[cleanString(a?.effectiveCheckpoint ?? a?.learnedAtCheckpoint)] ?? -1;
+  const cpB = PTS_CHECKPOINT_ORDER[cleanString(b?.effectiveCheckpoint ?? b?.learnedAtCheckpoint)] ?? -1;
+  if (cpA !== cpB) return cpA - cpB;
+  return String(a?.recordedAt || a?.updatedAt || '').localeCompare(String(b?.recordedAt || b?.updatedAt || ''));
+}
+
 export function makeCharacterVersionKey(characterId, characterVersion = 'any') {
   const raw = cleanString(characterId);
   if (!raw) return '';
@@ -124,19 +139,31 @@ export function parseCharacterVersionKey(key) {
 
 export function normalizeBeliefEntry(characterKey, rawBelief) {
   const parsed = parseCharacterVersionKey(characterKey);
+  const now = new Date().toISOString();
   if (typeof rawBelief === 'string') {
     const state = EPISTEMIC_STATES.has(rawBelief) ? rawBelief : 'unknown';
     return {
+      transitionId: db.uid(),
       characterId: parsed.characterId,
       characterVersion: parsed.characterVersion,
       state,
+      deliberatelyConcealing: false,
+      concealmentNote: '',
       beliefText: '',
       evidence: '',
       source: '',
+      sourceChapterId: null,
+      sourceChapterRevision: '',
       learnedAtCheckpoint: '',
+      effectiveCheckpoint: '',
       learnedAtChapterOrder: null,
+      effectiveChapterOrder: null,
+      sceneOrder: null,
       concealedBy: [],
-      updatedAt: new Date().toISOString(),
+      stale: false,
+      staleReason: '',
+      recordedAt: now,
+      updatedAt: now,
     };
   }
   if (!isPlainObject(rawBelief)) return null;
@@ -146,17 +173,30 @@ export function normalizeBeliefEntry(characterKey, rawBelief) {
   const characterVersion = CHARACTER_VERSIONS.has(rawVer) ? rawVer : 'any';
   const rawState = cleanString(rawBelief.state || 'unknown');
   const state = EPISTEMIC_STATES.has(rawState) ? rawState : 'unknown';
+  const effOrder = toOrder(rawBelief.effectiveChapterOrder !== undefined ? rawBelief.effectiveChapterOrder : rawBelief.learnedAtChapterOrder);
+  const effCheckpoint = cleanString(rawBelief.effectiveCheckpoint !== undefined ? rawBelief.effectiveCheckpoint : rawBelief.learnedAtCheckpoint);
   return {
+    transitionId: cleanString(rawBelief.transitionId || '') || db.uid(),
     characterId: cid,
     characterVersion,
     state,
+    deliberatelyConcealing: Boolean(rawBelief.deliberatelyConcealing),
+    concealmentNote: cleanString(rawBelief.concealmentNote || ''),
     beliefText: cleanString(rawBelief.beliefText || ''),
     evidence: cleanString(rawBelief.evidence || ''),
     source: cleanString(rawBelief.source || ''),
-    learnedAtCheckpoint: cleanString(rawBelief.learnedAtCheckpoint || ''),
-    learnedAtChapterOrder: toPositiveOrder(rawBelief.learnedAtChapterOrder),
+    sourceChapterId: cleanString(rawBelief.sourceChapterId || rawBelief.learnedAtChapterId || '') || null,
+    sourceChapterRevision: cleanString(rawBelief.sourceChapterRevision || ''),
+    learnedAtCheckpoint: effCheckpoint,
+    effectiveCheckpoint: effCheckpoint,
+    learnedAtChapterOrder: effOrder,
+    effectiveChapterOrder: effOrder,
+    sceneOrder: toOrder(rawBelief.sceneOrder),
     concealedBy: cleanStringArray(rawBelief.concealedBy || []).map(extractLogicalId),
-    updatedAt: rawBelief.updatedAt || new Date().toISOString(),
+    stale: Boolean(rawBelief.stale),
+    staleReason: cleanString(rawBelief.staleReason || ''),
+    recordedAt: rawBelief.recordedAt || rawBelief.updatedAt || now,
+    updatedAt: rawBelief.updatedAt || now,
   };
 }
 
@@ -166,6 +206,24 @@ function inferLayerFromScope(scope) {
   if (scope === 'outside_event') return 'outside';
   if (scope === 'flashback_event') return 'flashback';
   return 'global';
+}
+
+function normalizeDisclosureEntry(entry) {
+  if (!isPlainObject(entry)) return null;
+  return {
+    id: cleanString(entry.id || '') || db.uid(),
+    action: ['disclosed', 'concealed', 'partial_hint', 'denied'].includes(entry.action) ? entry.action : 'disclosed',
+    byCharacterId: extractLogicalId(entry.byCharacterId || entry.by || ''),
+    toCharacterIds: cleanStringArray(entry.toCharacterIds || entry.to || []).map(extractLogicalId),
+    effectiveChapterOrder: toOrder(entry.effectiveChapterOrder ?? entry.chapterOrder),
+    sceneOrder: toOrder(entry.sceneOrder),
+    effectiveCheckpoint: cleanString(entry.effectiveCheckpoint || ''),
+    sourceChapterId: cleanString(entry.sourceChapterId || '') || null,
+    sourceChapterRevision: cleanString(entry.sourceChapterRevision || ''),
+    note: cleanString(entry.note || ''),
+    stale: Boolean(entry.stale),
+    recordedAt: entry.recordedAt || new Date().toISOString(),
+  };
 }
 
 export function normalizeKnowledgeFact(input, { existing = null, projectId = '' } = {}) {
@@ -179,8 +237,23 @@ export function normalizeKnowledgeFact(input, { existing = null, projectId = '' 
   const layer = SPATIAL_LAYERS.has(rawLayer) ? rawLayer : inferLayerFromScope(scope);
   const now = new Date().toISOString();
 
-  // Combinar `beliefsByCharacter` y compatibilidad con `statusByCharacter` heredado
-  const beliefsByCharacter = {};
+  // Reconstruir historial append-only `beliefHistoryByCharacter` preservando compatibilidad con `beliefsByCharacter`
+  const beliefHistoryByCharacter = {};
+  const sourceHistory = isPlainObject(input.beliefHistoryByCharacter)
+    ? input.beliefHistoryByCharacter
+    : (isPlainObject(existing?.beliefHistoryByCharacter) ? existing.beliefHistoryByCharacter : {});
+
+  for (const [k, list] of Object.entries(sourceHistory)) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      const norm = normalizeBeliefEntry(k, item);
+      if (!norm) continue;
+      const canonicalKey = makeCharacterVersionKey(norm.characterId, norm.characterVersion);
+      (beliefHistoryByCharacter[canonicalKey] ||= []).push(norm);
+    }
+  }
+
+  // Sembrar desde `beliefsByCharacter` si se pasó un snapshot inicial o una entrada que aún no está en el historial
   const rawBeliefs = isPlainObject(input.beliefsByCharacter)
     ? input.beliefsByCharacter
     : (isPlainObject(existing?.beliefsByCharacter) ? existing.beliefsByCharacter : {});
@@ -189,22 +262,45 @@ export function normalizeKnowledgeFact(input, { existing = null, projectId = '' 
     const norm = normalizeBeliefEntry(k, val);
     if (!norm) continue;
     const canonicalKey = makeCharacterVersionKey(norm.characterId, norm.characterVersion);
-    beliefsByCharacter[canonicalKey] = norm;
+    const list = (beliefHistoryByCharacter[canonicalKey] ||= []);
+    const alreadyPresent = list.some((t) =>
+      t.transitionId === norm.transitionId ||
+      (
+        t.state === norm.state &&
+        t.effectiveChapterOrder === norm.effectiveChapterOrder &&
+        t.sceneOrder === norm.sceneOrder &&
+        t.beliefText === norm.beliefText &&
+        t.deliberatelyConcealing === norm.deliberatelyConcealing
+      )
+    );
+    if (!alreadyPresent) list.push(norm);
   }
 
   if (isPlainObject(input.statusByCharacter)) {
     for (const [k, st] of Object.entries(input.statusByCharacter)) {
       const key = makeCharacterVersionKey(k);
-      if (!key || beliefsByCharacter[key]) continue;
+      if (!key || beliefHistoryByCharacter[key]?.length) continue;
       const norm = normalizeBeliefEntry(key, st);
-      if (norm) beliefsByCharacter[key] = norm;
+      if (norm) beliefHistoryByCharacter[key] = [norm];
     }
   }
 
+  // Ordenar cada historial cronológicamente y derivar snapshots compatibles (`beliefsByCharacter`, `statusByCharacter`)
+  const beliefsByCharacter = {};
   const statusByCharacter = {};
-  for (const [k, entry] of Object.entries(beliefsByCharacter)) {
-    statusByCharacter[k] = entry.state;
+  for (const [k, list] of Object.entries(beliefHistoryByCharacter)) {
+    list.sort(compareTemporalPoint);
+    const latest = list[list.length - 1];
+    if (latest) {
+      beliefsByCharacter[k] = latest;
+      statusByCharacter[k] = latest.state;
+    }
   }
+
+  const rawDisclosureHistory = Array.isArray(input.disclosureHistory)
+    ? input.disclosureHistory
+    : (Array.isArray(existing?.disclosureHistory) ? existing.disclosureHistory : []);
+  const disclosureHistory = rawDisclosureHistory.map(normalizeDisclosureEntry).filter(Boolean).sort(compareTemporalPoint);
 
   const effectiveProjectId = cleanString(projectId || input.projectId || existing?.projectId) || db.getActiveProjectId();
   return {
@@ -223,11 +319,16 @@ export function normalizeKnowledgeFact(input, { existing = null, projectId = '' 
     sourceChapterRevision: cleanString(input.sourceChapterRevision !== undefined ? input.sourceChapterRevision : existing?.sourceChapterRevision),
     firstEffectiveCheckpoint: cleanString(input.firstEffectiveCheckpoint !== undefined ? input.firstEffectiveCheckpoint : existing?.firstEffectiveCheckpoint),
     firstEffectiveChapterOrder: input.firstEffectiveChapterOrder !== undefined
-      ? toPositiveOrder(input.firstEffectiveChapterOrder)
+      ? toOrder(input.firstEffectiveChapterOrder)
       : (existing?.firstEffectiveChapterOrder ?? null),
+    firstEffectiveSceneOrder: input.firstEffectiveSceneOrder !== undefined
+      ? toOrder(input.firstEffectiveSceneOrder)
+      : (existing?.firstEffectiveSceneOrder ?? null),
     disclosureConstraints: cleanStringArray(
       input.disclosureConstraints !== undefined ? input.disclosureConstraints : existing?.disclosureConstraints
     ),
+    disclosureHistory,
+    beliefHistoryByCharacter,
     beliefsByCharacter,
     statusByCharacter,
     stale: typeof input.stale === 'boolean' ? input.stale : Boolean(existing?.stale ?? false),
@@ -268,108 +369,147 @@ export async function deleteKnowledgeFact(factId, { projectId = '' } = {}) {
 }
 
 /**
- * Actualiza de forma independiente la creencia de un único personaje (y versión opcional)
- * sobre un hecho existente. JAMÁS altera `fact.truth` ni las creencias de otros personajes.
+ * Añade (append-only) una transición temporal de creencia para un personaje/versión.
+ * Preserva íntegro todo el historial previo (p.ej. Cap. 5 sospecha -> Cap. 12 falsa
+ * creencia -> Cap. 20 verdad -> Cap. 24 ocultamiento deliberado) y JAMÁS altera `truth`.
  */
+export function appendBeliefTransitionToFact(fact, characterKey, beliefPatch) {
+  const normalizedFact = fact?.beliefHistoryByCharacter ? structuredClone(fact) : normalizeKnowledgeFact(fact);
+  const canonicalKey = makeCharacterVersionKey(characterKey, beliefPatch?.characterVersion || 'any');
+  const nextEntry = normalizeBeliefEntry(canonicalKey, {
+    ...(isPlainObject(beliefPatch) ? beliefPatch : { state: beliefPatch }),
+    transitionId: (isPlainObject(beliefPatch) && beliefPatch.transitionId) ? beliefPatch.transitionId : db.uid(),
+    recordedAt: (isPlainObject(beliefPatch) && beliefPatch.recordedAt) ? beliefPatch.recordedAt : new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  const history = [...(normalizedFact.beliefHistoryByCharacter[canonicalKey] || []), nextEntry].sort(compareTemporalPoint);
+  normalizedFact.beliefHistoryByCharacter[canonicalKey] = history;
+  normalizedFact.beliefsByCharacter[canonicalKey] = history[history.length - 1];
+  normalizedFact.statusByCharacter[canonicalKey] = history[history.length - 1].state;
+  normalizedFact.updatedAt = new Date().toISOString();
+  return normalizedFact;
+}
+
 export async function updateCharacterBelief(factId, characterKey, beliefPatch, { projectId = '' } = {}) {
   const scope = { projectId: projectId || db.getActiveProjectId() };
   const existing = await db.get('knowledgeFacts', factId, scope);
   if (!existing) throw new Error('No se encontró el hecho epistémico indicado.');
-  const canonicalKey = makeCharacterVersionKey(characterKey, beliefPatch?.characterVersion || 'any');
-  const prevEntry = existing.beliefsByCharacter?.[canonicalKey] || null;
-  const nextEntry = normalizeBeliefEntry(canonicalKey, {
-    ...(prevEntry || {}),
-    ...(isPlainObject(beliefPatch) ? beliefPatch : { state: beliefPatch }),
-    updatedAt: new Date().toISOString(),
-  });
-  const nextBeliefs = {
-    ...(existing.beliefsByCharacter || {}),
-    [canonicalKey]: nextEntry,
-  };
-  return saveKnowledgeFact({
-    ...existing,
-    beliefsByCharacter: nextBeliefs,
-  }, scope);
+  const updated = appendBeliefTransitionToFact(existing, characterKey, beliefPatch);
+  return saveKnowledgeFact(updated, scope);
 }
 
-function isEffectiveAtPoint(fact, { targetChapterOrder = null, currentCheckpoint = '' } = {}) {
-  const factOrder = toPositiveOrder(fact?.firstEffectiveChapterOrder);
-  const tgtOrder = toPositiveOrder(targetChapterOrder);
-  if (factOrder !== null && tgtOrder !== null && factOrder > tgtOrder) {
-    return false;
-  }
-  const factCp = cleanString(fact?.firstEffectiveCheckpoint);
-  const curCp = cleanString(currentCheckpoint);
-  if (
-    factCp && curCp &&
-    Object.prototype.hasOwnProperty.call(PTS_CHECKPOINT_ORDER, factCp) &&
-    Object.prototype.hasOwnProperty.call(PTS_CHECKPOINT_ORDER, curCp)
-  ) {
-    if (PTS_CHECKPOINT_ORDER[factCp] > PTS_CHECKPOINT_ORDER[curCp]) {
-      return false;
-    }
-  }
-  return true;
+function isSourceAlternativeChapter(sourceChapterId, chapterStatusById) {
+  if (!sourceChapterId || !chapterStatusById) return false;
+  const info = chapterStatusById.get(sourceChapterId);
+  return Boolean(info && info.isAlternative);
 }
 
-function isBeliefEffectiveAtPoint(belief, { targetChapterOrder = null, currentCheckpoint = '' } = {}) {
-  if (!belief) return false;
-  const learnedOrder = toPositiveOrder(belief.learnedAtChapterOrder);
-  const tgtOrder = toPositiveOrder(targetChapterOrder);
-  if (learnedOrder !== null && tgtOrder !== null && learnedOrder > tgtOrder) {
-    return false;
+function resolveEffectiveOrder(explicitOrder, sourceChapterId, chapterStatusById) {
+  const ord = toOrder(explicitOrder);
+  if (ord !== null) return ord;
+  if (sourceChapterId && chapterStatusById?.has(sourceChapterId)) {
+    return toOrder(chapterStatusById.get(sourceChapterId).order);
   }
-  const learnedCp = cleanString(belief.learnedAtCheckpoint);
+  return null;
+}
+
+function checkPointEligibility({
+  explicitOrder,
+  explicitSceneOrder,
+  explicitCheckpoint,
+  sourceChapterId,
+  scope = 'world_fact',
+  targetChapterOrder = null,
+  targetSceneOrder = null,
+  currentCheckpoint = '',
+  chapterStatusById = null,
+} = {}) {
+  if (isSourceAlternativeChapter(sourceChapterId, chapterStatusById)) {
+    return { eligible: false, reason: 'alternative_chapter_source' };
+  }
+  const effOrder = resolveEffectiveOrder(explicitOrder, sourceChapterId, chapterStatusById);
+  const tgtOrder = toOrder(targetChapterOrder);
+  const effScene = toOrder(explicitSceneOrder);
+  const tgtScene = toOrder(targetSceneOrder);
+  const effCp = cleanString(explicitCheckpoint);
   const curCp = cleanString(currentCheckpoint);
-  if (
-    learnedCp && curCp &&
-    Object.prototype.hasOwnProperty.call(PTS_CHECKPOINT_ORDER, learnedCp) &&
-    Object.prototype.hasOwnProperty.call(PTS_CHECKPOINT_ORDER, curCp)
-  ) {
-    if (PTS_CHECKPOINT_ORDER[learnedCp] > PTS_CHECKPOINT_ORDER[curCp]) {
-      return false;
+
+  // Metadatos temporales ambiguos en eventos narrativos cuando consultamos un punto histórico:
+  // nunca autorizar silenciosamente información sin ubicación temporal verificable.
+  const isEventScoped = ['room_event', 'screen_event', 'outside_event', 'flashback_event', 'revealed_canon'].includes(scope);
+  if (tgtOrder !== null && effOrder === null && !effCp && isEventScoped) {
+    return { eligible: false, reason: 'ambiguous_temporal_metadata' };
+  }
+
+  if (effOrder !== null && tgtOrder !== null) {
+    if (effOrder > tgtOrder) return { eligible: false, reason: 'future_chapter' };
+    if (effOrder === tgtOrder && effScene !== null && tgtScene !== null && effScene > tgtScene) {
+      return { eligible: false, reason: 'future_scene' };
     }
   }
-  return true;
+  if (
+    effCp && curCp &&
+    Object.prototype.hasOwnProperty.call(PTS_CHECKPOINT_ORDER, effCp) &&
+    Object.prototype.hasOwnProperty.call(PTS_CHECKPOINT_ORDER, curCp)
+  ) {
+    if (PTS_CHECKPOINT_ORDER[effCp] > PTS_CHECKPOINT_ORDER[curCp]) {
+      return { eligible: false, reason: 'future_checkpoint' };
+    }
+  }
+  return { eligible: true, effOrder };
 }
 
 /**
- * Resuelve el estado epistémico completo en un punto temporal/espacial exacto.
+ * Resuelve el estado epistémico temporal/espacial exacto en `(targetChapterOrder, targetSceneOrder, currentCheckpoint)`.
  *
- * Garantías:
- * - Excluye hechos futuros (`firstEffectiveChapterOrder > targetChapterOrder`).
- * - Excluye hechos marcados como `stale` o `disputed` del canon autoritativo actual,
- *   devolviéndolos en `staleOrDisputedForReview` sin borrarlos.
- * - Mantiene `privateAuthorTruths` estrictamente separados del conocimiento de los personajes.
- * - Aísla versiones espaciales (`levi@room` vs `levi@screen`): una entrada etiquetada
- *   con `@screen` NUNCA se filtra al resolver `characterVersion = 'room'` y viceversa.
- * - Para eventos de pantalla (`layer === 'screen'`), un espectador en `room` que lo conoce
- *   recibe `experienceMode: 'watched_not_lived'` (ver en pantalla != haberlo vivido).
- * - Si `josephArrivalOrder` está definido, Joseph NO hereda eventos `room_event`/`screen_event`
- *   anteriores a su llegada salvo que exista evidencia explícita aprendida en `>= josephArrivalOrder`.
+ * - Usa el historial append-only `beliefHistoryByCharacter` para recuperar exactamente el
+ *   último estado vigente en ese momento (p.ej. al reescribir Cap. 10 recupera la sospecha
+ *   de Hange del Cap. 5, no su conocimiento posterior del Cap. 20).
+ * - Excluye fuentes de capítulos alternativos, hechos futuros, hechos `stale`/`disputed` y
+ *   eventos con metadatos temporales ambiguos.
+ * - Mantiene aislamiento estricto Room vs Screen (`levi@room` != `levi@screen`) y barrera de
+ *   llegada tardía de Joseph.
  */
 export function resolveEpistemicStateAtPoint({
   facts = [],
   targetChapterOrder = null,
+  targetSceneOrder = null,
   currentCheckpoint = '',
   characterIds = [],
   characterVersion = 'room',
   josephArrivalOrder = null,
+  chapters = null,
 } = {}) {
   const version = CHARACTER_VERSIONS.has(cleanString(characterVersion).toLowerCase())
     ? cleanString(characterVersion).toLowerCase()
     : 'room';
+
+  let chapterStatusById = null;
+  if (Array.isArray(chapters)) {
+    chapterStatusById = new Map();
+    for (const ch of chapters) {
+      if (!ch?.id) continue;
+      chapterStatusById.set(ch.id, {
+        order: toOrder(ch.order),
+        isAlternative: ch.branchRole === 'alternative',
+      });
+    }
+  }
+
   const authoritativeCanon = [];
   const privateAuthorTruths = [];
   const staleOrDisputedForReview = [];
   const futureExcluded = [];
+  const alternativeExcluded = [];
+  const ambiguousTemporalExcluded = [];
   const characterKnowledgeMap = {};
 
-  // Recolectar el conjunto de personajes a resolver
   const targetChars = new Set((characterIds || []).map((c) => parseCharacterVersionKey(c).characterId).filter(Boolean));
   for (const fact of (facts || [])) {
     if (!fact || fact.deletedAt) continue;
-    for (const key of Object.keys(fact.beliefsByCharacter || {})) {
+    const histKeys = Object.keys(fact.beliefHistoryByCharacter || {});
+    const snapKeys = Object.keys(fact.beliefsByCharacter || {});
+    for (const key of [...histKeys, ...snapKeys]) {
       const parsed = parseCharacterVersionKey(key);
       if (parsed.characterId) targetChars.add(parsed.characterId);
     }
@@ -389,10 +529,28 @@ export function resolveEpistemicStateAtPoint({
 
   for (const rawFact of (facts || [])) {
     if (!rawFact || rawFact.deletedAt) continue;
-    const fact = rawFact.beliefsByCharacter ? rawFact : normalizeKnowledgeFact(rawFact);
+    const fact = rawFact.beliefHistoryByCharacter ? rawFact : normalizeKnowledgeFact(rawFact);
 
-    if (!isEffectiveAtPoint(fact, { targetChapterOrder, currentCheckpoint })) {
-      futureExcluded.push({ id: fact.id, title: fact.title, firstEffectiveChapterOrder: fact.firstEffectiveChapterOrder });
+    const elig = checkPointEligibility({
+      explicitOrder: fact.firstEffectiveChapterOrder,
+      explicitSceneOrder: fact.firstEffectiveSceneOrder,
+      explicitCheckpoint: fact.firstEffectiveCheckpoint,
+      sourceChapterId: fact.sourceChapterId,
+      scope: fact.scope,
+      targetChapterOrder,
+      targetSceneOrder,
+      currentCheckpoint,
+      chapterStatusById,
+    });
+
+    if (!elig.eligible) {
+      if (elig.reason === 'alternative_chapter_source') {
+        alternativeExcluded.push({ id: fact.id, title: fact.title, sourceChapterId: fact.sourceChapterId });
+      } else if (elig.reason === 'ambiguous_temporal_metadata') {
+        ambiguousTemporalExcluded.push({ id: fact.id, title: fact.title, reason: elig.reason });
+      } else {
+        futureExcluded.push({ id: fact.id, title: fact.title, firstEffectiveChapterOrder: fact.firstEffectiveChapterOrder, reason: elig.reason });
+      }
       continue;
     }
 
@@ -401,26 +559,57 @@ export function resolveEpistemicStateAtPoint({
       continue;
     }
 
+    const activeDisclosureHistory = (fact.disclosureHistory || []).filter((d) =>
+      !d.stale && checkPointEligibility({
+        explicitOrder: d.effectiveChapterOrder,
+        explicitSceneOrder: d.sceneOrder,
+        explicitCheckpoint: d.effectiveCheckpoint,
+        sourceChapterId: d.sourceChapterId,
+        scope: 'room_event',
+        targetChapterOrder,
+        targetSceneOrder,
+        currentCheckpoint,
+        chapterStatusById,
+      }).eligible
+    );
+
+    const factView = { ...fact, disclosureHistory: activeDisclosureHistory };
     if (fact.scope === 'private_author') {
-      privateAuthorTruths.push(fact);
+      privateAuthorTruths.push(factView);
     } else {
-      authoritativeCanon.push(fact);
+      authoritativeCanon.push(factView);
     }
 
-    const beliefs = fact.beliefsByCharacter || {};
+    const histMap = fact.beliefHistoryByCharacter || {};
     for (const cid of targetChars) {
       const bucket = characterKnowledgeMap[cid];
       const versionedKey = version !== 'any' ? `${cid}@${version}` : cid;
-      const versionSpecificBelief = beliefs[versionedKey] || null;
-      const genericBelief = beliefs[cid] || null;
+      const versionSpecificList = Array.isArray(histMap[versionedKey]) ? histMap[versionedKey] : [];
+      const genericList = Array.isArray(histMap[cid])
+        ? histMap[cid].filter((b) => b.characterVersion === 'any')
+        : [];
 
-      // Aislamiento estricto de versiones:
-      // Si existen creencias específicas para otra versión (ej. `levi@screen`),
-      // JAMÁS se copian automáticamente a `levi@room` (y viceversa).
-      const candidateBelief = versionSpecificBelief || (genericBelief && genericBelief.characterVersion === 'any' ? genericBelief : null);
+      // Combinar solo historial aplicable a esta versión (nunca cruzar @screen <-> @room)
+      const combinedHistory = [...versionSpecificList, ...genericList]
+        .filter((b) => !b.stale)
+        .filter((b) => checkPointEligibility({
+          explicitOrder: b.effectiveChapterOrder,
+          explicitSceneOrder: b.sceneOrder,
+          explicitCheckpoint: b.effectiveCheckpoint,
+          sourceChapterId: b.sourceChapterId,
+          scope: b.effectiveChapterOrder === null && !b.effectiveCheckpoint && !b.sourceChapterId ? 'world_fact' : 'room_event',
+          targetChapterOrder,
+          targetSceneOrder,
+          currentCheckpoint,
+          chapterStatusById,
+        }).eligible)
+        .sort(compareTemporalPoint);
 
-      const factOrder = toPositiveOrder(fact.firstEffectiveChapterOrder);
-      const arrivalOrder = toPositiveOrder(josephArrivalOrder);
+      // Seleccionar el último estado vigente en el punto solicitado
+      const candidateBelief = combinedHistory.length ? combinedHistory[combinedHistory.length - 1] : null;
+
+      const factOrder = elig.effOrder;
+      const arrivalOrder = toOrder(josephArrivalOrder);
       const isBeforeJosephArrival = cid === 'joseph' &&
         arrivalOrder !== null &&
         factOrder !== null &&
@@ -428,12 +617,12 @@ export function resolveEpistemicStateAtPoint({
         (fact.scope === 'screen_event' || fact.scope === 'room_event' || fact.layer === 'room' || fact.layer === 'screen');
 
       if (isBeforeJosephArrival) {
+        const learnedOrder = resolveEffectiveOrder(candidateBelief?.effectiveChapterOrder, candidateBelief?.sourceChapterId, chapterStatusById);
         const explicitlyBriefedAfterArrival = Boolean(
           candidateBelief &&
           candidateBelief.state !== 'unknown' &&
-          isBeliefEffectiveAtPoint(candidateBelief, { targetChapterOrder, currentCheckpoint }) &&
-          toPositiveOrder(candidateBelief.learnedAtChapterOrder) !== null &&
-          toPositiveOrder(candidateBelief.learnedAtChapterOrder) >= arrivalOrder &&
+          learnedOrder !== null &&
+          learnedOrder >= arrivalOrder &&
           cleanString(candidateBelief.evidence)
         );
         if (!explicitlyBriefedAfterArrival) {
@@ -453,13 +642,14 @@ export function resolveEpistemicStateAtPoint({
         }
       }
 
-      if (!candidateBelief || !isBeliefEffectiveAtPoint(candidateBelief, { targetChapterOrder, currentCheckpoint })) {
+      if (!candidateBelief) {
         if (fact.isSecret || fact.scope === 'private_author') {
+          const hadLaterTransition = [...versionSpecificList, ...genericList].length > 0;
           bucket.unknownSecrets.push({
             factId: fact.id,
             title: fact.title,
             state: 'unknown',
-            reason: candidateBelief ? 'learned_later_than_target' : 'no_evidence',
+            reason: hadLaterTransition ? 'learned_later_than_target' : 'no_evidence',
           });
         }
         continue;
@@ -471,18 +661,25 @@ export function resolveEpistemicStateAtPoint({
 
       const item = {
         factId: fact.id,
+        transitionId: candidateBelief.transitionId,
         title: fact.title,
         layer: fact.layer,
         scope: fact.scope,
         state: candidateBelief.state,
+        deliberatelyConcealing: Boolean(candidateBelief.deliberatelyConcealing),
+        concealmentNote: candidateBelief.concealmentNote || '',
         beliefText: candidateBelief.beliefText || (candidateBelief.state === 'knows' ? fact.truth : ''),
         objectiveTruth: fact.truth,
         evidence: candidateBelief.evidence,
         source: candidateBelief.source || fact.sourceRef,
-        learnedAtChapterOrder: candidateBelief.learnedAtChapterOrder,
-        learnedAtCheckpoint: candidateBelief.learnedAtCheckpoint,
+        sourceChapterId: candidateBelief.sourceChapterId || fact.sourceChapterId,
+        sourceChapterRevision: candidateBelief.sourceChapterRevision || fact.sourceChapterRevision,
+        learnedAtChapterOrder: candidateBelief.effectiveChapterOrder,
+        sceneOrder: candidateBelief.sceneOrder,
+        learnedAtCheckpoint: candidateBelief.effectiveCheckpoint,
         disclosureConstraints: fact.disclosureConstraints,
         experienceMode,
+        priorTransitionsCount: Math.max(0, combinedHistory.length - 1),
       };
 
       if (candidateBelief.state === 'knows') bucket.knows.push(item);
@@ -496,7 +693,8 @@ export function resolveEpistemicStateAtPoint({
   }
 
   return {
-    targetChapterOrder: toPositiveOrder(targetChapterOrder),
+    targetChapterOrder: toOrder(targetChapterOrder),
+    targetSceneOrder: toOrder(targetSceneOrder),
     currentCheckpoint: cleanString(currentCheckpoint),
     characterVersion: version,
     authoritativeCanon,
@@ -505,16 +703,53 @@ export function resolveEpistemicStateAtPoint({
     staleOrDisputedForReview,
     futureExcludedCount: futureExcluded.length,
     futureExcluded,
+    alternativeExcludedCount: alternativeExcluded.length,
+    alternativeExcluded,
+    ambiguousTemporalExcludedCount: ambiguousTemporalExcluded.length,
+    ambiguousTemporalExcluded,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Continuidad emocional y relacional CUALITATIVA (sin puntuaciones numéricas)
+// Continuidad emocional y relacional CUALITATIVA con historial temporal
 // ---------------------------------------------------------------------------
 
 export function makeRelationshipPairKey(participants = []) {
   const ids = cleanStringArray(participants).map(extractLogicalId).filter(Boolean).sort();
   return ids.join('+');
+}
+
+function normalizeQualitativeDimensions(rawDims) {
+  const dimensions = {};
+  for (const dim of QUALITATIVE_DIMENSIONS) {
+    const val = rawDims?.[dim];
+    if (typeof val === 'number') {
+      throw new Error(`La dimensión emocional «${dim}» debe ser cualitativa (texto narrativo), nunca una puntuación numérica.`);
+    }
+    dimensions[dim] = cleanString(val || '');
+  }
+  return dimensions;
+}
+
+function normalizeRelationshipSnapshot(rawSnap) {
+  if (!isPlainObject(rawSnap)) return null;
+  const now = new Date().toISOString();
+  return {
+    snapshotId: cleanString(rawSnap.snapshotId || '') || db.uid(),
+    effectiveChapterOrder: toOrder(rawSnap.effectiveChapterOrder ?? rawSnap.chapterOrder),
+    sceneOrder: toOrder(rawSnap.sceneOrder),
+    effectiveCheckpoint: cleanString(rawSnap.effectiveCheckpoint || ''),
+    relationshipStage: cleanString(rawSnap.relationshipStage || ''),
+    dimensions: normalizeQualitativeDimensions(rawSnap.dimensions || {}),
+    unresolvedDisagreements: cleanStringArray(rawSnap.unresolvedDisagreements || []),
+    behaviorChanges: cleanStringArray(rawSnap.behaviorChanges || []),
+    sourceChapterId: cleanString(rawSnap.sourceChapterId || '') || null,
+    sourceChapterRevision: cleanString(rawSnap.sourceChapterRevision || ''),
+    evidenceNote: cleanString(rawSnap.evidenceNote || ''),
+    stale: Boolean(rawSnap.stale),
+    staleReason: cleanString(rawSnap.staleReason || ''),
+    recordedAt: rawSnap.recordedAt || now,
+  };
 }
 
 export function normalizeRelationshipState(input, { existing = null, projectId = '' } = {}) {
@@ -526,40 +761,62 @@ export function normalizeRelationshipState(input, { existing = null, projectId =
   if (!pairKey) throw new Error('El estado relacional necesita al menos dos participantes o un `pairKey`.');
 
   const rawDims = isPlainObject(input.dimensions) ? input.dimensions : (existing?.dimensions || {});
-  const dimensions = {};
-  for (const dim of QUALITATIVE_DIMENSIONS) {
-    const val = rawDims[dim];
-    if (typeof val === 'number') {
-      throw new Error(`La dimensión emocional «${dim}» debe ser cualitativa (texto narrativo), nunca una puntuación numérica.`);
-    }
-    dimensions[dim] = cleanString(val || '');
-  }
+  const dimensions = normalizeQualitativeDimensions(rawDims);
 
   const normalizePromise = (p) => {
     if (typeof p === 'string') {
       const text = cleanString(p);
-      return text ? { text, madeBy: '', madeTo: '', chapterOrder: null, sourceChapterId: null, status: 'open' } : null;
+      return text ? { text, madeBy: '', madeTo: '', chapterOrder: null, sceneOrder: null, sourceChapterId: null, status: 'open', statusHistory: [] } : null;
     }
     if (!isPlainObject(p) || !cleanString(p.text)) return null;
+    const status = ['open', 'kept', 'broken'].includes(p.status) ? p.status : 'open';
+    const chOrder = toOrder(p.chapterOrder);
+    const rawHist = Array.isArray(p.statusHistory) ? p.statusHistory : [];
+    const statusHistory = rawHist
+      .filter(isPlainObject)
+      .map((h) => ({
+        status: ['open', 'kept', 'broken'].includes(h.status) ? h.status : 'open',
+        effectiveChapterOrder: toOrder(h.effectiveChapterOrder ?? h.chapterOrder),
+        sceneOrder: toOrder(h.sceneOrder),
+        sourceChapterId: cleanString(h.sourceChapterId || '') || null,
+        evidence: cleanString(h.evidence || ''),
+        stale: Boolean(h.stale),
+        recordedAt: h.recordedAt || new Date().toISOString(),
+      }))
+      .sort(compareTemporalPoint);
+    if (!statusHistory.length) {
+      statusHistory.push({
+        status,
+        effectiveChapterOrder: chOrder,
+        sceneOrder: toOrder(p.sceneOrder),
+        sourceChapterId: cleanString(p.sourceChapterId || '') || null,
+        evidence: cleanString(p.evidence || ''),
+        stale: false,
+        recordedAt: new Date().toISOString(),
+      });
+    }
     return {
       text: cleanString(p.text),
       madeBy: extractLogicalId(p.madeBy || ''),
       madeTo: extractLogicalId(p.madeTo || ''),
-      chapterOrder: toPositiveOrder(p.chapterOrder),
+      chapterOrder: chOrder,
+      sceneOrder: toOrder(p.sceneOrder),
       sourceChapterId: cleanString(p.sourceChapterId || '') || null,
-      status: ['open', 'kept', 'broken'].includes(p.status) ? p.status : 'open',
+      status: statusHistory[statusHistory.length - 1].status,
+      statusHistory,
     };
   };
 
   const normalizeMemoryItem = (m) => {
     if (typeof m === 'string') {
       const text = cleanString(m);
-      return text ? { text, chapterOrder: null, sourceChapterId: null } : null;
+      return text ? { text, chapterOrder: null, sceneOrder: null, sourceChapterId: null } : null;
     }
     if (!isPlainObject(m) || !cleanString(m.text)) return null;
     return {
       text: cleanString(m.text),
-      chapterOrder: toPositiveOrder(m.chapterOrder),
+      chapterOrder: toOrder(m.chapterOrder),
+      sceneOrder: toOrder(m.sceneOrder),
       sourceChapterId: cleanString(m.sourceChapterId || '') || null,
     };
   };
@@ -567,14 +824,15 @@ export function normalizeRelationshipState(input, { existing = null, projectId =
   const normalizePrivateSecret = (s) => {
     if (typeof s === 'string') {
       const text = cleanString(s);
-      return text ? { text, heldBy: [], hiddenFrom: [], chapterOrder: null, sourceChapterId: null } : null;
+      return text ? { text, heldBy: [], hiddenFrom: [], chapterOrder: null, sceneOrder: null, sourceChapterId: null } : null;
     }
     if (!isPlainObject(s) || !cleanString(s.text)) return null;
     return {
       text: cleanString(s.text),
       heldBy: cleanStringArray(s.heldBy || []).map(extractLogicalId),
       hiddenFrom: cleanStringArray(s.hiddenFrom || []).map(extractLogicalId),
-      chapterOrder: toPositiveOrder(s.chapterOrder),
+      chapterOrder: toOrder(s.chapterOrder),
+      sceneOrder: toOrder(s.sceneOrder),
       sourceChapterId: cleanString(s.sourceChapterId || '') || null,
     };
   };
@@ -583,7 +841,7 @@ export function normalizeRelationshipState(input, { existing = null, projectId =
     if (!isPlainObject(e)) return null;
     return {
       chapterId: cleanString(e.chapterId || '') || null,
-      chapterOrder: toPositiveOrder(e.chapterOrder),
+      chapterOrder: toOrder(e.chapterOrder),
       quoteOrNote: cleanString(e.quoteOrNote || e.note || ''),
       chapterRevision: cleanString(e.chapterRevision || ''),
     };
@@ -591,28 +849,51 @@ export function normalizeRelationshipState(input, { existing = null, projectId =
 
   const now = new Date().toISOString();
   const effectiveProjectId = cleanString(projectId || input.projectId || existing?.projectId) || db.getActiveProjectId();
+  const effOrder = input.effectiveChapterOrder !== undefined
+    ? toOrder(input.effectiveChapterOrder)
+    : (existing?.effectiveChapterOrder ?? null);
 
+  const rawHistory = Array.isArray(input.stateHistory)
+    ? input.stateHistory
+    : (Array.isArray(existing?.stateHistory) ? existing.stateHistory : []);
+  const stateHistory = rawHistory.map(normalizeRelationshipSnapshot).filter(Boolean).sort(compareTemporalPoint);
+
+  // Asegurar que el estado inicial quede registrado en `stateHistory` si estaba vacío
+  const stage = cleanString(input.relationshipStage !== undefined ? input.relationshipStage : (existing?.relationshipStage || ''));
+  const disagreements = cleanStringArray(input.unresolvedDisagreements !== undefined ? input.unresolvedDisagreements : existing?.unresolvedDisagreements);
+  const behaviors = cleanStringArray(input.behaviorChanges !== undefined ? input.behaviorChanges : existing?.behaviorChanges);
+  if (!stateHistory.length) {
+    stateHistory.push(normalizeRelationshipSnapshot({
+      effectiveChapterOrder: effOrder,
+      sceneOrder: toOrder(input.sceneOrder ?? existing?.sceneOrder),
+      effectiveCheckpoint: cleanString(input.effectiveCheckpoint || existing?.effectiveCheckpoint || ''),
+      relationshipStage: stage,
+      dimensions,
+      unresolvedDisagreements: disagreements,
+      behaviorChanges: behaviors,
+      sourceChapterId: cleanString(input.sourceChapterId !== undefined ? input.sourceChapterId : existing?.sourceChapterId) || null,
+      sourceChapterRevision: cleanString(input.sourceChapterRevision !== undefined ? input.sourceChapterRevision : existing?.sourceChapterRevision),
+      recordedAt: existing?.createdAt || input.createdAt || now,
+    }));
+  }
+
+  const latestSnap = stateHistory[stateHistory.length - 1];
   return {
     id: cleanString(input.id || existing?.id) || db.uid(),
     projectId: effectiveProjectId,
     pairKey,
     participants: participants.length ? participants : pairKey.split('+').filter(Boolean),
     label: cleanString(input.label !== undefined ? input.label : (existing?.label || pairKey.replace(/\+/g, ' & '))),
-    relationshipStage: cleanString(input.relationshipStage !== undefined ? input.relationshipStage : (existing?.relationshipStage || '')),
-    dimensions,
-    unresolvedDisagreements: cleanStringArray(
-      input.unresolvedDisagreements !== undefined ? input.unresolvedDisagreements : existing?.unresolvedDisagreements
-    ),
+    relationshipStage: stage || latestSnap?.relationshipStage || '',
+    dimensions: Object.values(dimensions).some(Boolean) ? dimensions : (latestSnap?.dimensions || dimensions),
+    unresolvedDisagreements: disagreements.length ? disagreements : (latestSnap?.unresolvedDisagreements || []),
     promises: (Array.isArray(input.promises) ? input.promises : (existing?.promises || [])).map(normalizePromise).filter(Boolean),
     sharedMemories: (Array.isArray(input.sharedMemories) ? input.sharedMemories : (existing?.sharedMemories || [])).map(normalizeMemoryItem).filter(Boolean),
     privateSecrets: (Array.isArray(input.privateSecrets) ? input.privateSecrets : (existing?.privateSecrets || [])).map(normalizePrivateSecret).filter(Boolean),
-    behaviorChanges: cleanStringArray(
-      input.behaviorChanges !== undefined ? input.behaviorChanges : existing?.behaviorChanges
-    ),
+    behaviorChanges: behaviors.length ? behaviors : (latestSnap?.behaviorChanges || []),
     evidenceRefs: (Array.isArray(input.evidenceRefs) ? input.evidenceRefs : (existing?.evidenceRefs || [])).map(normalizeEvidenceRef).filter(Boolean),
-    effectiveChapterOrder: input.effectiveChapterOrder !== undefined
-      ? toPositiveOrder(input.effectiveChapterOrder)
-      : (existing?.effectiveChapterOrder ?? null),
+    stateHistory,
+    effectiveChapterOrder: effOrder,
     sourceChapterId: cleanString(input.sourceChapterId !== undefined ? input.sourceChapterId : existing?.sourceChapterId) || null,
     sourceChapterRevision: cleanString(input.sourceChapterRevision !== undefined ? input.sourceChapterRevision : existing?.sourceChapterRevision),
     stale: typeof input.stale === 'boolean' ? input.stale : Boolean(existing?.stale ?? false),
@@ -621,6 +902,32 @@ export function normalizeRelationshipState(input, { existing = null, projectId =
     createdAt: existing?.createdAt || input.createdAt || now,
     updatedAt: now,
   };
+}
+
+/**
+ * Añade (append-only) una transición emocional/relacional cualitativa sin sobrescribir
+ * snapshots de capítulos anteriores.
+ */
+export function appendRelationshipTransitionToState(relState, transitionPatch) {
+  const normalized = relState?.stateHistory ? structuredClone(relState) : normalizeRelationshipState(relState);
+  const snap = normalizeRelationshipSnapshot(transitionPatch);
+  if (!snap) throw new Error('Transición relacional inválida.');
+  normalized.stateHistory = [...(normalized.stateHistory || []), snap].sort(compareTemporalPoint);
+  const latest = normalized.stateHistory[normalized.stateHistory.length - 1];
+  normalized.relationshipStage = latest.relationshipStage || normalized.relationshipStage;
+  normalized.dimensions = latest.dimensions;
+  normalized.unresolvedDisagreements = latest.unresolvedDisagreements;
+  normalized.behaviorChanges = latest.behaviorChanges;
+  normalized.updatedAt = new Date().toISOString();
+  return normalized;
+}
+
+export async function appendRelationshipTransition(id, transitionPatch, { projectId = '' } = {}) {
+  const scope = { projectId: projectId || db.getActiveProjectId() };
+  const existing = await db.get('relationshipStates', id, scope);
+  if (!existing) throw new Error('No se encontró el estado relacional.');
+  const updated = appendRelationshipTransitionToState(existing, transitionPatch);
+  return saveRelationshipState(updated, scope);
 }
 
 export async function listRelationshipStates({ projectId = '' } = {}) {
@@ -645,14 +952,32 @@ export async function deleteRelationshipState(id, { projectId = '' } = {}) {
 }
 
 /**
- * Filtra estados relacionales cualitativos estrictamente hasta `targetChapterOrder`,
- * separando registros `stale` para revisión y recogiendo promesas abiertas y secretos.
+ * Resuelve estados relacionales cualitativos estrictamente hasta `(targetChapterOrder, targetSceneOrder)`:
+ * - Selecciona el último snapshot elegible en `stateHistory` (jamás filtra cambios futuros).
+ * - Resuelve el estado temporal de cada promesa desde `statusHistory` (una promesa cumplida en
+ *   Cap. 30 sigue siendo `open` al reescribir Cap. 15).
+ * - Excluye fuentes de capítulos alternativos y separa registros `stale` para revisión.
  */
 export function resolveRelationshipsAtPoint({
   relationships = [],
   targetChapterOrder = null,
+  targetSceneOrder = null,
+  currentCheckpoint = '',
+  chapters = null,
 } = {}) {
-  const tgtOrder = toPositiveOrder(targetChapterOrder);
+  let chapterStatusById = null;
+  if (Array.isArray(chapters)) {
+    chapterStatusById = new Map();
+    for (const ch of chapters) {
+      if (!ch?.id) continue;
+      chapterStatusById.set(ch.id, {
+        order: toOrder(ch.order),
+        isAlternative: ch.branchRole === 'alternative',
+      });
+    }
+  }
+
+  const tgtOrder = toOrder(targetChapterOrder);
   const authoritative = [];
   const staleForReview = [];
   const openPromises = [];
@@ -660,27 +985,73 @@ export function resolveRelationshipsAtPoint({
 
   for (const raw of (relationships || [])) {
     if (!raw || raw.deletedAt) continue;
-    const rel = raw.dimensions ? raw : normalizeRelationshipState(raw);
-    const effOrder = toPositiveOrder(rel.effectiveChapterOrder);
-    if (effOrder !== null && tgtOrder !== null && effOrder > tgtOrder) continue;
+    const rel = raw.stateHistory ? raw : normalizeRelationshipState(raw);
+    if (isSourceAlternativeChapter(rel.sourceChapterId, chapterStatusById)) continue;
     if (rel.stale) {
       staleForReview.push(rel);
       continue;
     }
 
-    // Filtrar promesas, recuerdos y secretos con chapterOrder futuro
-    const filteredPromises = (rel.promises || []).filter((p) =>
-      p.chapterOrder === null || tgtOrder === null || p.chapterOrder <= tgtOrder
-    );
-    const filteredMemories = (rel.sharedMemories || []).filter((m) =>
-      m.chapterOrder === null || tgtOrder === null || m.chapterOrder <= tgtOrder
-    );
-    const filteredSecrets = (rel.privateSecrets || []).filter((s) =>
-      s.chapterOrder === null || tgtOrder === null || s.chapterOrder <= tgtOrder
-    );
+    const eligibleSnapshots = (rel.stateHistory || [])
+      .filter((s) => !s.stale)
+      .filter((s) => checkPointEligibility({
+        explicitOrder: s.effectiveChapterOrder,
+        explicitSceneOrder: s.sceneOrder,
+        explicitCheckpoint: s.effectiveCheckpoint,
+        sourceChapterId: s.sourceChapterId,
+        scope: 'world_fact',
+        targetChapterOrder: tgtOrder,
+        targetSceneOrder,
+        currentCheckpoint,
+        chapterStatusById,
+      }).eligible)
+      .sort(compareTemporalPoint);
+
+    if (!eligibleSnapshots.length) continue;
+    const activeSnap = eligibleSnapshots[eligibleSnapshots.length - 1];
+
+    const filteredPromises = [];
+    for (const p of (rel.promises || [])) {
+      if (isSourceAlternativeChapter(p.sourceChapterId, chapterStatusById)) continue;
+      const pOrder = resolveEffectiveOrder(p.chapterOrder, p.sourceChapterId, chapterStatusById);
+      if (pOrder !== null && tgtOrder !== null && pOrder > tgtOrder) continue;
+      if (pOrder === null && tgtOrder !== null && p.sourceChapterId) continue;
+      const eligibleStatus = (p.statusHistory || [])
+        .filter((h) => !h.stale && checkPointEligibility({
+          explicitOrder: h.effectiveChapterOrder,
+          explicitSceneOrder: h.sceneOrder,
+          sourceChapterId: h.sourceChapterId,
+          scope: 'world_fact',
+          targetChapterOrder: tgtOrder,
+          targetSceneOrder,
+          currentCheckpoint,
+          chapterStatusById,
+        }).eligible)
+        .sort(compareTemporalPoint);
+      const resolvedStatus = eligibleStatus.length ? eligibleStatus[eligibleStatus.length - 1].status : p.status;
+      filteredPromises.push({ ...p, status: resolvedStatus });
+    }
+
+    const filteredMemories = (rel.sharedMemories || []).filter((m) => {
+      if (isSourceAlternativeChapter(m.sourceChapterId, chapterStatusById)) return false;
+      const mOrder = resolveEffectiveOrder(m.chapterOrder, m.sourceChapterId, chapterStatusById);
+      return mOrder === null || tgtOrder === null || mOrder <= tgtOrder;
+    });
+
+    const filteredSecrets = (rel.privateSecrets || []).filter((s) => {
+      if (isSourceAlternativeChapter(s.sourceChapterId, chapterStatusById)) return false;
+      const sOrder = resolveEffectiveOrder(s.chapterOrder, s.sourceChapterId, chapterStatusById);
+      return sOrder === null || tgtOrder === null || sOrder <= tgtOrder;
+    });
 
     const view = {
       ...rel,
+      relationshipStage: activeSnap.relationshipStage || rel.relationshipStage,
+      dimensions: activeSnap.dimensions,
+      unresolvedDisagreements: activeSnap.unresolvedDisagreements,
+      behaviorChanges: activeSnap.behaviorChanges,
+      activeSnapshotId: activeSnap.snapshotId,
+      activeSnapshotChapterOrder: activeSnap.effectiveChapterOrder,
       promises: filteredPromises,
       sharedMemories: filteredMemories,
       privateSecrets: filteredSecrets,
@@ -688,10 +1059,10 @@ export function resolveRelationshipsAtPoint({
     authoritative.push(view);
 
     for (const p of filteredPromises) {
-      if (p.status === 'open') openPromises.push({ ...p, pairKey: rel.pairKey, relationshipLabel: rel.label });
+      if (p.status === 'open') openPromises.push({ ...p, relationshipId: rel.id, pairKey: rel.pairKey, relationshipLabel: rel.label });
     }
     for (const s of filteredSecrets) {
-      activeSecrets.push({ ...s, pairKey: rel.pairKey, relationshipLabel: rel.label });
+      activeSecrets.push({ ...s, relationshipId: rel.id, pairKey: rel.pairKey, relationshipLabel: rel.label });
     }
   }
 

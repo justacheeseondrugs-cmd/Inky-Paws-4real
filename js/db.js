@@ -154,6 +154,8 @@ const SYNCED_ENTITY_STORES = new Set([
   'arcSummaries',
   'relationshipStates',
 ]);
+export const DERIVED_STORES = new Set(['lexicalIndexes']);
+export const V3_REQUIRED_STORE_NAMES = STORE_NAMES.filter((name) => !DERIVED_STORES.has(name));
 const ACTIVE_KEY = 'pts_active_project_v1';
 let memoryActiveProject = null;
 
@@ -570,9 +572,11 @@ export function validateBackupDump(dump) {
   const hasAnyV2Store = targetStores.some((name) => !v1Set.has(name));
   const hasAnyV3Store = targetStores.some((name) => !v2Set.has(name));
   const inferredVersion = declaredVersion ?? (hasAnyV3Store ? 3 : (hasAnyV2Store ? 2 : 1));
+  // Los índices derivados (`lexicalIndexes`) son opcionales en copias v3 porque se
+  // reconstruyen de forma determinista a partir de capítulos y documentos aprobados.
   const expectedFullStores = inferredVersion === 1
     ? V1_STORE_NAMES
-    : (inferredVersion === 2 ? V2_STORE_NAMES : allStoreNames);
+    : (inferredVersion === 2 ? V2_STORE_NAMES : V3_REQUIRED_STORE_NAMES);
   const targetSet = new Set(targetStores);
   const missingStores = expectedFullStores.filter((name) => !targetSet.has(name));
   const isFull = missingStores.length === 0 && meta?.backupKind !== 'partial';
@@ -583,16 +587,20 @@ export function validateBackupDump(dump) {
     backupKind: isFull ? 'full' : 'partial',
     version: inferredVersion,
     schemaVersion: inferredVersion,
+    includesDerivedIndexes: targetSet.has('lexicalIndexes'),
   };
 }
 
-async function exportAll() {
+async function exportAll({ includeDerivedIndexes = false } = {}) {
   const dump = {};
+  const exportedStores = [];
   for (const name of Object.keys(STORES)) {
+    if (!includeDerivedIndexes && DERIVED_STORES.has(name)) continue;
     const records = await rawGetAll(name);
     dump[name] = name === 'settings'
       ? records.map(sanitizeSettingsForBackup)
       : records;
+    exportedStores.push(name);
   }
   dump.__meta = {
     app: 'pts-studio',
@@ -600,10 +608,43 @@ async function exportAll() {
     exportedAt: new Date().toISOString(),
     version: DB_VERSION,
     schemaVersion: DB_VERSION,
-    storeNames: Object.keys(STORES),
-    apiKeysExcluded: true
+    storeNames: exportedStores,
+    apiKeysExcluded: true,
+    derivedIndexesExcluded: !includeDerivedIndexes,
   };
   return dump;
+}
+
+async function runAtomicTransaction(storeNames, mode, executor) {
+  const names = [...new Set(Array.isArray(storeNames) ? storeNames : [storeNames])];
+  const database = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(names, mode || 'readwrite');
+    let resultValue;
+    let customError = null;
+    transaction.oncomplete = () => resolve(resultValue);
+    transaction.onerror = () => reject(customError || transaction.error || new Error('La transacción en IndexedDB falló.'));
+    transaction.onabort = () => reject(customError || transaction.error || new Error('La transacción en IndexedDB fue abortada.'));
+
+    const stores = {};
+    for (const name of names) stores[name] = transaction.objectStore(name);
+    try {
+      const maybePromise = executor({ transaction, stores, setResult: (v) => { resultValue = v; } });
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        maybePromise.then((val) => {
+          if (val !== undefined) resultValue = val;
+        }).catch((err) => {
+          customError = err;
+          try { transaction.abort(); } catch { }
+        });
+      } else if (maybePromise !== undefined) {
+        resultValue = maybePromise;
+      }
+    } catch (err) {
+      customError = err;
+      try { transaction.abort(); } catch { }
+    }
+  });
 }
 
 async function importAll(dump, { merge = false, allowPartial = false, targetProjectId = null } = {}) {
@@ -632,9 +673,10 @@ async function importAll(dump, { merge = false, allowPartial = false, targetProj
   const localMain = await get('settings', 'main').catch(() => null);
   const localApiKeys = { ...(localMain?.apiKeys || {}) };
   const database = await openDb();
+  const txStores = [...new Set([...targetStores, ...(!merge ? [...DERIVED_STORES] : [])])];
 
   await new Promise((resolve, reject) => {
-    const transaction = database.transaction(targetStores, 'readwrite');
+    const transaction = database.transaction(txStores, 'readwrite');
     let customError = null;
     transaction.oncomplete = () => resolve(true);
     transaction.onerror = () => reject(customError || transaction.error || new Error('No se pudo completar la importación.'));
@@ -642,6 +684,14 @@ async function importAll(dump, { merge = false, allowPartial = false, targetProj
 
     const writeAll = () => {
       try {
+        // Limpiar índices derivados obsoletos en restauración completa si la copia no los trae
+        if (!merge) {
+          for (const derived of DERIVED_STORES) {
+            if (!targetStores.includes(derived)) {
+              transaction.objectStore(derived).clear();
+            }
+          }
+        }
         for (const name of targetStores) {
           const store = transaction.objectStore(name);
           if (!merge) store.clear();
@@ -711,6 +761,7 @@ async function importAll(dump, { merge = false, allowPartial = false, targetProj
 export const db = {
   openDb,
   resetConnection,
+  runAtomicTransaction,
   getAll,
   getByIndex,
   getByProjectIndex,

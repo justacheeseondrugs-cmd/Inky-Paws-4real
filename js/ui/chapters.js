@@ -232,15 +232,26 @@ async function promoteAlternative(id) {
   if (!confirm('¿Usar la alternativa ' + selectedLabel + ' como versión principal? La versión principal actual NO se borrará: pasará a ser una alternativa guardada.')) return;
 
   const now = new Date().toISOString();
+  const activeProjectId = db.getActiveProjectId();
   if (currentMain && currentMain.id !== selected.id) {
     currentMain.branchRole = 'alternative';
     if (!currentMain.variantLabel || currentMain.variantLabel === 'Principal') currentMain.variantLabel = 'Original';
     currentMain.updatedAt = now;
     await db.put('chapters', currentMain);
+    await markChapterMemoriesStale(currentMain.id, {
+      projectId: activeProjectId,
+      reason: 'demoted_to_alternative',
+      chapterRevision: contentFingerprint(currentMain.content || ''),
+    });
   }
   selected.branchRole = 'main';
   selected.updatedAt = now;
   await db.put('chapters', selected);
+  await markChapterMemoriesStale(selected.id, {
+    projectId: activeProjectId,
+    reason: 'alternative_promoted',
+    chapterRevision: contentFingerprint(selected.content || ''),
+  });
 
   const memories = await db.getByIndex('memoryEntries', 'by_chapter', selected.id);
   toast(memories.length
@@ -841,6 +852,10 @@ async function deleteChapter(id, root) {
   await db.del('settings', rewriteDraftKey(activeProjectId, id)).catch(() => {});
   const memories = await db.getByIndex('memoryEntries', 'by_chapter', id);
   for (const memory of memories) await db.del('memoryEntries', memory.id);
+  await markChapterMemoriesStale(id, {
+    projectId: activeProjectId,
+    reason: 'chapter_deleted',
+  });
   toast(chapter.branchRole === 'alternative' ? 'Alternativa eliminada.' : 'Capítulo y su memoria eliminados.');
   renderChapters(root);
 }

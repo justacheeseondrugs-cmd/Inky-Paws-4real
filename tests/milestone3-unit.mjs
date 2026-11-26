@@ -13,12 +13,16 @@ import { DB_NAME, DB_VERSION, V1_STORE_NAMES, V2_STORE_NAMES, STORE_NAMES, valid
 import { buildContinuityBlock } from '../js/canonGuard.js';
 import {
   normalizeKnowledgeFact,
+  appendBeliefTransitionToFact,
   resolveEpistemicStateAtPoint,
   normalizeRelationshipState,
+  appendRelationshipTransitionToState,
   resolveRelationshipsAtPoint,
 } from '../js/knowledgeLedger.js';
 import {
   buildChapterLexicalIndex,
+  buildDocumentLexicalIndex,
+  isDocumentLexicalIndexFresh,
   updateChapterLexicalIndexIncremental,
   searchLexicalIndex,
 } from '../js/lexicalIndex.js';
@@ -420,9 +424,11 @@ import { wordCount } from '../js/utils.js';
     knowledgeFacts: [ch7Fact, staleCh12Fact],
     relationships: [relEpic],
   });
-  assert.ok(arc1.preservedSecrets.some((s) => s.includes('silver pocket watch')), 'Arc compression must preserve Chapter 7 secret');
-  assert.ok(arc1.preservedPromises.some((p) => p.includes('Silver pocket watch')), 'Arc compression must preserve Chapter 7 open promise');
-  assert.ok(!arc1.preservedSecrets.some((s) => s.includes('Outdated claim')), 'Stale facts must NOT be compressed into authoritative arc summaries');
+  assert.equal(arc1.isCompressedSummary, true);
+  assert.equal(arc1.lossless, false);
+  assert.ok(arc1.preservedSecrets.some((s) => s.factId === 'kf-ch7-oath' && s.truth.includes('silver pocket watch')), 'Arc compression must preserve Chapter 7 secret with provenance');
+  assert.ok(arc1.preservedPromises.some((p) => p.text.includes('Silver pocket watch') && p.status === 'open'), 'Arc compression must preserve Chapter 7 open promise');
+  assert.ok(!arc1.preservedSecrets.some((s) => s.truth.includes('Outdated claim')), 'Stale facts must NOT be compressed into authoritative arc summaries');
 
   // Assemble hierarchical memory at Chapter 100 recalling the Chapter 7 promise!
   const assembled = assembleHierarchicalMemory({
@@ -457,16 +463,317 @@ import { wordCount } from '../js/utils.js';
   assert.equal(assembled.staleForReview.knowledgeFacts.length, 1);
   assert.equal(assembled.stats.alternativeExcludedCount, 1);
 
-  // Verify bounded context size!
-  assert.ok(assembled.stats.assembledChars <= 24000, `Assembled context exceeded 24,000 char budget: ${assembled.stats.assembledChars}`);
+  // Verify REAL serialized model payload budget (distinct from Inspector diagnostics)!
+  const realSerializedChars = JSON.stringify(assembled.modelPayload).length;
+  assert.equal(assembled.budget.actualSerializedChars, realSerializedChars);
+  assert.ok(realSerializedChars <= 24000, `Serialized modelPayload exceeded 24,000 char budget: ${realSerializedChars}`);
   assert.ok(assembled.explainability.some((e) => e.chapterOrder === 7 && e.whyRetrieved.includes('BM25')));
+  assert.equal('explainability' in assembled.modelPayload, false, 'Inspector explainability must stay separate from modelPayload');
 
   console.log(
     `BENCHMARK (500k+ words): chapters=100, words=${totalWords.toLocaleString('en-US')}, ` +
     `passages=${chIndex.totalDocs}, bm25BuildMs=${buildMs}, incremental1ChMs=${incMs}, ` +
-    `ch100RecallMs=${assembled.stats.retrievalMs}, assembledChars=${assembled.stats.assembledChars}/${assembled.stats.budgetCapChars} ` +
-    `(~${assembled.stats.approxTokens} tokens)`
+    `ch100RecallMs=${assembled.stats.retrievalMs}, serializedModelChars=${realSerializedChars}/${assembled.budget.maxTotalChars} ` +
+    `(~${assembled.budget.estimatedTokens} est. tokens)`
   );
 }
 
-console.log('PASS: all Milestone 3 offline unit tests & 500,000+ word benchmark passed (v3 schema, epistemic ledger, false beliefs, Eruri secrecy, Joseph late arrival, Room vs Screen Levi, qualitative relationships, stale exclusion, alternative exclusion, cross-story isolation, arc compression, Ch 7 -> Ch 100 BM25 recall).');
+// 7. PART A Finding #1: Append-only historical character beliefs (Hange Ch5 -> Ch12 -> Ch20 -> Ch24),
+//    scene-level transitions, temporal relationship snapshots & promise status transitions
+{
+  let fact = normalizeKnowledgeFact({
+    id: 'kf-hange-arc',
+    projectId: 'story-temporal',
+    title: 'Relación secreta Eruri',
+    truth: 'Erwin and Levi are secretly in love.',
+    scope: 'world_fact',
+    layer: 'room',
+    isSecret: true,
+    firstEffectiveChapterOrder: 1,
+    disclosureConstraints: ['Must remain secret from cadets'],
+  });
+  fact = appendBeliefTransitionToFact(fact, 'hange@room', {
+    state: 'suspects',
+    beliefText: 'Suspects Erwin and Levi share a private bond',
+    evidence: 'Ch 5 silent tea exchange',
+    effectiveChapterOrder: 5,
+    sceneOrder: 2,
+    sourceChapterId: 't-ch5',
+  });
+  fact = appendBeliefTransitionToFact(fact, 'hange@room', {
+    state: 'believes_false',
+    beliefText: 'Believes they are merely plotting an undercover transfer',
+    evidence: 'Ch 12 misleading cover story',
+    effectiveChapterOrder: 12,
+    sceneOrder: 1,
+    sourceChapterId: 't-ch12',
+  });
+  fact = appendBeliefTransitionToFact(fact, 'hange@room', {
+    state: 'knows',
+    beliefText: 'Discovered Erwin and Levi are secretly together',
+    evidence: 'Ch 20 hallway conversation',
+    effectiveChapterOrder: 20,
+    sceneOrder: 1,
+    sourceChapterId: 't-ch20',
+  });
+  fact = appendBeliefTransitionToFact(fact, 'hange@room', {
+    state: 'knows',
+    deliberatelyConcealing: true,
+    concealmentNote: 'Pretends ignorance to protect them in front of the room',
+    evidence: 'Ch 24 deliberate deflection',
+    effectiveChapterOrder: 24,
+    sceneOrder: 1,
+    sourceChapterId: 't-ch24',
+  });
+
+  // Rewriting Ch 10 recovers Ch 5 suspicion (NOT Ch 20 truth and NOT empty!)
+  const atCh10 = resolveEpistemicStateAtPoint({ facts: [fact], targetChapterOrder: 10, characterIds: ['hange'], characterVersion: 'room' });
+  assert.equal(atCh10.characterKnowledgeMap.hange.suspects.length, 1);
+  assert.equal(atCh10.characterKnowledgeMap.hange.knows.length, 0);
+  assert.equal(atCh10.characterKnowledgeMap.hange.believesFalse.length, 0);
+
+  // Scene-level precision within Ch 5: Scene 1 (before Scene 2 suspicion) -> unknown; Scene 2 -> suspects!
+  const atCh5S1 = resolveEpistemicStateAtPoint({ facts: [fact], targetChapterOrder: 5, targetSceneOrder: 1, characterIds: ['hange'], characterVersion: 'room' });
+  assert.equal(atCh5S1.characterKnowledgeMap.hange.suspects.length, 0);
+  const atCh5S2 = resolveEpistemicStateAtPoint({ facts: [fact], targetChapterOrder: 5, targetSceneOrder: 2, characterIds: ['hange'], characterVersion: 'room' });
+  assert.equal(atCh5S2.characterKnowledgeMap.hange.suspects.length, 1);
+
+  // Rewriting Ch 15 recovers Ch 12 false belief
+  const atCh15 = resolveEpistemicStateAtPoint({ facts: [fact], targetChapterOrder: 15, characterIds: ['hange'], characterVersion: 'room' });
+  assert.equal(atCh15.characterKnowledgeMap.hange.believesFalse.length, 1);
+  assert.equal(atCh15.characterKnowledgeMap.hange.knows.length, 0);
+
+  // Rewriting Ch 21 recovers Ch 20 knowledge (not yet concealing)
+  const atCh21 = resolveEpistemicStateAtPoint({ facts: [fact], targetChapterOrder: 21, characterIds: ['hange'], characterVersion: 'room' });
+  assert.equal(atCh21.characterKnowledgeMap.hange.knows.length, 1);
+  assert.equal(atCh21.characterKnowledgeMap.hange.knows[0].deliberatelyConcealing, false);
+
+  // Writing Ch 25 recovers Ch 24 deliberate concealment
+  const atCh25 = resolveEpistemicStateAtPoint({ facts: [fact], targetChapterOrder: 25, characterIds: ['hange'], characterVersion: 'room' });
+  assert.equal(atCh25.characterKnowledgeMap.hange.knows[0].deliberatelyConcealing, true);
+
+  // Temporal relationship snapshots & promise status transitions (open at Ch 7, kept at Ch 30 -> open at Ch 15!)
+  let rel = normalizeRelationshipState({
+    id: 'rel-hist',
+    projectId: 'story-temporal',
+    participants: ['erwin', 'levi'],
+    relationshipStage: 'guarded_pining',
+    effectiveChapterOrder: 5,
+    dimensions: { trust: 'Cautious unspoken trust.' },
+    promises: [{
+      text: 'Leave the room together after the final reel.',
+      chapterOrder: 7,
+      statusHistory: [
+        { status: 'open', effectiveChapterOrder: 7, sourceChapterId: 't-ch7' },
+        { status: 'kept', effectiveChapterOrder: 30, sourceChapterId: 't-ch30' },
+      ],
+    }],
+  });
+  rel = appendRelationshipTransitionToState(rel, {
+    effectiveChapterOrder: 22,
+    relationshipStage: 'established_relationship',
+    dimensions: { trust: 'Unshakable shared resolve after the Ch 22 confession.' },
+    sourceChapterId: 't-ch22',
+  });
+  const relAt15 = resolveRelationshipsAtPoint({ relationships: [rel], targetChapterOrder: 15 });
+  assert.equal(relAt15.authoritative[0].relationshipStage, 'guarded_pining');
+  assert.equal(relAt15.openPromises.length, 1, 'Promise kept at Ch 30 must still be open when rewriting Ch 15');
+  const relAt31 = resolveRelationshipsAtPoint({ relationships: [rel], targetChapterOrder: 31 });
+  assert.equal(relAt31.authoritative[0].relationshipStage, 'established_relationship');
+  assert.equal(relAt31.openPromises.length, 0, 'Promise kept at Ch 30 is no longer open at Ch 31');
+}
+
+// 8. PART A Finding #2: Future-containing arc exclusion/slicing, alternative sources, prologues, equal-order, ambiguous metadata
+{
+  const timelineChapters = [
+    { id: 'p0', projectId: 's-leak', order: 0, title: 'Prologue: Before the Screen', content: 'Prologue lantern glow before chapter one.', createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'c1a', projectId: 's-leak', order: 1, title: 'Chapter 1', content: 'Early legacy chapter one first.', createdAt: '2026-01-02T00:00:00Z' },
+    { id: 'c1b', projectId: 's-leak', order: 1, title: 'Chapter 2', content: 'Equal-order legacy chapter two.', createdAt: '2026-01-03T00:00:00Z' },
+    { id: 'c7', projectId: 's-leak', order: 7, title: 'Chapter 7', content: 'Chapter seven current target being rewritten.', createdAt: '2026-01-07T00:00:00Z' },
+    { id: 'c7-alt', projectId: 's-leak', order: 7, title: 'Chapter 7 Alt', content: 'Alternative branch content.', branchRole: 'alternative', createdAt: '2026-01-07T01:00:00Z' },
+    { id: 'c18', projectId: 's-leak', order: 18, title: 'Chapter 18', content: 'FUTURE_SPOILER_BETRAYAL_CH18 happened in chapter 18.', createdAt: '2026-01-18T00:00:00Z' },
+  ];
+  const spanningArc = {
+    id: 'arc-1-20',
+    projectId: 's-leak',
+    arcOrder: 1,
+    title: 'Arc I (Caps 1-20)',
+    startChapterOrder: 1,
+    endChapterOrder: 20,
+    summary: 'Includes FUTURE_SPOILER_BETRAYAL_CH18 from Chapter 18!',
+    preservedSecrets: [],
+    preservedPromises: [],
+    openThreads: ['FUTURE_SPOILER_BETRAYAL_CH18'],
+    sourceChapterIds: ['c1a', 'c18'],
+  };
+  const altFact = normalizeKnowledgeFact({
+    id: 'kf-alt-only',
+    projectId: 's-leak',
+    title: 'Fact from alternative chapter',
+    truth: 'ALT_FACT_MUST_NEVER_LEAK',
+    scope: 'room_event',
+    sourceChapterId: 'c7-alt',
+    firstEffectiveChapterOrder: 2,
+  });
+  const ambiguousEventFact = normalizeKnowledgeFact({
+    id: 'kf-ambiguous',
+    projectId: 's-leak',
+    title: 'Event without temporal anchor',
+    truth: 'AMBIGUOUS_EVENT_WITHOUT_ORDER',
+    scope: 'room_event',
+    firstEffectiveChapterOrder: null,
+    firstEffectiveCheckpoint: '',
+  });
+
+  const rewriteCh7 = assembleHierarchicalMemory({
+    projectId: 's-leak',
+    targetChapterId: 'c7',
+    targetChapterOrder: 7,
+    query: 'lantern glow betrayal',
+    chapters: timelineChapters,
+    arcSummaries: [spanningArc],
+    knowledgeFacts: [altFact, ambiguousEventFact],
+  });
+  const serialized = JSON.stringify(rewriteCh7.modelPayload);
+  assert.ok(!serialized.includes('FUTURE_SPOILER_BETRAYAL_CH18'), 'Arc spanning 1-20 must NEVER leak Ch 18 spoiler when rewriting Ch 7!');
+  assert.ok(!serialized.includes('ALT_FACT_MUST_NEVER_LEAK'), 'Fact sourced from alternative chapter must NEVER enter main timeline!');
+  assert.ok(!serialized.includes('AMBIGUOUS_EVENT_WITHOUT_ORDER'), 'Event fact missing temporal anchor must NOT silently authorize for Ch 7!');
+  assert.equal(rewriteCh7.inspectorDiagnostics.futureContainingArcsExcluded.length, 1);
+  assert.equal(rewriteCh7.inspectorDiagnostics.ambiguousTemporalExcluded.length, 1);
+  assert.equal(rewriteCh7.inspectorDiagnostics.alternativeSourcesExcluded.length, 1);
+  // Prologue & equal-order chapters before c7 remain accessible!
+  assert.ok(rewriteCh7.layers.C_historical_episodic.historicalPassages.some((p) => p.chapterId === 'p0'), 'Prologue must remain retrievable!');
+}
+
+// 9. PART A Finding #3: Prologue-aware & title-number-aware exact chapter recall (EN/ES, skipped, renamed, reordered)
+{
+  const irregularChapters = [
+    { id: 'ic-pro', projectId: 's-num', order: 0, title: 'Prólogo: Antes del silencio', content: 'Prologue opening scene in the rain.', createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'ic-1', projectId: 's-num', order: 1, title: 'Chapter 1: Arrival', content: 'First numbered chapter arrival.', createdAt: '2026-01-02T00:00:00Z' },
+    { id: 'ic-2', projectId: 's-num', order: 2, title: 'Capítulo 2: Té de la tarde', content: 'Second numbered chapter tea.', createdAt: '2026-01-03T00:00:00Z' },
+    { id: 'ic-7', projectId: 's-num', order: 3, title: 'Chapter 7: The Seventh Key', content: 'Actual Chapter Seven secret cellar key.', createdAt: '2026-01-04T00:00:00Z' },
+    { id: 'ic-8', projectId: 's-num', order: 4, title: 'Capítulo 10: Reordenado', content: 'Tenth chapter title.', createdAt: '2026-01-05T00:00:00Z' },
+    { id: 'ic-9', projectId: 's-num', order: 5, title: 'Untitled Interlude', content: 'Interlude without number.', createdAt: '2026-01-06T00:00:00Z' },
+    { id: 'ic-10', projectId: 's-num', order: 6, title: 'Chapter 12: Twelfth Hour', content: 'This is the 7th internal record but NOT Chapter 7!', createdAt: '2026-01-07T00:00:00Z' },
+  ];
+  const idx = buildChapterLexicalIndex(irregularChapters, { projectId: 's-num' });
+
+  const hitEn = searchLexicalIndex(idx, 'chapter 7', { topK: 3 });
+  assert.equal(hitEn[0]?.chapterId, 'ic-7', 'English "chapter 7" must return actual Chapter 7, NOT the 7th internal record!');
+  assert.equal(hitEn[0]?.exactChapterHit, true);
+
+  const hitEs = searchLexicalIndex(idx, 'capítulo 7', { topK: 3 });
+  assert.equal(hitEs[0]?.chapterId, 'ic-7', 'Spanish "capítulo 7" must return actual Chapter 7!');
+
+  const hitPrologue = searchLexicalIndex(idx, 'prólogo', { topK: 3 });
+  assert.equal(hitPrologue[0]?.chapterId, 'ic-pro', 'Spanish "prólogo" must retrieve the prologue!');
+
+  const hitCh10 = searchLexicalIndex(idx, 'cap. 10', { topK: 3 });
+  assert.equal(hitCh10[0]?.chapterId, 'ic-8', 'Skipped/reordered "cap. 10" must match Capítulo 10 by title number!');
+}
+
+// 10. PART A Finding #4: Essential context over-budget warning without silently truncating critical rules/secrets
+{
+  const manyLocked = Array.from({ length: 25 }, (_, i) => ({
+    id: `lf-big-${i}`,
+    projectId: 's-budget',
+    text: `CRITICAL LOCKED RULE #${i + 1}: Do not violate this non-negotiable canon invariant under any circumstances whatsoever in any scene.`,
+  }));
+  const criticalSecret = normalizeKnowledgeFact({
+    id: 'kf-crit',
+    projectId: 's-budget',
+    title: 'Critical Secret',
+    truth: 'Must never be silently truncated even under tight budget.',
+    scope: 'private_author',
+    isSecret: true,
+    firstEffectiveChapterOrder: 1,
+    disclosureConstraints: ['Never reveal before Act III'],
+  });
+  const tight = assembleHierarchicalMemory({
+    projectId: 's-budget',
+    targetChapterOrder: 5,
+    lockedFacts: manyLocked,
+    knowledgeFacts: [criticalSecret],
+    maxTotalChars: 2000,
+  });
+  assert.equal(tight.budget.overBudget, true);
+  assert.ok(tight.budget.warnings.some((w) => w.code === 'essential_context_exceeds_budget'));
+  assert.ok(tight.budget.suggestions.length >= 2);
+  assert.equal(tight.modelPayload.layers.F_permanent_canon.lockedFacts.length, 25, 'Locked facts must NEVER be silently truncated');
+  assert.equal(tight.modelPayload.layers.F_permanent_canon.criticalSecretRules.length, 1, 'Critical secrets & disclosure constraints must NEVER be silently truncated');
+}
+
+// 11. PART A Finding #5: Rich secret provenance in arc compression & private_author stays authorOnly
+{
+  const privFact = normalizeKnowledgeFact({
+    id: 'kf-priv-provenance',
+    projectId: 's-prov',
+    title: 'Private Author Secret',
+    truth: 'The hidden traitor is Commander X.',
+    scope: 'private_author',
+    layer: 'global',
+    isSecret: true,
+    sourceChapterId: 'prov-ch1',
+    sourceChapterRevision: 'rev_abc',
+    firstEffectiveChapterOrder: 1,
+    firstEffectiveCheckpoint: 'before_first_screen',
+    disclosureConstraints: ['Author-only truth; zero character knowledge'],
+    beliefsByCharacter: {
+      'hange@room': { state: 'suspects', evidence: 'Noticed missing seal', effectiveChapterOrder: 2 },
+      'eren@room': { state: 'unknown', effectiveChapterOrder: 1 },
+    },
+  });
+  const provArc = compressArcWindow({
+    projectId: 's-prov',
+    arcOrder: 1,
+    startChapterOrder: 1,
+    endChapterOrder: 5,
+    chapters: [{ id: 'prov-ch1', projectId: 's-prov', order: 1, title: 'Chapter 1', content: 'Opening scene.' }],
+    knowledgeFacts: [privFact],
+  });
+  const sec = provArc.preservedSecrets.find((s) => s.factId === 'kf-priv-provenance');
+  assert.ok(sec);
+  assert.equal(sec.authorOnly, true, 'private_author truth must stay authorOnly during arc compression');
+  assert.equal(sec.scope, 'private_author');
+  assert.equal(sec.sourceChapterId, 'prov-ch1');
+  assert.equal(sec.sourceChapterRevision, 'rev_abc');
+  assert.equal(sec.firstEffectiveCheckpoint, 'before_first_screen');
+  assert.deepEqual(sec.suspectedBy, ['hange@room']);
+  assert.deepEqual(sec.unknownTo, ['eren@room']);
+  assert.deepEqual(sec.disclosureConstraints, ['Author-only truth; zero character knowledge']);
+  assert.deepEqual(sec.characterVersions, ['room']);
+  assert.ok(sec.evidenceLinks.length >= 2);
+}
+
+// 12. PART A Finding #7: Optional derived lexicalIndexes in backups + active/deleted/changed document index freshness
+{
+  // Full v3 backup WITHOUT lexicalIndexes is valid & FULL!
+  const v3NoDerived = { __meta: { app: 'pts-studio', version: 3, derivedIndexesExcluded: true } };
+  for (const s of STORE_NAMES) {
+    if (s !== 'lexicalIndexes') v3NoDerived[s] = [];
+  }
+  const info = validateBackupDump(v3NoDerived);
+  assert.equal(info.isFull, true);
+  assert.equal(info.includesDerivedIndexes, false);
+
+  // Document lexical index detects inactive / modified / deleted documents immediately!
+  const docsV1 = [
+    { id: 'doc-1', filename: 'Lore.txt', type: 'CANON', active: true },
+    { id: 'doc-2', filename: 'Style.txt', type: 'STYLE_ONLY', active: true },
+  ];
+  const chunksV1 = [
+    { id: 'ck-1', documentId: 'doc-1', index: 0, text: 'OBSIDIAN_CITADEL_ARCHIVE lore record.' },
+    { id: 'ck-2', documentId: 'doc-2', index: 0, text: 'Violet Evergarden style cadence.' },
+  ];
+  const docIdx = buildDocumentLexicalIndex(docsV1, chunksV1, { projectId: 's-docs' });
+  assert.equal(isDocumentLexicalIndexFresh(docIdx, docsV1, chunksV1), true);
+  assert.equal(searchLexicalIndex(docIdx, 'OBSIDIAN_CITADEL_ARCHIVE', { excludeDocTypes: ['STYLE_ONLY'] }).length, 1);
+
+  // Deactivating doc-1 invalidates freshness and rebuilt index returns 0 hits!
+  const docsDeactivated = [{ ...docsV1[0], active: false }, docsV1[1]];
+  assert.equal(isDocumentLexicalIndexFresh(docIdx, docsDeactivated, chunksV1), false);
+  const rebuilt = buildDocumentLexicalIndex(docsDeactivated, chunksV1, { projectId: 's-docs' });
+  assert.equal(searchLexicalIndex(rebuilt, 'OBSIDIAN_CITADEL_ARCHIVE', { excludeDocTypes: ['STYLE_ONLY'] }).length, 0);
+}
+
+console.log('PASS: all Milestone 3 + Part A integration review unit tests & 500,000+ word benchmark passed.');
