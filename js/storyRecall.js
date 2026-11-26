@@ -6,6 +6,12 @@ const STOPWORDS = new Set(
   'the of and to in a is that it for on with as was were are be this his her she he him they them their from into at by an or if but not no yes do does did have has had will would can could should chapter scene room screen reaction reactions write writing words word story current previous next then than there here who what when where why how one two three four five six seven eight nine ten'.split(' ')
 );
 
+// Explicit references are prioritized over common character-name matches.
+export function requestedChapterNumbers(query) {
+  return new Set([...String(query || '').matchAll(/\b(?:chapters?|cap[ií]tulos?|ch\.?)\s*#?\s*(\d{1,5})\b/gi)]
+    .map(m=>Number(m[1])).filter(n=>n>0));
+}
+
 function tokenize(text) {
   return String(text || '')
     .toLowerCase()
@@ -49,12 +55,17 @@ export function getRelevantStoryExcerpts(
   const queryCounts = {};
   for (const token of queryTokens) queryCounts[token] = (queryCounts[token] || 0) + 1;
 
+  if (maxExcerpts <= 0 || maxPerChapter <= 0) return [];
+  const requested = requestedChapterNumbers(queryText);
+  const ordered = (chapters || []).filter(ch=>ch && ch.branchRole !== 'alternative')
+    .slice().sort((a,b)=>(a.order ?? 0)-(b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const candidates = [];
-  for (const chapter of chapters || []) {
+  for (const [index, chapter] of ordered.entries()) {
+    const explicit = requested.has(index+1);
     if (!chapter || chapter.id === excludeChapterId || !String(chapter.content || '').trim()) continue;
     for (const chunk of chunkWords(chapter.content, chunkSize)) {
       const s = score(chunk.text, queryCounts);
-      if (s > 0) {
+      if (s > 0 || explicit) {
         candidates.push({
           chapterId: chapter.id,
           chapterTitle: chapter.title || 'Sin título',
@@ -62,13 +73,14 @@ export function getRelevantStoryExcerpts(
           chunkIndex: chunk.index,
           text: chunk.text,
           score: s,
+          explicit,
         });
       }
     }
   }
 
   candidates.sort((a, b) =>
-    b.score - a.score ||
+    Number(b.explicit) - Number(a.explicit) || b.score - a.score ||
     (b.chapterOrder ?? 0) - (a.chapterOrder ?? 0) ||
     a.chunkIndex - b.chunkIndex
   );
