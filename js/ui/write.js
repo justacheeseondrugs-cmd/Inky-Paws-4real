@@ -1,5 +1,5 @@
 import { db } from '../db.js';
-import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard } from '../utils.js';
+import { escapeHtml, renderManuscript, toast, bus, copyTextToClipboard, debounce } from '../utils.js';
 import { getActiveGenerationState, startOrResumeGeneration, discardGeneration, approvePendingBlock, rejectPendingBlock, finishReviewedChapter, extendPendingBlockWithEnding, polishPendingBlock } from '../generation.js';
 import { generateContinuityMemory } from '../memoryEngine.js';
 import { isMainTimelineChapter } from '../timeline.js';
@@ -8,20 +8,72 @@ import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../aut
 import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js';
 
 let isRunning = false;
+let flushActiveFormDraft = null;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 const docTypeLabel = { CANON:'Canon', CHARACTER:'Personajes', CONTINUITY:'Continuidad', STYLE_ONLY:'Solo estilo', REFERENCE:'Referencia' };
+const writeDraftId = (projectId) => 'write-form-draft:' + projectId;
+
+bus.on('view-changing', () => {
+  if (typeof flushActiveFormDraft === 'function') flushActiveFormDraft();
+});
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (typeof flushActiveFormDraft === 'function') flushActiveFormDraft();
+  });
+}
+
+function captureWriteFormDraft(root, projectId) {
+  if (!root || !root.querySelector('#write-form-card')) return null;
+  return {
+    id: writeDraftId(projectId),
+    title: root.querySelector('#w-title')?.value || '',
+    instructions: root.querySelector('#w-instructions')?.value || '',
+    scenes: root.querySelector('#w-scenes')?.value || '',
+    roomCast: root.querySelector('#w-room-cast')?.value || '',
+    onscreenCast: root.querySelector('#w-onscreen-cast')?.value || '',
+    forbiddenCast: root.querySelector('#w-forbidden')?.value || '',
+    requiredEnding: root.querySelector('#w-ending')?.value || '',
+    reactionMode: !!root.querySelector('#w-reactions')?.checked,
+    targetWords: Number(root.querySelector('#w-words')?.value || 5000),
+    generationMode: root.querySelector('#w-generation-mode')?.value || 'full_chapter',
+    documentIds: Array.from(root.querySelectorAll('.w-doc:checked')).map((el) => el.value),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function hasFormDraftContent(draft) {
+  if (!draft) return false;
+  return !!(
+    String(draft.title || '').trim() ||
+    String(draft.instructions || '').trim() ||
+    String(draft.scenes || '').trim() ||
+    String(draft.roomCast || '').trim() ||
+    String(draft.onscreenCast || '').trim() ||
+    String(draft.forbiddenCast || '').trim() ||
+    String(draft.requiredEnding || '').trim()
+  );
+}
 
 export async function renderWrite(root) {
-  const [settings, active, documents, plannerDraft, lockedFacts] = await Promise.all([
+  const projectId = db.getActiveProjectId();
+  const [settings, active, documents, plannerDraft, savedDraft, lockedFacts] = await Promise.all([
     db.get('settings','main'), getActiveGenerationState(), db.getAll('documents'),
-    db.get('settings','planner-draft:' + db.getActiveProjectId()),
+    db.get('settings','planner-draft:' + projectId),
+    db.get('settings', writeDraftId(projectId)),
     db.getAll('lockedFacts')
   ]);
   const hasKey = !!settings?.apiKeys?.[settings.provider];
-  const defaultGenerationMode = settings?.defaultGenerationMode || 'full_chapter';
+  const defaultGenerationMode = savedDraft?.generationMode || settings?.defaultGenerationMode || 'full_chapter';
+  const defaultWords = Number(savedDraft?.targetWords || 5000);
+  const savedDocSet = Array.isArray(savedDraft?.documentIds) ? new Set(savedDraft.documentIds) : null;
   const docs = documents.filter((d) => d.active !== false).sort((a,b) => (b.priority || 0)-(a.priority || 0));
-  const docsHtml = docs.map((d) => '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(['CANON','CHARACTER','CONTINUITY'].includes(d.type) || d.defaultSelected === true ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>').join('');
-  const automaticRoomCast=getAutomaticReactionRoomCast(db.getActiveProjectId(),true,lockedFacts);
+  const docsHtml = docs.map((d) => {
+    const checked = savedDocSet
+      ? savedDocSet.has(d.id)
+      : (['CANON','CHARACTER','CONTINUITY'].includes(d.type) || d.defaultSelected === true);
+    return '<label class="doc-choice"><input type="checkbox" class="w-doc" value="'+escapeHtml(d.id)+'" '+(checked ? 'checked' : '')+'> '+escapeHtml(d.filename)+' <span class="muted">('+escapeHtml(docTypeLabel[d.type] || d.type)+')</span></label>';
+  }).join('');
+  const automaticRoomCast=getAutomaticReactionRoomCast(projectId,true,lockedFacts);
   const autoRoomValue=formatCast(automaticRoomCast);
   const roomCastHtml=automaticRoomCast.length
     ? '<div class="auto-cast-box"><div class="auto-cast-title">👀 Sala de reacciones · automático</div><div class="auto-cast-pills">'+automaticRoomCast.map((name)=>'<span class="pill pill-character">'+escapeHtml(name)+'</span>').join('')+'</div><p class="scene-guide">Los '+automaticRoomCast.length+' espectadores se incluyen automáticamente. No tienes que volver a escribirlos 🥳</p><input type="hidden" id="w-auto-room-cast" value="'+escapeHtml(autoRoomValue)+'"></div>'
@@ -31,7 +83,7 @@ export async function renderWrite(root) {
     '<p class="section-hint">Planifica el capítulo y aprueba cada bloque antes de que la IA continúe. Los bloques descartados NO pasan al capítulo.</p>',
     !hasKey ? '<div class="key-warning">Configura una clave API en Ajustes antes de escribir.</div>' : '',
     '<div id="gen-banner-slot"></div>',
-    '<div class="card" id="write-form-card"><h3>Nuevo capítulo</h3>',
+    '<div class="card" id="write-form-card"><div class="card-row"><h3>Nuevo capítulo</h3><button type="button" class="btn btn-ghost btn-sm" id="w-clear-draft-btn">🧹 Limpiar formulario</button></div>',
     '<label class="field-label" for="w-title">Título</label><input id="w-title" type="text" placeholder="Capítulo 2 — Una hora antes">',
     '<label class="field-label" for="w-instructions">¿Qué debe pasar? (instrucciones, secretos y límites)</label>',
     '<textarea id="w-instructions" rows="7"></textarea>',
@@ -47,24 +99,66 @@ export async function renderWrite(root) {
     '<p class="scene-guide">Si aparece uno de estos nombres en un bloque, no se incorporará al capítulo.</p>',
     '<label class="field-label" for="w-ending">Última escena obligatoria (recomendado)</label>',
     '<textarea id="w-ending" rows="3" placeholder="La niña llega a los brazos de Erwin y habla entre sollozos ANTES del corte."></textarea>',
-    '<label class="field-label"><input id="w-reactions" type="checkbox" checked> Sala de reacciones: caos natural + la pantalla NO espera a que terminen de reaccionar</label>',
+    '<label class="field-label"><input id="w-reactions" type="checkbox" '+(savedDraft?.reactionMode === false ? '' : 'checked')+'> Sala de reacciones: caos natural + la pantalla NO espera a que terminen de reaccionar</label>',
     '<label class="field-label">📚 Documentos autorizados para ESTE capítulo</label>',
     '<p class="scene-guide">Los no marcados quedan fuera. Un documento de «Solo estilo» aporta sus notas de estilo, nunca texto ni personajes originales.</p>',
     '<div id="w-reference-list">'+(docsHtml || '<p class="muted">Sin documentos activos en esta historia. Súbelos en Documentos si los necesitas.</p>')+'</div>',
-    '<div class="grid-2"><div><label class="field-label" for="w-words">Extensión orientativa</label><select id="w-words"><option value="3000">3.000 palabras</option><option value="5000" selected>5.000 palabras</option><option value="7000">7.000 palabras</option></select></div>',
+    '<div class="grid-2"><div><label class="field-label" for="w-words">Extensión orientativa</label><select id="w-words"><option value="3000" '+(defaultWords === 3000 ? 'selected' : '')+'>3.000 palabras</option><option value="5000" '+(defaultWords === 5000 ? 'selected' : '')+'>5.000 palabras</option><option value="7000" '+(defaultWords === 7000 ? 'selected' : '')+'>7.000 palabras</option></select></div>',
     '<div><label class="field-label" for="w-generation-mode">Modo de escritura</label><select id="w-generation-mode"><option value="full_chapter" '+(defaultGenerationMode === 'full_chapter' ? 'selected' : '')+'>📖 Capítulo completo · una sola llamada</option><option value="blocks" '+(defaultGenerationMode === 'blocks' ? 'selected' : '')+'>🧩 Por bloques · revisar paso a paso</option></select></div></div>',
     '<p class="scene-guide" id="w-mode-help">'+(defaultGenerationMode === 'full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.')+'</p>',
     '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Escribir</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button><button class="btn btn-ghost" id="w-context-inspector-btn">👀 Ver contexto</button><button class="btn btn-ghost" id="w-export-test-pack-btn">🧪 Exportar pack</button></div><p class="scene-guide">«Ver contexto» muestra qué sabe Inky antes de escribir y NO usa API ni créditos. «Exportar pack» descarga ese contexto en Markdown.</p></div>',
     '<div id="w-context-inspector-slot"></div>',
     '<div class="card paper" id="w-paper-card" style="display:none"><div class="paper-title" id="w-paper-title"></div><div class="muted" id="w-paper-meta"></div><div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="w-copy-chapter-btn">📋 Copiar capítulo</button></div><hr><div class="paper-readonly manuscript-rendered" id="w-paper-text"></div></div>'
   ].join('');
-  // An explicitly chosen brainstorm suggestion is only a draft: the author
-  // still reviews it and fills title, cast, scene plan and ending before writing.
+
+  // Restore persisted form draft for this story.
+  if (savedDraft) {
+    root.querySelector('#w-title').value = savedDraft.title || '';
+    root.querySelector('#w-instructions').value = savedDraft.instructions || '';
+    root.querySelector('#w-scenes').value = savedDraft.scenes || '';
+    const manualRoom = root.querySelector('#w-room-cast');
+    if (manualRoom) manualRoom.value = savedDraft.roomCast || '';
+    root.querySelector('#w-onscreen-cast').value = savedDraft.onscreenCast || '';
+    root.querySelector('#w-forbidden').value = savedDraft.forbiddenCast || '';
+    root.querySelector('#w-ending').value = savedDraft.requiredEnding || '';
+  }
+
+  const persistFormDraftNow = () => {
+    const draft = captureWriteFormDraft(root, projectId);
+    if (!draft) return;
+    if (hasFormDraftContent(draft)) {
+      db.put('settings', draft).catch(() => {});
+    } else {
+      db.del('settings', draft.id).catch(() => {});
+    }
+  };
+  const debouncedSaveDraft = debounce(persistFormDraftNow, 350);
+  flushActiveFormDraft = () => {
+    debouncedSaveDraft.cancel();
+    persistFormDraftNow();
+  };
+
+  // An explicitly chosen brainstorm suggestion is persisted into the writing
+  // form draft BEFORE deleting plannerDraft, so switching tabs never loses it.
   if (plannerDraft?.text && !active) {
     root.querySelector('#w-instructions').value = plannerDraft.text;
-    await db.del('settings',plannerDraft.id);
+    const mergedDraft = captureWriteFormDraft(root, projectId);
+    if (mergedDraft) await db.put('settings', mergedDraft);
+    await db.del('settings', plannerDraft.id);
     toast('Idea de planificación lista para revisar en las instrucciones.');
   }
+
+  const formCard = root.querySelector('#write-form-card');
+  formCard?.addEventListener('input', () => debouncedSaveDraft());
+  formCard?.addEventListener('change', () => debouncedSaveDraft());
+  document.getElementById('w-clear-draft-btn')?.addEventListener('click', async () => {
+    const draft = captureWriteFormDraft(root, projectId);
+    if (hasFormDraftContent(draft) && !confirm('¿Limpiar todos los campos del formulario de este capítulo?')) return;
+    debouncedSaveDraft.cancel();
+    await db.del('settings', writeDraftId(projectId));
+    await renderWrite(root);
+    toast('Formulario limpio.');
+  });
   document.getElementById('w-generation-mode')?.addEventListener('change',(e)=>{ const help=document.getElementById('w-mode-help'); if(help) help.textContent=e.target.value==='full_chapter' ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta y luego te deja revisarla antes de guardarla.' : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.'; });
   document.getElementById('w-generate-btn')?.addEventListener('click',()=>onGenerateClick('continue'));
   document.getElementById('w-generate-ending-btn')?.addEventListener('click',()=>onGenerateClick('ending'));
@@ -404,7 +498,7 @@ async function exportModelTestPackFromForm(){
   }catch(err){
     toast('No se pudo crear el pack: '+(err.message || err),{error:true,ms:9000});
   }finally{
-    if(btn){btn.disabled=false;btn.textContent='🧪 Exportar pack para otro modelo';}
+    if(btn){btn.disabled=false;btn.textContent='🧪 Exportar pack';}
   }
 }
 
@@ -452,11 +546,14 @@ async function onGenerateClick(generationIntent='continue'){
     console.warn('Context Guard preflight failed:',err);
   }
 
+  const projectId=db.getActiveProjectId();
   const chapters=await db.getAll('chapters');
   const mainChapters=chapters.filter(isMainTimelineChapter);
   const nextOrder=mainChapters.length ? Math.max(...mainChapters.map((chapter)=>chapter.order ?? 0)) + 1 : 0;
   const chapter={id:db.uid(),title,content:'',wordCount:0,status:'draft',order:nextOrder,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   await db.put('chapters',chapter);
+  flushActiveFormDraft = null;
+  await db.del('settings', writeDraftId(projectId)).catch(() => {});
   await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,roomCast,onscreenCast,forbiddenCast,documentIds,reactionMode,generationIntent,generationMode});
 }
 

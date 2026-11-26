@@ -71,27 +71,66 @@ export function fmtDate(iso) {
 }
 
 // ---- modal genérico (sheet) ----
-export function openModal(innerHtml) {
+let activeModalCleanup = null;
+
+export function openModal(innerHtml, { onClose } = {}) {
   closeModal();
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   backdrop.id = 'active-modal';
-  backdrop.innerHTML = `<div class="modal-sheet">${innerHtml}</div>`;
+  backdrop.innerHTML = `<div class="modal-sheet" role="dialog" aria-modal="true">${innerHtml}</div>`;
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') closeModal();
+  };
+  let closed = false;
+  activeModalCleanup = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKeyDown);
+    if (typeof onClose === 'function') {
+      try { onClose(); } catch { }
+    }
+  };
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeModal(); });
+  document.addEventListener('keydown', onKeyDown);
   document.body.appendChild(backdrop);
   return backdrop;
 }
 
 export function closeModal() {
+  const cleanup = activeModalCleanup;
+  activeModalCleanup = null;
+  if (cleanup) cleanup();
   document.getElementById('active-modal')?.remove();
 }
 
 export function debounce(fn, wait = 600) {
   let t = null;
-  return (...args) => {
+  let lastArgs = null;
+  const debounced = (...args) => {
+    lastArgs = args;
     clearTimeout(t);
-    t = setTimeout(() => fn(...args), wait);
+    t = setTimeout(() => {
+      const argsToRun = lastArgs;
+      t = null;
+      lastArgs = null;
+      fn(...argsToRun);
+    }, wait);
   };
+  debounced.flush = () => {
+    if (t === null) return undefined;
+    clearTimeout(t);
+    const argsToRun = lastArgs;
+    t = null;
+    lastArgs = null;
+    return fn(...argsToRun);
+  };
+  debounced.cancel = () => {
+    clearTimeout(t);
+    t = null;
+    lastArgs = null;
+  };
+  return debounced;
 }
 
 // ---- bus de eventos minimalista ----

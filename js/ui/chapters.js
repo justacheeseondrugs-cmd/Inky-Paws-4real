@@ -238,18 +238,52 @@ async function createChapterMemory(id, card) {
 
 async function openChapterEditor(id) {
   const chapter = await db.get('chapters', id); if (!chapter) return;
-  const autosave = debounce(async (content) => {
-    const fresh = await db.get('chapters', id); fresh.content = content; fresh.wordCount = wordCount(content); fresh.updatedAt = new Date().toISOString(); await db.put('chapters', fresh);
-    const badge = document.getElementById('editor-save-badge'); if (badge) badge.textContent = 'Guardado ✓ ' + new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  let latestContent = String(chapter.content || '');
+  let latestTitle = String(chapter.title || '');
+  let dirty = false;
+
+  const persistEditor = async () => {
+    if (!dirty) return;
+    const contentToSave = latestContent;
+    const titleToSave = latestTitle.trim() || chapter.title;
+    dirty = false;
+    const fresh = await db.get('chapters', id);
+    if (!fresh) return;
+    fresh.content = contentToSave;
+    fresh.title = titleToSave;
+    fresh.wordCount = wordCount(contentToSave);
+    fresh.updatedAt = new Date().toISOString();
+    await db.put('chapters', fresh);
+    const badge = document.getElementById('editor-save-badge');
+    if (badge) badge.textContent = 'Guardado ✓ ' + new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
     bus.emit('chapters-changed');
-  }, 700);
+  };
+
+  const autosave = debounce(() => { persistEditor().catch(() => {}); }, 700);
+  const onBeforeUnload = () => {
+    if (dirty) autosave.flush();
+  };
+  window.addEventListener('beforeunload', onBeforeUnload);
+
   openModal(`
     <div class="paper" style="padding:20px;">
       <div class="card-row"><input type="text" id="editor-title" value="${escapeHtml(chapter.title)}" style="font-family:'Cormorant Garamond',serif; font-size:20px; border:none; background:transparent; padding:0;"><span class="muted" id="editor-save-badge">Guardado ✓</span></div>
       <hr><div class="paper-readonly manuscript-rendered" id="editor-reading">${renderManuscript(chapter.content)}</div><textarea class="paper-text" id="editor-content" rows="18" style="display:none;">${escapeHtml(chapter.content)}</textarea>
     </div>
-    <div class="btn-row"><button class="btn btn-primary" id="editor-mode-toggle">✏️ Editar texto</button><button class="btn btn-ghost" id="editor-close-btn">Cerrar</button><span class="muted" style="align-self:center;" id="editor-wc">${wordCount(chapter.content)} palabras</span></div>`);
-  document.getElementById('editor-content').addEventListener('input', (e) => { document.getElementById('editor-wc').textContent = wordCount(e.target.value) + ' palabras'; document.getElementById('editor-save-badge').textContent = 'Guardando…'; autosave(e.target.value); });
+    <div class="btn-row"><button class="btn btn-primary" id="editor-mode-toggle">✏️ Editar texto</button><button class="btn btn-ghost" id="editor-close-btn">Cerrar</button><span class="muted" style="align-self:center;" id="editor-wc">${wordCount(chapter.content)} palabras</span></div>`, {
+    onClose: () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      autosave.cancel();
+      if (dirty) persistEditor().catch(() => {});
+    },
+  });
+  document.getElementById('editor-content').addEventListener('input', (e) => {
+    latestContent = e.target.value;
+    dirty = true;
+    document.getElementById('editor-wc').textContent = wordCount(latestContent) + ' palabras';
+    document.getElementById('editor-save-badge').textContent = 'Guardando…';
+    autosave();
+  });
   // La edición conserva Markdown como texto original; lectura lo presenta con formato.
   document.getElementById('editor-mode-toggle').addEventListener('click', (e) => {
     const source = document.getElementById('editor-content');
@@ -257,11 +291,28 @@ async function openChapterEditor(id) {
     const toEdit = source.style.display === 'none';
     source.style.display = toEdit ? 'block' : 'none';
     preview.style.display = toEdit ? 'none' : 'block';
-    if (!toEdit) preview.innerHTML = renderManuscript(source.value);
+    if (!toEdit) {
+      preview.innerHTML = renderManuscript(source.value);
+      if (dirty) {
+        autosave.cancel();
+        persistEditor().catch(() => {});
+      }
+    }
     e.currentTarget.textContent = toEdit ? '📖 Vista de lectura' : '✏️ Editar texto';
     if (toEdit) source.focus();
   });
-  document.getElementById('editor-title').addEventListener('change', async (e) => { const fresh = await db.get('chapters', id); fresh.title = e.target.value.trim() || fresh.title; await db.put('chapters', fresh); bus.emit('chapters-changed'); });
+  document.getElementById('editor-title').addEventListener('input', (e) => {
+    latestTitle = e.target.value;
+    dirty = true;
+    document.getElementById('editor-save-badge').textContent = 'Guardando…';
+    autosave();
+  });
+  document.getElementById('editor-title').addEventListener('change', () => {
+    if (dirty) {
+      autosave.cancel();
+      persistEditor().catch(() => {});
+    }
+  });
   document.getElementById('editor-close-btn').addEventListener('click', closeModal);
 }
 
