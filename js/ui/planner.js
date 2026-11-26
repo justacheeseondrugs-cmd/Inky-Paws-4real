@@ -6,7 +6,10 @@ import { getProvider } from '../providers/index.js?v=20260928-economy-mini-v1';
 import { getRelevantChunks } from '../retrieval.js';
 import { getActiveGenerationState } from '../generation.js?v=20260928-long-memory-v1';
 import { escapeHtml, toast, bus } from '../utils.js';
-import { isMainTimelineChapter, filterActiveMemories } from '../timeline.js?v=20260928-chapter-variants-v1';
+import { isMainTimelineChapter, memoriesForChapters } from '../timeline.js?v=20260928-chapter-variants-v1';
+
+import { getRelevantStoryExcerpts } from '../storyRecall.js?v=20261125-inky-brain-v2';
+import { selectSmartMemories } from '../smartContext.js?v=20261125-inky-brain-v2';
 
 const HISTORY_LIMIT = 50;
 const CONTEXT_TURNS = 4;
@@ -15,7 +18,7 @@ const projectDraftId = (projectId) => 'planner-draft:' + projectId;
 const short = (value, limit) => String(value || '').slice(0, limit);
 
 function formatMemory(entries) {
-  return entries.slice(-2).map((m) => [
+  return entries.map((m) => [
     m.chapterTitle ? 'CHAPTER: ' + m.chapterTitle : '',
     m.events ? 'Events: ' + short(m.events, 950) : '',
     m.whoKnowsWhat ? 'Who knows what: ' + short(m.whoKnowsWhat, 750) : '',
@@ -32,7 +35,7 @@ async function collectContext(question) {
   ]);
   const sortedChapters = chapters.filter((ch) => isMainTimelineChapter(ch) && ch.content?.trim())
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-  const activeMemories = filterActiveMemories(memories, chapters);
+  const activeMemories = memoriesForChapters(memories, sortedChapters);
   const recent = sortedChapters.slice(-1);
   const chapterContext = recent.map((ch, i) => {
     const tail = 6200;
@@ -51,13 +54,17 @@ async function collectContext(question) {
   // documents may never introduce story facts during planning.
   const factualDocs = documents.filter((d) => ['CANON','CHARACTER','CONTINUITY'].includes(d.type) && d.active !== false);
   const query = [question, ...recent.map((c) => c.title + ' ' + c.content.slice(-1800))].join('\n');
+  const selectedMemories = selectSmartMemories(activeMemories,question,{maxSelected:5,foundationCount:1,recentCount:2}).selected;
+  const historical = getRelevantStoryExcerpts(sortedChapters,question,{maxExcerpts:3,maxPerChapter:2,chunkSize:240});
+  const historicalContext = historical.map(x=>'CHAPTER "'+x.chapterTitle+'" — actual manuscript excerpt:\n'+x.text).join('\n\n');
   const matches = getRelevantChunks(factualDocs, chunks, query, { context:'planner' }).slice(0, 2);
   const docContext = matches.map((c) => 'REFERENCE "' + c.document.filename + '" (' + c.document.type + '): ' + short(c.text, 750)).join('\n\n');
   return [
     'LOCKED FACTS:\n' + lockedFacts.map((f) => '- ' + f.text).join('\n').slice(0, 9000),
     'PERMANENT AU CANON:\n' + canonNotes.map((n) => '- ' + n.text).join('\n').slice(0, 6000),
     'CHARACTER PROFILES:\n' + characterContext.slice(0, 10500),
-    'RECENT APPROVED CONTINUITY MEMORIES:\n' + formatMemory(activeMemories.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')))),
+    'SELECTED CONTINUITY MEMORIES (chronological):\n' + formatMemory(selectedMemories),
+    historicalContext ? 'RELEVANT HISTORICAL MANUSCRIPT EXCERPTS:\n'+historicalContext : '',
     'ACTUAL MOST RECENT SAVED CHAPTER ENDINGS (source of truth for immediate next scene):\n' + chapterContext,
     docContext ? 'SELECTED CURRENT-AU REFERENCE EXCERPTS (background only, not events that automatically occurred):\n' + docContext : '',
   ].filter(Boolean).join('\n\n---\n\n');
