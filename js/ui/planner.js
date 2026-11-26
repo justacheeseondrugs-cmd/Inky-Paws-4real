@@ -12,6 +12,7 @@ import { escapeHtml, toast, bus, copyTextToClipboard, openModal, closeModal } fr
 import { getStoryConfig } from '../storyConfigSchema.js';
 import { assembleOperationContext } from '../contextEngine.js';
 import { getWalletConfig, checkGenerationBudget, recordUsageEvent, getCumulativeChargeFromUsage } from '../inkyWallet.js';
+import { isSafeOnlinePreview, PREVIEW_API_DISABLED_MESSAGE } from '../previewGuard.js';
 import {
   getCreativeChat,
   saveCreativeChat,
@@ -70,7 +71,7 @@ export async function renderPlanner(root) {
       <label class="field-label" for="planner-input">Lluvia de ideas libre (español o inglés)</label>
       <textarea id="planner-input" rows="4" maxlength="6000" placeholder="Ej: OKAAAAY SOOOO what if Joseph knows Erwin and Levi used to date, but Hange thinks something completely different HAHAHAHA. Also no Violet traits this time!"></textarea>
       <div class="btn-row">
-        <button type="button" class="btn btn-primary" id="planner-send">💬 Enviar a IA (Chat Creativo)</button>
+        <button type="button" class="btn btn-primary" id="planner-send" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>💬 Enviar a IA (Chat Creativo)</button>
         <button type="button" class="btn btn-ghost" id="planner-extract-btn">✨ Extractor heurístico local (0 tokens)</button>
         <button type="button" class="btn btn-danger" id="planner-abort" style="display:none;">⏹ Cancelar</button>
         <button type="button" class="btn btn-ghost" id="planner-clear">Nueva conversación</button>

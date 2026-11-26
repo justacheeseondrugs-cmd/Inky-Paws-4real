@@ -14,6 +14,7 @@ import {
 import { getWalletConfig } from '../inkyWallet.js';
 import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../authorBrain.js';
 import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js';
+import { isSafeOnlinePreview, PREVIEW_API_DISABLED_MESSAGE } from '../previewGuard.js';
 
 let isRunning = false;
 let pauseRequested = false;
@@ -74,8 +75,9 @@ export async function renderWrite(root) {
     db.get('settings', writeDraftId(projectId)),
     db.getAll('lockedFacts')
   ]);
+  const safePreview = isSafeOnlinePreview();
   const primaryProvider = walletConfig?.primaryProvider || settings?.provider || 'openai';
-  const hasKey = !!(settings?.apiKeys?.[primaryProvider] || settings?.apiKeys?.[settings?.provider]);
+  const hasKey = !safePreview && !!(settings?.apiKeys?.[primaryProvider] || settings?.apiKeys?.[settings?.provider]);
   const defaultGenerationMode = savedDraft?.generationMode || settings?.defaultGenerationMode || 'full_chapter';
   const defaultWords = Number(savedDraft?.targetWords || 5000);
   const isCustomWords = ![3000, 5000, 7000].includes(defaultWords);
@@ -98,10 +100,13 @@ export async function renderWrite(root) {
     : (mode === 'full_chapter'
       ? 'Capítulo completo pide toda la extensión seleccionada en una sola respuesta coherente y te deja revisarla antes de guardarla.'
       : 'Por bloques usa el tamaño configurado en Ajustes y te deja aprobar cada tramo antes de continuar.');
+  const keyBannerHtml = safePreview
+    ? '<div class="context-guard-item context-guard-info" style="margin-bottom:10px;">🧪 <b>Vista previa segura (0 tokens):</b> la generación real está desactivada en el preview online. Usa libremente <b>«👀 Ver contexto»</b>, <b>«📋 Plan Novel Mode (0 tokens)»</b> y <b>«🧪 Exportar pack»</b> sin gastar nada.</div>'
+    : (!hasKey ? '<div class="key-warning">Configura una clave API en Ajustes antes de escribir.</div>' : '');
   root.innerHTML = [
     '<h2 class="section-title">Escribir</h2>',
     '<p class="section-hint">Motor de Contexto Unificado activo. Todo borrador generado se revisa antes de aprobar; puedes escribir en Capítulo completo, Novel Mode (orquestado) o Por bloques, o co-escribir directamente en Capítulos.</p>',
-    !hasKey ? '<div class="key-warning">Configura una clave API en Ajustes antes de escribir.</div>' : '',
+    keyBannerHtml,
     '<div id="gen-banner-slot"></div>',
     '<div id="w-post-finish-slot"></div>',
     '<div class="card" id="write-form-card"><div class="card-row"><h3>Nuevo capítulo</h3><button type="button" class="btn btn-ghost btn-sm" id="w-clear-draft-btn">🧹 Limpiar formulario</button></div>',
@@ -128,7 +133,7 @@ export async function renderWrite(root) {
     '<div><label class="field-label" for="w-generation-mode">Modo de escritura</label><select id="w-generation-mode"><option value="full_chapter" '+(defaultGenerationMode === 'full_chapter' ? 'selected' : '')+'>📖 Capítulo completo · una sola llamada</option><option value="novel_orchestrated" '+(defaultGenerationMode === 'novel_orchestrated' ? 'selected' : '')+'>📚 Novel Mode · orquestado por escenas</option><option value="blocks" '+(defaultGenerationMode === 'blocks' ? 'selected' : '')+'>🧩 Por bloques · revisar paso a paso</option></select></div></div>',
     '<p class="scene-guide" id="w-mode-help">'+escapeHtml(modeHelpText(defaultGenerationMode))+'</p>',
     '<div id="w-novel-plan-slot"></div>',
-    '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+'>▶ Escribir</button><button type="button" class="btn btn-ghost" id="w-novel-preview-btn" style="display:'+(defaultGenerationMode === 'novel_orchestrated' ? '' : 'none')+'">📋 Plan Novel Mode y presupuesto (0 tokens)</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+'>✨ Add an ending</button><button class="btn btn-ghost" id="w-context-inspector-btn">👀 Ver contexto</button><button class="btn btn-ghost" id="w-export-test-pack-btn">🧪 Exportar pack</button></div><p class="scene-guide">«Ver contexto» previsualiza la instantánea EXACTA enviada al modelo (0 tokens, sin credenciales). Las contradicciones críticas bloquean la generación hasta resolverse.</p></div>',
+    '<div class="writer-action-bar writer-action-bar-start"><button class="btn btn-primary writer-action" id="w-generate-btn" '+(!hasKey || active ? 'disabled' : '')+(safePreview ? ' title="'+escapeHtml(PREVIEW_API_DISABLED_MESSAGE)+'"' : '')+'>▶ Escribir</button><button type="button" class="btn btn-ghost" id="w-novel-preview-btn" style="display:'+(defaultGenerationMode === 'novel_orchestrated' ? '' : 'none')+'">📋 Plan Novel Mode y presupuesto (0 tokens)</button><button class="btn btn-ghost btn-ending writer-action" id="w-generate-ending-btn" '+(!hasKey || active ? 'disabled' : '')+(safePreview ? ' title="'+escapeHtml(PREVIEW_API_DISABLED_MESSAGE)+'"' : '')+'>✨ Add an ending</button><button class="btn btn-ghost" id="w-context-inspector-btn">👀 Ver contexto</button><button class="btn btn-ghost" id="w-export-test-pack-btn">🧪 Exportar pack</button></div><p class="scene-guide">«Ver contexto» previsualiza la instantánea EXACTA enviada al modelo (0 tokens, sin credenciales). Las contradicciones críticas bloquean la generación hasta resolverse.</p></div>',
     '<div id="w-context-inspector-slot"></div>',
     '<div class="card paper" id="w-paper-card" style="display:none"><div class="paper-title" id="w-paper-title"></div><div class="muted" id="w-paper-meta"></div><div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="w-copy-chapter-btn">📋 Copiar capítulo</button></div><hr><div class="paper-readonly manuscript-rendered" id="w-paper-text"></div></div>'
   ].join('');

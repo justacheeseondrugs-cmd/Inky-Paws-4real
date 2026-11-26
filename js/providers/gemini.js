@@ -1,9 +1,13 @@
 import { AIProvider, isLikelyInvalidProse, isAbortError } from './base.js';
+import { isSafeOnlinePreview, previewBlockedProviderResult } from '../previewGuard.js';
 
 export class GeminiProvider extends AIProvider {
   get name() { return 'gemini'; }
 
   async generate({ systemPrompt, userPrompt, maxOutputTokens = 2048, temperature = 1.0, signal }) {
+    if (isSafeOnlinePreview()) {
+      return previewBlockedProviderResult();
+    }
     const apiKey = String(this.config.apiKey || '').trim();
     const model = String(this.config.model || 'gemini-2.0-flash').trim();
     if (!apiKey) {

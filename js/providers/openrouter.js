@@ -1,4 +1,5 @@
 import { AIProvider, isLikelyInvalidProse, isAbortError } from './base.js';
+import { isSafeOnlinePreview, previewBlockedProviderResult } from '../previewGuard.js';
 
 // Free router only: do not switch silently to a paid OpenRouter model.
 export const isFreeModel = (model) => model === 'openrouter/free' || /^[a-z0-9._-]+\/[a-z0-9._:-]+:free$/i.test(model);
@@ -6,6 +7,9 @@ export const isFreeModel = (model) => model === 'openrouter/free' || /^[a-z0-9._
 export class OpenRouterFreeProvider extends AIProvider {
   get name() { return 'openrouter'; }
   async generate({ systemPrompt, userPrompt, maxOutputTokens = 2048, temperature = 1, signal }) {
+    if (isSafeOnlinePreview()) {
+      return previewBlockedProviderResult();
+    }
     const key = String(this.config.apiKey || '').trim();
     const model = String(this.config.model || 'openrouter/free').trim();
     if (!key) return { ok:false, text:null, errorType:'auth', errorMessage:'Falta la clave API de OpenRouter en Ajustes. No sirve la clave de Gemini.', truncated:false, finishReason:null, raw:null };

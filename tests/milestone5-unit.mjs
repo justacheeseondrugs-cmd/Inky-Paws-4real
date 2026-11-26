@@ -24,6 +24,7 @@ import {
   resetSessionUsageForTests,
 } from '../js/inkyWallet.js';
 import { OpenAIProvider } from '../js/providers/openai.js';
+import { isSafeOnlinePreview, previewBlockedProviderResult } from '../js/previewGuard.js';
 import {
   CONTEXT_ENGINE_OPERATIONS,
   compileUnifiedContextRequest,
@@ -803,4 +804,20 @@ function makeSyntheticSnapshot({
   assert.ok(!reqOrig.modelBound.systemPrompt.includes('Candy'));
 }
 
-console.log('PASS: all Milestone 5 offline unit & Literary Lab acceptance tests passed (Inky Wallet & unknown pricing & spending caps, all 9 Unified Context Engine operations, prompt-injection & credential redaction, Novel Mode plan & handoff, deterministic vs probabilistic review, all 16 Master Character Bible v1.1 acceptance scenarios & unrelated fandom isolation).');
+// Safe online preview host detection (Cloudflare Pages / Netlify / Vercel / query flag)
+{
+  assert.equal(isSafeOnlinePreview({ hostname: 'inky-paws-alpha.pages.dev', search: '' }), true);
+  assert.equal(isSafeOnlinePreview({ hostname: 'feature-inky-soul-m5.inky-paws-alpha.pages.dev', search: '' }), true);
+  assert.equal(isSafeOnlinePreview({ hostname: 'inky-preview.netlify.app', search: '' }), true);
+  assert.equal(isSafeOnlinePreview({ hostname: '127.0.0.1', search: '?preview_readonly=1' }), true);
+  assert.equal(isSafeOnlinePreview({ hostname: '127.0.0.1', search: '' }), false);
+  assert.equal(isSafeOnlinePreview({ hostname: 'justacheeseondrugs-cmd.github.io', search: '' }), false);
+  assert.equal(isSafeOnlinePreview(null), false);
+
+  const blocked = previewBlockedProviderResult();
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.errorType, 'preview_disabled');
+  assert.ok(blocked.errorMessage.includes('0 tokens'));
+}
+
+console.log('PASS: all Milestone 5 offline unit & Literary Lab acceptance tests passed (Inky Wallet & unknown pricing & spending caps, all 9 Unified Context Engine operations, prompt-injection & credential redaction, Novel Mode plan & handoff, deterministic vs probabilistic review, all 16 Master Character Bible v1.1 acceptance scenarios, unrelated fandom isolation & Cloudflare Pages safe online preview guard).');

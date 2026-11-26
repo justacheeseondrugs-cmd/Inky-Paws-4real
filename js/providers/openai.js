@@ -1,4 +1,5 @@
 import { AIProvider, isLikelyInvalidProse, isAbortError } from './base.js';
+import { isSafeOnlinePreview, previewBlockedProviderResult } from '../previewGuard.js';
 
 function apiError(res, data) {
   if (res.status === 429) {
@@ -88,6 +89,9 @@ export class OpenAIProvider extends AIProvider {
     reasoningEffort = '',
     signal,
   }) {
+    if (isSafeOnlinePreview()) {
+      return previewBlockedProviderResult();
+    }
     const apiKey = String(this.config.apiKey || '').trim();
     const model = String(this.config.model || 'gpt-5.4-mini').trim();
     const effectiveEffort = String(reasoningEffort || this.config.reasoningEffort || '').trim().toLowerCase();

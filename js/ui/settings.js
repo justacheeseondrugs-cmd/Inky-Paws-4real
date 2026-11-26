@@ -2,6 +2,7 @@
 // Anti-patrones editables, Aprendizaje Editorial revisado (0 tokens) y Copias de seguridad.
 
 import { db } from '../db.js';
+import { isSafeOnlinePreview } from '../previewGuard.js';
 import { toast, escapeHtml } from '../utils.js';
 import { listProviders } from '../providers/index.js';
 import { renderAppearanceSettings, bindAppearanceSettings } from './appearance.js';
@@ -277,12 +278,16 @@ export async function renderSettings(root) {
   `;
 
   // --- Proveedor de IA (preservado) ---
+  const safePreview = isSafeOnlinePreview();
   function renderProviderFields() {
     const p = document.getElementById('s-provider').value;
     const field = document.getElementById('provider-fields');
-    const key = safeSettings.apiKeys?.[p] || '';
+    const key = safePreview ? '' : (safeSettings.apiKeys?.[p] || '');
     const model = safeSettings.models?.[p] || (p === 'gemini' ? 'gemini-2.0-flash' : p === 'openrouter' ? 'openrouter/free' : 'gpt-5.4-mini');
-    field.innerHTML = `<label class="field-label">Clave API de ${escapeHtml(providers.find((x) => x.id === p)?.label || p)}</label><input type="password" id="s-apikey" value="${escapeHtml(key)}" placeholder="Pega aquí tu clave API" autocomplete="off"><label class="field-label">Modelo</label><input type="text" id="s-model" value="${escapeHtml(model)}" placeholder="ej: gpt-5.4-mini">${p === 'openai' ? '<div class="btn-row"><button type="button" class="btn btn-primary btn-sm" id="s-openai-mini">💸 Economía · GPT-5.4 Mini</button><button type="button" class="btn btn-ghost btn-sm" id="s-openai-sol">✨ Sol · más caro</button></div><p class="muted">Para fanfics diarios, GPT-5.4 Mini queda como opción económica. Sol sigue disponible para escenas especiales: el botón solo cambia el ID y tú decides cuándo guardarlo.</p>' : ''}${p === 'openrouter' ? '<p class="muted">🌸 Para escribir fanfics, prueba <b>arcee-ai/trinity-large-preview:free</b>. <code>openrouter/free</code> elige modelos gratuitos al azar y algunos pueden devolver una respuesta vacía. También puedes usar otros IDs acabados en <code>:free</code>; no admite modelos de pago. <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener noreferrer">Crear clave gratuita de OpenRouter ↗</a>. La clave de Gemini no sirve aquí. Los modelos gratuitos pueden tener límites y saturación.</p>' : ''}`;
+    const keyBlock = safePreview
+      ? `<label class="field-label">Clave API de ${escapeHtml(providers.find((x) => x.id === p)?.label || p)}</label><input type="password" id="s-apikey" value="" placeholder="Desactivado en vista previa segura (no pegues claves reales aquí)" disabled autocomplete="off"><div class="context-guard-item context-guard-info" style="margin:6px 0; font-size:12px;">🔒 <b>Vista previa segura (0 tokens):</b> el ingreso de claves API y las llamadas reales están desactivados en el preview online hasta revisar una estrategia segura de credenciales. Puedes cambiar de modelo para inspeccionar prompts y costos en «👀 Ver contexto».</div>`
+      : `<label class="field-label">Clave API de ${escapeHtml(providers.find((x) => x.id === p)?.label || p)}</label><input type="password" id="s-apikey" value="${escapeHtml(key)}" placeholder="Pega aquí tu clave API" autocomplete="off">`;
+    field.innerHTML = `${keyBlock}<label class="field-label">Modelo</label><input type="text" id="s-model" value="${escapeHtml(model)}" placeholder="ej: gpt-5.4-mini">${p === 'openai' ? '<div class="btn-row"><button type="button" class="btn btn-primary btn-sm" id="s-openai-mini">💸 Economía · GPT-5.4 Mini</button><button type="button" class="btn btn-ghost btn-sm" id="s-openai-sol">✨ Sol · más caro</button></div><p class="muted">Para fanfics diarios, GPT-5.4 Mini queda como opción económica. Sol sigue disponible para escenas especiales: el botón solo cambia el ID y tú decides cuándo guardarlo.</p>' : ''}${p === 'openrouter' ? '<p class="muted">🌸 Para escribir fanfics, prueba <b>arcee-ai/trinity-large-preview:free</b>. <code>openrouter/free</code> elige modelos gratuitos al azar y algunos pueden devolver una respuesta vacía. También puedes usar otros IDs acabados en <code>:free</code>; no admite modelos de pago. <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener noreferrer">Crear clave gratuita de OpenRouter ↗</a>. La clave de Gemini no sirve aquí. Los modelos gratuitos pueden tener límites y saturación.</p>' : ''}`;
     if (p === 'openai') {
       document.getElementById('s-openai-mini')?.addEventListener('click', () => { document.getElementById('s-model').value = 'gpt-5.4-mini'; toast('Modo economía seleccionado. Pulsa «Guardar ajustes» para aplicarlo.'); });
       document.getElementById('s-openai-sol')?.addEventListener('click', () => { document.getElementById('s-model').value = 'gpt-5.6-sol'; toast('Sol seleccionado. Pulsa «Guardar ajustes» para aplicarlo.'); });
@@ -555,7 +560,9 @@ export async function renderSettings(root) {
     const p = document.getElementById('s-provider').value;
     const mod = document.getElementById('s-model').value.trim();
     fresh.provider = p;
-    fresh.apiKeys = { ...fresh.apiKeys, [p]: document.getElementById('s-apikey').value.trim() };
+    if (!isSafeOnlinePreview()) {
+      fresh.apiKeys = { ...fresh.apiKeys, [p]: document.getElementById('s-apikey').value.trim() };
+    }
     fresh.models = { ...fresh.models, [p]: mod };
     fresh.blockWordSize = parseInt(document.getElementById('s-blocksize').value, 10) || 1000;
     fresh.defaultGenerationMode = document.getElementById('s-generation-mode').value || 'full_chapter';

@@ -784,13 +784,81 @@ def main():
             }''')
             assert alpha_safety['ok'], f"Alpha spending safety E2E checks failed: {alpha_safety}"
 
+            # ------------------------------------------------------------------
+            # TEST 6: Cloudflare Pages Safe Online Preview Mode (`?preview_readonly=1`)
+            # Verifies: banner visible, API key entry disabled, real AI generation blocked
+            # across all 3 providers with 0 fetch calls, while 0-token Context Inspector,
+            # Novel Mode budget preview & local heuristic extractor work cleanly + SW & CSP clean!
+            # ------------------------------------------------------------------
+            preview_page = ctx.new_page()
+            preview_errors = []
+            preview_page.on('pageerror', lambda e: preview_errors.append(str(e)))
+            preview_page.on('console', lambda m: preview_errors.append(m.text) if m.type == 'error' else None)
+            preview_page.route('https://fonts.googleapis.com/**', lambda r: r.fulfill(status=200, content_type='text/css', body=''))
+            preview_page.route('https://fonts.gstatic.com/**', lambda r: r.fulfill(status=200, content_type='font/woff2', body=b''))
+            preview_api_hits = []
+            preview_page.route('https://api.openai.com/**', lambda r: (preview_api_hits.append(r.url), r.abort()))
+            preview_page.route('https://generativelanguage.googleapis.com/**', lambda r: (preview_api_hits.append(r.url), r.abort()))
+            preview_page.route('https://openrouter.ai/**', lambda r: (preview_api_hits.append(r.url), r.abort()))
+
+            preview_page.goto(base_url + '/index.html?preview_readonly=1', wait_until='load')
+            preview_page.wait_for_selector('#alpha-safe-preview-banner')
+            assert 'Vista previa segura' in preview_page.locator('#alpha-safe-preview-banner').inner_text()
+            assert preview_page.locator('#tabbar .tab-btn').count() == 7
+
+            # Ajustes: API key input MUST be disabled
+            preview_page.click('[data-view="settings"]')
+            preview_page.wait_for_selector('#s-apikey')
+            assert preview_page.locator('#s-apikey').is_disabled(), 'API key input must be disabled in online safe preview!'
+
+            # Escribir: Generate buttons disabled, Context Inspector works at 0 tokens
+            preview_page.click('[data-view="write"]')
+            preview_page.wait_for_selector('#w-generate-btn')
+            assert preview_page.locator('#w-generate-btn').is_disabled(), 'Generate button must be disabled in online safe preview!'
+            assert preview_page.locator('#w-generate-ending-btn').is_disabled()
+            assert not preview_page.locator('#w-context-inspector-btn').is_disabled()
+            preview_page.fill('#w-title', 'Alpha Preview Inspection')
+            preview_page.fill('#w-instructions', 'Inspect exact context safely without spending tokens.')
+            if preview_page.locator('#w-room-cast').count() > 0:
+                preview_page.fill('#w-room-cast', 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia')
+            preview_page.click('#w-context-inspector-btn')
+            preview_page.wait_for_selector('#w-context-inspector')
+            assert 'Motor de Contexto Unificado' in preview_page.locator('#w-context-inspector').inner_text()
+
+            # Planificar: AI send disabled, 0-token local heuristic extractor enabled
+            preview_page.click('[data-view="planner"]')
+            preview_page.wait_for_selector('#planner-send')
+            assert preview_page.locator('#planner-send').is_disabled()
+            assert not preview_page.locator('#planner-extract-btn').is_disabled()
+
+            # Direct provider guard verification across OpenAI, Gemini, OpenRouter (0 fetch calls!)
+            provider_blocks = preview_page.evaluate('''async () => {
+              const { OpenAIProvider } = await import('/js/providers/openai.js');
+              const { GeminiProvider } = await import('/js/providers/gemini.js');
+              const { OpenRouterFreeProvider } = await import('/js/providers/openrouter.js');
+              const r1 = await new OpenAIProvider({ apiKey: 'dummy', model: 'gpt-5.4-mini' }).generate({ systemPrompt: 's', userPrompt: 'u' });
+              const r2 = await new GeminiProvider({ apiKey: 'dummy', model: 'gemini-2.0-flash' }).generate({ systemPrompt: 's', userPrompt: 'u' });
+              const r3 = await new OpenRouterFreeProvider({ apiKey: 'dummy', model: 'openrouter/free' }).generate({ systemPrompt: 's', userPrompt: 'u' });
+              const swReg = await navigator.serviceWorker.getRegistration();
+              return {
+                openaiBlocked: r1.ok === false && r1.errorType === 'preview_disabled',
+                geminiBlocked: r2.ok === false && r2.errorType === 'preview_disabled',
+                openrouterBlocked: r3.ok === false && r3.errorType === 'preview_disabled',
+                swRegistered: Boolean(swReg),
+              };
+            }''')
+            assert all(provider_blocks.values()), f'Safe online preview provider/SW check failed: {provider_blocks}'
+            assert not preview_api_hits, f'Online safe preview attempted outbound AI API call: {preview_api_hits}'
+            assert not preview_errors, f'Online safe preview errors: {preview_errors}'
+            preview_page.close()
+
             assert not external_non_mocked, f'Unexpected external network requests: {external_non_mocked}'
             assert not errors, f'Unexpected page errors: {errors}'
             assert not csp_errs, f'CSP errors: {csp_errs}'
 
             ctx.close()
             browser.close()
-            print('PASS: all Milestone 5 + Alpha release review browser E2E acceptance tests passed (7 tabs, Inky Wallet, upgraded Context Inspector + exact output cap match + invalidation + contradiction blocking, Full Chapter draft workflow, Novel Mode orchestrated pause/resume/budget-cap, Co-writing targeted passage rewrite + conflict fallback, deterministic vs probabilistic review, editable post-approval continuity, Creative Chat AI via Unified Context Engine, unknown-cost blocking & explicit override, cumulative spending caps across all operations, usageLog & API key backup safety, 0 external unmocked calls).')
+            print('PASS: all Milestone 5 + Alpha release review + Cloudflare Pages safe preview browser E2E acceptance tests passed (7 tabs, Inky Wallet, upgraded Context Inspector + exact output cap match + invalidation + contradiction blocking, Full Chapter draft workflow, Novel Mode orchestrated pause/resume/budget-cap, Co-writing targeted passage rewrite + conflict fallback, deterministic vs probabilistic review, editable post-approval continuity, Creative Chat AI via Unified Context Engine, unknown-cost blocking & explicit override, cumulative spending caps across all operations, safe online preview 0-token guard, usageLog & API key backup safety, 0 external unmocked calls).')
     finally:
         server.shutdown()
 

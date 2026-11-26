@@ -3,6 +3,7 @@ import { escapeHtml, renderManuscript, toast, fmtDate, debounce, wordCount, cont
 import { rewriteChapter, continueRewriteDraft, rewriteSelectedPassage, applySafePassageReplacement, generateContinuityMemory, saveContinuityMemoryEntry, markChapterMemoriesStale } from '../memoryEngine.js';
 import { continueFromAuthorPosition } from '../postReview.js';
 import { isMainTimelineChapter, sortChaptersWithVariants } from '../timeline.js';
+import { isSafeOnlinePreview, PREVIEW_API_DISABLED_MESSAGE } from '../previewGuard.js';
 
 const rewriteDraftKey = (projectId, chapterId) => `rewrite-draft:${projectId}:${chapterId}`;
 const MEMORY_REVIEW_FIELDS = [
@@ -144,8 +145,8 @@ export async function renderChapters(root) {
         <button class="btn btn-ghost btn-sm act-open">Abrir/editar</button>
         <button class="btn btn-ghost btn-sm act-copy">📋 Copiar</button>
         <button class="btn btn-ghost btn-sm act-download">⬇️ .md</button>
-        <button class="btn btn-ghost btn-sm act-rewrite">${draftChapterIds.has(c.id) ? 'Reescribir (borrador)' : 'Reescribir'}</button>
-        ${alternative ? '<button class="btn btn-primary btn-sm act-promote">⭐ Usar como principal</button>' : '<button class="btn btn-ghost btn-sm act-memory">🧠 Crear/actualizar memoria</button><button class="btn btn-ghost btn-sm act-variants">🌿 Crear 2 alternativas</button>'}
+        <button class="btn btn-ghost btn-sm act-rewrite" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>${draftChapterIds.has(c.id) ? 'Reescribir (borrador)' : 'Reescribir'}</button>
+        ${alternative ? '<button class="btn btn-primary btn-sm act-promote">⭐ Usar como principal</button>' : `<button class="btn btn-ghost btn-sm act-memory" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>🧠 Crear/actualizar memoria</button><button class="btn btn-ghost btn-sm act-variants" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>🌿 Crear 2 alternativas</button>`}
         <button class="btn btn-ghost btn-sm act-duplicate">Duplicar</button>
         <button class="btn btn-danger btn-sm act-delete">Eliminar</button>
       </div>
@@ -390,8 +391,8 @@ async function openChapterEditor(id) {
       <div style="font-weight:600; margin-bottom:4px;">✍️ Co-escritura (IA bajo demanda · conserva tu prosa intacta)</div>
       <input type="text" id="cowrite-instruction" placeholder="Instrucción breve (ej: intensifica el subtexto en el pasaje seleccionado o continúa desde el cursor)">
       <div class="btn-row" style="margin-top:6px;">
-        <button type="button" class="btn btn-ghost btn-sm" id="ce-cowrite-continue-btn">✒️ Continuar desde cursor (IA)</button>
-        <button type="button" class="btn btn-ghost btn-sm" id="ce-cowrite-passage-btn">✂️ Reescribir pasaje seleccionado (IA)</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="ce-cowrite-continue-btn" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>✒️ Continuar desde cursor (IA)</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="ce-cowrite-passage-btn" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>✂️ Reescribir pasaje seleccionado (IA)</button>
       </div>
       <div id="cowrite-preview-slot" style="margin-top:8px;"></div>
     </div>
