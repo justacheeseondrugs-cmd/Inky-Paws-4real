@@ -131,22 +131,60 @@ async function put(storeName, obj, opts) {
     if (obj.projectId && obj.projectId !== scope) throw new Error('Este registro pertenece a otra historia.');
     if (!obj.projectId) obj.projectId = scope;
   }
+  const hadExplicitId = typeof obj.id === 'string' && !!obj.id.trim();
   if (!obj.id) obj.id = uid();
-  const store = await tx(storeName, 'readwrite');
+  const database = await openDb();
   return new Promise((resolve, reject) => {
-    const req = store.put(obj);
-    req.onsuccess = () => resolve(obj);
-    req.onerror = () => reject(req.error);
+    const transaction = database.transaction(storeName, 'readwrite');
+    const store = transaction.objectStore(storeName);
+    let customError = null;
+    transaction.oncomplete = () => resolve(obj);
+    transaction.onerror = () => reject(customError || transaction.error);
+    transaction.onabort = () => reject(customError || transaction.error || new Error('No se pudo guardar el registro.'));
+
+    if (SCOPED_STORES.has(storeName) && hadExplicitId) {
+      const checkReq = store.get(obj.id);
+      checkReq.onsuccess = () => {
+        const existing = checkReq.result;
+        if (existing && (existing.projectId || ORIGINAL_PROJECT) !== scope) {
+          customError = new Error('Colisión de ID: ya existe un registro con este identificador en otra historia.');
+          try { transaction.abort(); } catch { }
+          return;
+        }
+        store.put(obj);
+      };
+    } else {
+      store.put(obj);
+    }
   });
 }
 
 async function del(storeName, id, opts) {
-  if (SCOPED_STORES.has(storeName) && !(await get(storeName, id, opts))) return false;
-  const store = await tx(storeName, 'readwrite');
+  const scope = resolveScope(opts);
+  const database = await openDb();
   return new Promise((resolve, reject) => {
-    const req = store.delete(id);
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
+    const transaction = database.transaction(storeName, 'readwrite');
+    const store = transaction.objectStore(storeName);
+    let deleted = false;
+    transaction.oncomplete = () => resolve(deleted);
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error('No se pudo eliminar el registro.'));
+
+    if (SCOPED_STORES.has(storeName)) {
+      const checkReq = store.get(id);
+      checkReq.onsuccess = () => {
+        const existing = checkReq.result;
+        if (!existing || (existing.projectId || ORIGINAL_PROJECT) !== scope) {
+          deleted = false;
+          return;
+        }
+        deleted = true;
+        store.delete(id);
+      };
+    } else {
+      deleted = true;
+      store.delete(id);
+    }
   });
 }
 
@@ -170,42 +208,108 @@ function sanitizeSettingsForBackup(record) {
 }
 
 const ALLOWED_BACKUP_APPS = new Set(['pts-studio', 'inky-paws']);
+const SUPPORTED_MIN_VERSION = 1;
+const SUPPORTED_MAX_VERSION = DB_VERSION;
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateStoreRecord(storeName, item, pos) {
+  if (!isPlainObject(item)) {
+    throw new Error(`Registro inválido en "${storeName}" (posición ${pos}).`);
+  }
+  if (typeof item.id !== 'string' || !item.id.trim()) {
+    throw new Error(`Falta un identificador válido en "${storeName}" (posición ${pos}).`);
+  }
+  if (SCOPED_STORES.has(storeName) && item.projectId !== undefined) {
+    if (typeof item.projectId !== 'string' || !item.projectId.trim()) {
+      throw new Error(`projectId inválido en "${storeName}" (posición ${pos}).`);
+    }
+  }
+  if (storeName === 'chapters') {
+    if (item.title !== undefined && typeof item.title !== 'string') throw new Error(`Título de capítulo inválido (posición ${pos}).`);
+    if (item.content !== undefined && typeof item.content !== 'string') throw new Error(`Contenido de capítulo inválido (posición ${pos}).`);
+    if (item.versions !== undefined && !Array.isArray(item.versions)) throw new Error(`Historial de versiones inválido en capítulo (posición ${pos}).`);
+    if (item.order !== undefined && !Number.isFinite(Number(item.order))) throw new Error(`Orden de capítulo inválido (posición ${pos}).`);
+    if (item.wordCount !== undefined && !Number.isFinite(Number(item.wordCount))) throw new Error(`Conteo de palabras inválido en capítulo (posición ${pos}).`);
+  } else if (storeName === 'characters') {
+    if (item.name !== undefined && typeof item.name !== 'string') throw new Error(`Nombre de personaje inválido (posición ${pos}).`);
+    if (item.active !== undefined && typeof item.active !== 'boolean') throw new Error(`Estado activo inválido en personaje (posición ${pos}).`);
+  } else if (storeName === 'documents') {
+    if (item.filename !== undefined && typeof item.filename !== 'string') throw new Error(`Nombre de documento inválido (posición ${pos}).`);
+    if (item.priority !== undefined && !Number.isFinite(Number(item.priority))) throw new Error(`Prioridad de documento inválida (posición ${pos}).`);
+    if (item.wordCount !== undefined && !Number.isFinite(Number(item.wordCount))) throw new Error(`Conteo de palabras inválido en documento (posición ${pos}).`);
+  } else if (storeName === 'docChunks') {
+    if (typeof item.documentId !== 'string' || !item.documentId.trim()) throw new Error(`documentId inválido en fragmento (posición ${pos}).`);
+    if (item.text !== undefined && typeof item.text !== 'string') throw new Error(`Texto inválido en fragmento (posición ${pos}).`);
+    if (item.index !== undefined && !Number.isFinite(Number(item.index))) throw new Error(`Índice inválido en fragmento (posición ${pos}).`);
+  } else if (storeName === 'memoryEntries') {
+    if (typeof item.chapterId !== 'string' || !item.chapterId.trim()) throw new Error(`chapterId inválido en memoria (posición ${pos}).`);
+  } else if (storeName === 'lockedFacts' || storeName === 'canonNotes') {
+    if (typeof item.text !== 'string') throw new Error(`Texto inválido en "${storeName}" (posición ${pos}).`);
+  } else if (storeName === 'settings') {
+    if (item.id === 'workspaces' && item.items !== undefined && !Array.isArray(item.items)) {
+      throw new Error('La lista de historias (workspaces) en ajustes tiene un formato inválido.');
+    }
+    if (item.id === 'main' && item.apiKeys !== undefined && !isPlainObject(item.apiKeys)) {
+      throw new Error('El campo apiKeys en ajustes tiene un formato inválido.');
+    }
+  }
+}
 
 export function validateBackupDump(dump) {
-  if (!dump || typeof dump !== 'object' || Array.isArray(dump)) {
+  if (!isPlainObject(dump)) {
     throw new Error('El archivo no contiene una copia de seguridad válida.');
   }
   const meta = dump.__meta;
   if (meta !== undefined) {
-    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
+    if (!isPlainObject(meta)) {
       throw new Error('Los metadatos de la copia de seguridad no son válidos.');
     }
     if (meta.app && !ALLOWED_BACKUP_APPS.has(String(meta.app))) {
       throw new Error('Este archivo no corresponde a una copia de seguridad de Inky Paws.');
     }
+    if (meta.version !== undefined) {
+      const ver = Number(meta.version);
+      if (!Number.isInteger(ver) || ver < SUPPORTED_MIN_VERSION || ver > SUPPORTED_MAX_VERSION) {
+        throw new Error(`Versión de esquema no compatible (${String(meta.version)}). Esta versión de Inky Paws admite hasta la versión ${SUPPORTED_MAX_VERSION}.`);
+      }
+    }
   }
-  const storeNames = Object.keys(STORES);
+  const allStoreNames = Object.keys(STORES);
   const targetStores = [];
-  for (const name of storeNames) {
-    if (!(name in dump) || dump[name] === undefined) continue;
+  const missingStores = [];
+  for (const name of allStoreNames) {
+    if (!(name in dump) || dump[name] === undefined) {
+      missingStores.push(name);
+      continue;
+    }
     if (!Array.isArray(dump[name])) {
       throw new Error(`El almacén "${name}" tiene un formato inválido en la copia de seguridad.`);
     }
+    const seenIds = new Set();
     for (let i = 0; i < dump[name].length; i++) {
       const item = dump[name][i];
-      if (!item || typeof item !== 'object' || Array.isArray(item)) {
-        throw new Error(`Registro inválido en "${name}" (posición ${i + 1}).`);
+      validateStoreRecord(name, item, i + 1);
+      if (seenIds.has(item.id)) {
+        throw new Error(`Identificador duplicado "${item.id}" en "${name}" (posición ${i + 1}).`);
       }
-      if (typeof item.id !== 'string' || !item.id.trim()) {
-        throw new Error(`Falta un identificador válido en "${name}" (posición ${i + 1}).`);
-      }
+      seenIds.add(item.id);
     }
     targetStores.push(name);
   }
   if (!targetStores.length) {
     throw new Error('La copia de seguridad no contiene ningún almacén de datos reconocible.');
   }
-  return { targetStores };
+  const isFull = missingStores.length === 0 && meta?.backupKind !== 'partial';
+  return {
+    targetStores,
+    missingStores,
+    isFull,
+    backupKind: isFull ? 'full' : 'partial',
+    version: meta?.version ?? DB_VERSION,
+  };
 }
 
 async function exportAll() {
@@ -218,6 +322,7 @@ async function exportAll() {
   }
   dump.__meta = {
     app: 'pts-studio',
+    backupKind: 'full',
     exportedAt: new Date().toISOString(),
     version: DB_VERSION,
     apiKeysExcluded: true
@@ -225,10 +330,26 @@ async function exportAll() {
   return dump;
 }
 
-async function importAll(dump, { merge = false } = {}) {
+async function importAll(dump, { merge = false, allowPartial = false, targetProjectId = null } = {}) {
   // Validar estructura COMPLETA antes de tocar IndexedDB: una copia inválida
   // nunca debe borrar ni modificar datos existentes.
-  const { targetStores } = validateBackupDump(dump);
+  const validation = validateBackupDump(dump);
+  const { targetStores, isFull } = validation;
+
+  if (!merge && !isFull && !allowPartial) {
+    throw new Error('Este archivo es una importación parcial (faltan almacenes). No puede reemplazar toda la base de datos; impórtalo en modo combinación (merge) o usa una copia completa.');
+  }
+  if (targetProjectId) {
+    for (const name of targetStores) {
+      if (!SCOPED_STORES.has(name)) continue;
+      for (const obj of dump[name]) {
+        const recordScope = obj.projectId || ORIGINAL_PROJECT;
+        if (recordScope !== targetProjectId) {
+          throw new Error(`El registro "${obj.id}" en "${name}" pertenece a otra historia ("${recordScope}") y no puede importarse en "${targetProjectId}".`);
+        }
+      }
+    }
+  }
 
   // Nunca aceptar credenciales desde un archivo importado.
   // Conserva únicamente las claves que ya estaban en ESTE navegador.
@@ -238,40 +359,74 @@ async function importAll(dump, { merge = false } = {}) {
 
   await new Promise((resolve, reject) => {
     const transaction = database.transaction(targetStores, 'readwrite');
+    let customError = null;
     transaction.oncomplete = () => resolve(true);
-    transaction.onerror = () => reject(transaction.error || new Error('No se pudo completar la importación.'));
-    transaction.onabort = () => reject(transaction.error || new Error('La importación fue abortada; tus datos previos permanecen intactos.'));
+    transaction.onerror = () => reject(customError || transaction.error || new Error('No se pudo completar la importación.'));
+    transaction.onabort = () => reject(customError || transaction.error || new Error('La importación fue abortada; tus datos previos permanecen intactos.'));
 
-    try {
-      for (const name of targetStores) {
-        const store = transaction.objectStore(name);
-        if (!merge) store.clear();
-        let hasMainSettings = false;
+    const writeAll = () => {
+      try {
+        for (const name of targetStores) {
+          const store = transaction.objectStore(name);
+          if (!merge) store.clear();
+          let hasMainSettings = false;
 
-        for (const obj of dump[name]) {
-          let safeObj = { ...obj };
-          if (name === 'settings') {
-            safeObj = sanitizeSettingsForBackup(safeObj);
-            if (safeObj.id === 'main') {
-              hasMainSettings = true;
-              safeObj = { ...safeObj, apiKeys: { ...localApiKeys } };
+          for (const obj of dump[name]) {
+            let safeObj = { ...obj };
+            if (name === 'settings') {
+              safeObj = sanitizeSettingsForBackup(safeObj);
+              if (safeObj.id === 'main') {
+                hasMainSettings = true;
+                safeObj = { ...safeObj, apiKeys: { ...localApiKeys } };
+              }
             }
+            store.put(safeObj);
           }
-          store.put(safeObj);
-        }
 
-        // Backup raro/antiguo sin settings.main: no perder las claves locales existentes.
-        if (name === 'settings' && !hasMainSettings && localMain) {
-          store.put({ ...localMain, apiKeys: { ...localApiKeys } });
+          // Backup raro/antiguo sin settings.main: no perder las claves locales existentes.
+          if (name === 'settings' && !hasMainSettings && localMain) {
+            store.put({ ...localMain, apiKeys: { ...localApiKeys } });
+          }
         }
+      } catch (err) {
+        customError = err;
+        try { transaction.abort(); } catch { }
       }
-    } catch (err) {
-      try { transaction.abort(); } catch { }
-      reject(err);
+    };
+
+    // En modo combinación (merge), verificar dentro de la MISMA transacción
+    // que ningún ID entrante sobrescriba un registro de otra historia.
+    const scopedTargets = merge ? targetStores.filter((name) => SCOPED_STORES.has(name)) : [];
+    if (!scopedTargets.length) {
+      writeAll();
+      return;
+    }
+
+    let remaining = scopedTargets.length;
+    let failed = false;
+    for (const name of scopedTargets) {
+      const store = transaction.objectStore(name);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        if (failed) return;
+        const ownerById = new Map((req.result || []).map((rec) => [rec.id, rec.projectId || ORIGINAL_PROJECT]));
+        for (const incoming of dump[name]) {
+          const existingOwner = ownerById.get(incoming.id);
+          const incomingOwner = incoming.projectId || ORIGINAL_PROJECT;
+          if (existingOwner !== undefined && existingOwner !== incomingOwner) {
+            failed = true;
+            customError = new Error(`Colisión entre historias: el registro "${incoming.id}" en "${name}" pertenece a "${existingOwner}" y no puede ser sobrescrito por "${incomingOwner}".`);
+            try { transaction.abort(); } catch { }
+            return;
+          }
+        }
+        remaining -= 1;
+        if (remaining === 0) writeAll();
+      };
     }
   });
 
-  return true;
+  return validation;
 }
 
 export const db = { openDb, getAll, getByIndex, get, put, del, clearStore, uid, exportAll, importAll, validateBackupDump, getActiveProjectId, setActiveProjectId };
