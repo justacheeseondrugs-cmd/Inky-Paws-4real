@@ -96,13 +96,13 @@ export async function renderChapters(root) {
         ? `<span class="pill pill-active">🌳 Principal · ${branchLabel}</span>`
         : '';
     return `
-    <div class="list-item ${alternative ? 'chapter-variant' : ''}" data-id="${c.id}">
-      <div class="title-row"><b>${escapeHtml(c.title)}</b><span class="muted">${c.wordCount || 0} palabras</span></div>
+    <div class="list-item ${alternative ? 'chapter-variant' : ''}" data-id="${escapeHtml(c.id)}">
+      <div class="title-row"><b>${escapeHtml(c.title)}</b><span class="muted">${Number(c.wordCount) || 0} palabras</span></div>
       <div class="chip-row">
         <span class="pill ${c.status === 'finished' ? 'pill-active' : 'pill-inactive'}">${c.status === 'finished' ? 'Terminado' : 'Borrador'}</span>
         ${branchPill}
-        ${c.versions?.length ? `<span class="pill pill-reference">${c.versions.length} versión(es) anterior(es)</span>` : ''}
-        <span class="muted">${fmtDate(c.updatedAt)}</span>
+        ${c.versions?.length ? `<span class="pill pill-reference">${Number(c.versions.length) || 0} versión(es) anterior(es)</span>` : ''}
+        <span class="muted">${escapeHtml(fmtDate(c.updatedAt))}</span>
       </div>
       ${alternative ? '<p class="branch-note">Esta versión es segura para experimentar: puedes editarla o reescribirla sin cambiar la historia principal.</p>' : ''}
       <div class="btn-row">

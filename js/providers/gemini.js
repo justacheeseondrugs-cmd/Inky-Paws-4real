@@ -1,15 +1,15 @@
-import { AIProvider, isLikelyInvalidProse } from './base.js';
+import { AIProvider, isLikelyInvalidProse, isAbortError } from './base.js';
 
 export class GeminiProvider extends AIProvider {
   get name() { return 'gemini'; }
 
-  async generate({ systemPrompt, userPrompt, maxOutputTokens = 2048, temperature = 1.0 }) {
-    const apiKey = this.config.apiKey;
-    const model = this.config.model || 'gemini-3.8-flash';
+  async generate({ systemPrompt, userPrompt, maxOutputTokens = 2048, temperature = 1.0, signal }) {
+    const apiKey = String(this.config.apiKey || '').trim();
+    const model = String(this.config.model || 'gemini-2.0-flash').trim();
     if (!apiKey) {
-      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de Gemini en Ajustes.', raw: null };
+      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de Gemini en Ajustes.', truncated: false, finishReason: null, raw: null };
     }
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
     const body = {
       systemInstruction: { parts: [{ text: systemPrompt || '' }] },
       contents: [{ role: 'user', parts: [{ text: userPrompt || '' }] }],
@@ -29,11 +29,18 @@ export class GeminiProvider extends AIProvider {
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
         body: JSON.stringify(body),
+        signal,
       });
     } catch (err) {
-      return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar Gemini: ' + err.message, raw: err };
+      if (isAbortError(err) || signal?.aborted) {
+        return { ok: false, text: null, errorType: 'aborted', errorMessage: 'Solicitud a Gemini cancelada por la autora.', truncated: false, finishReason: null, raw: null };
+      }
+      return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar Gemini: ' + err.message, truncated: false, finishReason: null, raw: err };
     }
 
     let data;
@@ -41,28 +48,32 @@ export class GeminiProvider extends AIProvider {
 
     if (!res.ok) {
       if (res.status === 429) {
-        return { ok: false, text: null, errorType: 'quota', errorMessage: 'Gemini devolvió 429 (cuota/límite de tasa excedido). No reintentes automáticamente; espera y vuelve a intentar.', raw: data };
+        return { ok: false, text: null, errorType: 'quota', errorMessage: 'Gemini devolvió 429 (cuota/límite de tasa excedido). No reintentes automáticamente; espera y vuelve a intentar.', truncated: false, finishReason: null, raw: data };
       }
       if (res.status === 503) {
-        return { ok: false, text: null, errorType: 'busy', errorMessage: 'Gemini devolvió HTTP 503: el modelo tiene alta demanda temporal. El borrador está guardado. Espera unos minutos y pulsa Reanudar; también puedes elegir otro modelo Flash disponible en Ajustes.', raw: data };
+        return { ok: false, text: null, errorType: 'busy', errorMessage: 'Gemini devolvió HTTP 503: el modelo tiene alta demanda temporal. El borrador está guardado. Espera unos minutos y pulsa Reanudar; también puedes elegir otro modelo Flash disponible en Ajustes.', truncated: false, finishReason: null, raw: data };
       }
       if (res.status === 401 || res.status === 403) {
-        return { ok: false, text: null, errorType: 'auth', errorMessage: 'clave API de Gemini inválida o sin permisos (HTTP ' + res.status + ').', raw: data };
+        return { ok: false, text: null, errorType: 'auth', errorMessage: 'clave API de Gemini inválida o sin permisos (HTTP ' + res.status + ').', truncated: false, finishReason: null, raw: data };
       }
-      return { ok: false, text: null, errorType: 'http', errorMessage: 'Gemini devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), raw: data };
+      return { ok: false, text: null, errorType: 'http', errorMessage: 'Gemini devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), truncated: false, finishReason: null, raw: data };
     }
 
     const candidate = data?.candidates?.[0];
-    const finishReason = candidate?.finishReason;
+    const finishReason = candidate?.finishReason || null;
     if (finishReason === 'SAFETY' || finishReason === 'RECITATION' || data?.promptFeedback?.blockReason) {
-      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'Gemini bloqueó la respuesta (motivo: ' + (finishReason || data?.promptFeedback?.blockReason) + ').', raw: data };
+      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'Gemini bloqueó la respuesta (motivo: ' + (finishReason || data?.promptFeedback?.blockReason) + ').', truncated: false, finishReason, raw: data };
     }
 
     const text = (candidate?.content?.parts || []).map((p) => p.text || '').join('').trim();
+    const truncated = finishReason === 'MAX_TOKENS';
     if (!text || isLikelyInvalidProse(text)) {
-      return { ok: false, text: null, errorType: 'empty', errorMessage: 'Gemini devolvió una respuesta vacía o inválida.', raw: data };
+      const msg = truncated
+        ? 'Gemini alcanzó el límite de tokens antes de devolver texto utilizable (MAX_TOKENS).'
+        : 'Gemini devolvió una respuesta vacía o inválida.';
+      return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, raw: data };
     }
 
-    return { ok: true, text, errorType: null, errorMessage: null, raw: data };
+    return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, raw: data };
   }
 }

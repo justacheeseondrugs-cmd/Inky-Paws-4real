@@ -2,13 +2,15 @@
 // Un proveedor SOLO sabe hablar con una API externa. No sabe nada de
 // capítulos, canon guard, ni personajes: recibe texto, devuelve texto.
 //
-// generate({ systemPrompt, userPrompt, maxOutputTokens, temperature })
-// debe resolver SIEMRE (nunca lanzar), con esta forma:
+// generate({ systemPrompt, userPrompt, maxOutputTokens, temperature, signal })
+// debe resolver SIEMPRE (nunca lanzar), con esta forma:
 // {
 //   ok: boolean,
 //   text: string|null,
-//   errorType: null | 'quota' | 'network' | 'http' | 'moderation' | 'empty' | 'auth',
+//   errorType: null | 'quota' | 'network' | 'http' | 'moderation' | 'empty' | 'auth' | 'busy' | 'aborted',
 //   errorMessage: string|null,
+//   truncated?: boolean,
+//   finishReason?: string|null,
 //   raw: <respuesta cruda, para depuración>
 // }
 
@@ -18,8 +20,12 @@ export class AIProvider {
   }
   get name() { return 'base'; }
   async generate(_opts) {
-    return { ok: false, text: null, errorType: 'http', errorMessage: 'Proveedor no implementado', raw: null };
+    return { ok: false, text: null, errorType: 'http', errorMessage: 'Proveedor no implementado', truncated: false, finishReason: null, raw: null };
   }
+}
+
+export function isAbortError(err) {
+  return !!err && (err.name === 'AbortError' || err.code === 20);
 }
 
 export function isLikelyInvalidProse(text) {

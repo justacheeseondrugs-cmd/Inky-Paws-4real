@@ -8,6 +8,7 @@ import { FEEDBACK_OPTIONS, recordAuthorFeedback, recordEditSignal } from '../aut
 import { getAutomaticReactionRoomCast, combineCast, formatCast } from '../storyCast.js';
 
 let isRunning = false;
+let activeAbortController = null;
 let flushActiveFormDraft = null;
 const lines = (t) => String(t || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 const docTypeLabel = { CANON:'Canon', CHARACTER:'Personajes', CONTINUITY:'Continuidad', STYLE_ONLY:'Solo estilo', REFERENCE:'Referencia' };
@@ -181,23 +182,33 @@ function renderBanner(state) {
   };
   const waiting=state.status==='awaiting_review';
   const showControls=!waiting && (state.status!=='in_progress' || !isRunning);
-  const pct=Math.min(100,Math.round((state.wordsSoFar || 0)/Math.max(1,state.targetWords)*100));
+  const safeWordsSoFar = Number(state.wordsSoFar) || 0;
+  const safeTargetWords = Number(state.targetWords) || 0;
+  const safeBlocksDone = Number(state.blocksDone) || 0;
+  const pct=Math.min(100,Math.round(safeWordsSoFar/Math.max(1,safeTargetWords)*100));
   const planOptions=(state.scenePlan || []).map((beat,i)=>'<option value="'+i+'" '+(i===(state.sceneIndex || 0)?'selected':'')+'>'+(i+1)+'. '+escapeHtml(beat)+'</option>').join('');
   slot.innerHTML=[
     '<div class="banner"><div style="flex:1;min-width:200px"><b>'+escapeHtml(state.chapterTitle)+'</b> · '+(labels[state.status] || escapeHtml(state.status)),
     '<div class="progress-track"><div class="progress-fill" style="width:'+pct+'%"></div></div>',
-    '<div class="muted">'+state.wordsSoFar+' / '+state.targetWords+' palabras aceptadas · '+state.blocksDone+' '+((state.generationMode || 'blocks')==='full_chapter' ? 'respuesta(s) larga(s)' : 'bloque(s)')+'</div>',
-    state.lastError ? '<p class="muted">'+escapeHtml(state.lastError.message)+'</p>':'','</div></div>',
-    waiting ? '<div class="generation-review"><h3>✏️ Lee, corrige y aprueba este bloque</h3><p class="scene-guide">Este texto todavía NO es parte del capítulo. Si algo no te gusta, edítalo o descártalo antes de continuar.</p><textarea id="w-review-text" rows="12">'+escapeHtml(state.pendingText || '')+'</textarea><p class="scene-guide"><b>🐈‍⬛ Enséñale tu gusto a Inky:</b> marca lo que falló; se guarda localmente y pesa en futuros capítulos.</p><div class="btn-row" id="w-feedback-row">'+FEEDBACK_OPTIONS.map(([tag,label])=>'<button type="button" class="btn btn-ghost btn-sm w-feedback-tag" data-tag="'+tag+'">'+escapeHtml(label)+'</button>').join('')+'</div><div class="review-actions"><button type="button" class="btn btn-primary" id="w-approve-btn">✓ Aceptar bloque</button><button type="button" class="btn btn-ghost" id="w-copy-block-btn">📋 Copiar bloque</button><button type="button" class="btn btn-ghost" id="w-editor-pass-btn">🐈‍⬛ Editor Pass · 1 llamada</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-ending-pending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost" id="w-reject-btn">Descartar SOLO este bloque</button></div><p class="scene-guide">Editor Pass reescribe el borrador completo conservando eventos y final, pero aprieta ritmo, voz y subtexto. Usa una llamada extra. «Add an ending» sólo añade el cierre.</p></div>' : '',
+    '<div class="muted">'+safeWordsSoFar+' / '+safeTargetWords+' palabras aceptadas · '+safeBlocksDone+' '+((state.generationMode || 'blocks')==='full_chapter' ? 'respuesta(s) larga(s)' : 'bloque(s)')+'</div>',
+    state.lastError ? '<p class="muted">'+escapeHtml(state.lastError.message)+'</p>':'','</div>',
+    isRunning && activeAbortController ? '<button type="button" class="btn btn-danger btn-sm" id="w-abort-btn">⏹ Cancelar solicitud</button>' : '',
+    '</div>',
+    waiting ? '<div class="generation-review"><h3>✏️ Lee, corrige y aprueba este bloque</h3><p class="scene-guide">Este texto todavía NO es parte del capítulo. Si algo no te gusta, edítalo o descártalo antes de continuar.</p><textarea id="w-review-text" rows="12">'+escapeHtml(state.pendingText || '')+'</textarea><p class="scene-guide"><b>🐈‍⬛ Enséñale tu gusto a Inky:</b> marca lo que falló; se guarda localmente y pesa en futuros capítulos.</p><div class="btn-row" id="w-feedback-row">'+FEEDBACK_OPTIONS.map(([tag,label])=>'<button type="button" class="btn btn-ghost btn-sm w-feedback-tag" data-tag="'+escapeHtml(tag)+'">'+escapeHtml(label)+'</button>').join('')+'</div><div class="review-actions"><button type="button" class="btn btn-primary" id="w-approve-btn">✓ Aceptar bloque</button><button type="button" class="btn btn-ghost" id="w-copy-block-btn">📋 Copiar bloque</button><button type="button" class="btn btn-ghost" id="w-editor-pass-btn">🐈‍⬛ Editor Pass · 1 llamada</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-ending-pending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost" id="w-reject-btn">Descartar SOLO este bloque</button></div><p class="scene-guide">Editor Pass reescribe el borrador completo conservando eventos y final, pero aprieta ritmo, voz y subtexto. Usa una llamada extra. «Add an ending» sólo añade el cierre.</p></div>' : '',
     showControls ? '<div class="card"><h3>🎬 Siguiente bloque</h3>'+
        (planOptions ? '<label class="field-label" for="w-current-scene">¿Qué escena debe avanzar ahora?</label><select id="w-current-scene">'+planOptions+'</select>':'')+
        '<label class="field-label" for="w-block-notes">Correcciones para el siguiente bloque</label><textarea id="w-block-notes" rows="3" placeholder="No repetir la plaza. Anya YA llegó: continúa con su encuentro con Erwin."></textarea>'+
        '<div class="writer-action-bar"><button type="button" class="btn btn-primary writer-action" id="w-next-btn">▶ Continue</button><button type="button" class="btn btn-ghost writer-action" id="w-keep-going-btn">↪ Keep going</button><button type="button" class="btn btn-ghost btn-ending writer-action" id="w-add-ending-btn">✨ Add an ending</button><button type="button" class="btn btn-ghost writer-action" id="w-surprise-btn">🎲 Surprise me</button></div>'+
        '<div class="btn-row">'+
-       (state.wordsSoFar ? '<button type="button" class="btn btn-ghost" id="w-finish-btn">✓ Finalizar capítulo aquí</button>':'')+
+       (safeWordsSoFar ? '<button type="button" class="btn btn-ghost" id="w-finish-btn">✓ Finalizar capítulo aquí</button>':'')+
        '<button type="button" class="btn btn-danger" id="w-discard-btn">Cerrar generación</button></div>'+
        '<p class="scene-guide">Finaliza solo cuando el desenlace esté completo. Cerrar generación conserva lo aprobado como borrador.</p></div>':''
   ].join('');
+  document.getElementById('w-abort-btn')?.addEventListener('click', (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Cancelando…';
+    activeAbortController?.abort();
+  });
   document.querySelectorAll('.w-feedback-tag').forEach((btn)=>{
     btn.addEventListener('click',async()=>{
       const tag=btn.dataset.tag;
@@ -565,16 +576,17 @@ async function runGeneration(options){
   if(isRunning)return toast('Ya hay una generación en curso.',{error:true});
   const targetProjectId = options.projectId || db.getActiveProjectId();
   isRunning=true;
+  activeAbortController = new AbortController();
   const root=document.getElementById('view-write');
   root?.querySelectorAll('.writer-action').forEach((btn)=>btn.setAttribute('disabled','true'));
   root?.querySelector('#w-next-btn')?.setAttribute('disabled','true');
   root?.querySelector('#w-generate-btn')?.setAttribute('disabled','true');
   try{
-    const result=await startOrResumeGeneration({...options,projectId:targetProjectId,onProgress:({state})=>{if(db.getActiveProjectId()===targetProjectId){renderBanner(state);showPaper(state);}}});
+    const result=await startOrResumeGeneration({...options,projectId:targetProjectId,signal:activeAbortController.signal,onProgress:({state})=>{if(db.getActiveProjectId()===targetProjectId){renderBanner(state);showPaper(state);}}});
     if(result.status==='awaiting_review')toast((result.generationMode==='full_chapter' ? 'Capítulo completo listo' : 'Bloque listo')+': léelo y apruébalo antes de continuar.',{ms:6500});
-    else if(result.status?.startsWith('paused_'))toast(result.lastError?.message || 'Generación pausada.',{error:true,ms:8000});
+    else if(result.status?.startsWith('paused_'))toast(result.lastError?.message || 'Generación pausada.',{error:result.lastError?.type!=='aborted',ms:8000});
   }catch(err){toast('No se pudo generar: '+err.message,{error:true,ms:10000});}
-  finally{isRunning=false;if(root && root.isConnected) await renderWrite(root);}
+  finally{isRunning=false;activeAbortController=null;if(root && root.isConnected) await renderWrite(root);}
 }
 
 

@@ -113,6 +113,7 @@ export async function renderPlanner(root) {
   const saved = await db.get('settings', projectHistoryId(projectId));
   let messages = (saved?.messages || []).filter((m) => ['user','assistant'].includes(m.role) && typeof m.text === 'string');
   let busy = false;
+  let activeController = null;
   root.innerHTML = [
     '<h2 class="section-title">🆘 SOS de ideas</h2>',
     '<p class="section-hint">Úsalo solo cuando te quedes atascada: ideas, escenas, reacciones o caminos posibles. No cambia tu canon ni escribe capítulos sin tu aprobación.</p>',
@@ -120,6 +121,7 @@ export async function renderPlanner(root) {
     '<label class="field-label" for="planner-input">¿Qué te gustaría planear?</label>',
     '<textarea id="planner-input" rows="4" maxlength="6000" placeholder="Mi capítulo termina con Joseph revelando la red… ¿Qué podría pasar después?"></textarea>',
     '<div class="btn-row"><button type="button" class="btn btn-primary" id="planner-send">💬 Enviar</button>',
+    '<button type="button" class="btn btn-danger" id="planner-abort" style="display:none;">⏹ Cancelar</button>',
     '<button type="button" class="btn btn-ghost" id="planner-clear">Nueva conversación</button></div>',
     '<p id="planner-status" class="muted" role="status">SOS opcional: solo usa la API cuando pulsas Enviar. Mantuvimos el contexto compacto para no gastar tokens de más.</p>',
     '</div>',
@@ -131,9 +133,16 @@ export async function renderPlanner(root) {
   ].join('');
   const input = root.querySelector('#planner-input');
   const send = root.querySelector('#planner-send');
+  const abortBtn = root.querySelector('#planner-abort');
   const clear = root.querySelector('#planner-clear');
   const status = root.querySelector('#planner-status');
   renderMessages(root, messages);
+
+  abortBtn.addEventListener('click', () => {
+    activeController?.abort();
+    abortBtn.disabled = true;
+    status.textContent = 'Cancelando solicitud…';
+  });
 
   root.querySelectorAll('.planner-example').forEach((btn) => btn.addEventListener('click', () => {
     input.value = btn.dataset.prompt;
@@ -177,6 +186,9 @@ export async function renderPlanner(root) {
       return toast('Primero configura tu clave API en Ajustes.',{error:true,ms:6500});
     }
     busy = true; send.disabled = true; clear.disabled = true;
+    activeController = new AbortController();
+    abortBtn.style.display = '';
+    abortBtn.disabled = false;
     status.textContent = '💭 Pensando contigo…';
     try {
       const context = await collectContext(question, messages, projectId);
@@ -195,6 +207,7 @@ export async function renderPlanner(root) {
         userPrompt,
         maxOutputTokens: reasoningModel ? 4200 : 1800,
         temperature: 1,
+        signal: activeController.signal,
       });
       if (!result.ok) throw new Error(result.errorMessage || 'La IA no pudo responder.');
       messages = [...messages,{role:'user',text:question},{role:'assistant',text:result.text}].slice(-HISTORY_LIMIT);
@@ -202,13 +215,16 @@ export async function renderPlanner(root) {
       if (db.getActiveProjectId() === projectId && root.isConnected) {
         input.value = '';
         renderMessages(root,messages);
-        status.textContent = 'Idea lista. Puedes continuar la conversación, copiarla o pasarla a Escribir.';
+        status.textContent = result.truncated
+          ? '⚠️ La respuesta alcanzó el límite de tokens y pudo quedar cortada. Puedes pedirle que continúe.'
+          : 'Idea lista. Puedes continuar la conversación, copiarla o pasarla a Escribir.';
       }
     } catch(err) {
       if (db.getActiveProjectId() === projectId && root.isConnected) status.textContent = '⚠️ ' + (err?.message || 'No se pudo responder.') + ' Tu mensaje sigue aquí para reintentar.';
     } finally {
       busy = false;
-      if (root.isConnected) { send.disabled = false; clear.disabled = false; }
+      activeController = null;
+      if (root.isConnected) { send.disabled = false; clear.disabled = false; abortBtn.style.display = 'none'; }
     }
   });
 }

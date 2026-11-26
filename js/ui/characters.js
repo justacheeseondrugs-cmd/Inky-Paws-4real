@@ -12,7 +12,7 @@ export async function renderCharacters(root) {
   const list = document.getElementById('char-list');
   if (!characters.length) { list.innerHTML = `<div class="empty"><span class="ic">💗</span>Todavía no has añadido personajes.</div>`; return; }
   list.innerHTML = characters.map((c) => `
-    <div class="list-item" data-id="${c.id}">
+    <div class="list-item" data-id="${escapeHtml(c.id)}">
       <div class="title-row"><b>${escapeHtml(c.name)}</b><span class="pill ${c.active !== false ? 'pill-active' : 'pill-inactive'}">${c.active !== false ? 'Activo' : 'Inactivo'}</span></div>
       <div class="muted">${escapeHtml(c.pronouns || 'sin pronombres definidos')}</div>
       ${c.personality ? `<div class="muted" style="margin-top:4px;">${escapeHtml(c.personality)}</div>` : ''}
