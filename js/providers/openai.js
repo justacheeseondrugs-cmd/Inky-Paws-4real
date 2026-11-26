@@ -10,10 +10,14 @@ function apiError(res, data) {
   return { ok: false, text: null, errorType: 'http', errorMessage: 'OpenAI devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), truncated: false, finishReason: null, raw: data };
 }
 
+export function supportsExplicitPromptCacheWrites(modelId = '') {
+  return /^(?:gpt-5\.6|gpt-[6-9])(?:[.-]|$)/i.test(String(modelId || '').trim());
+}
+
 function extractOpenAIUsage(data) {
   const u = data?.usage;
   if (!u || typeof u !== 'object') {
-    return { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, reasoningTokens: 0, reportedByProvider: false };
+    return { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, reportedByProvider: false };
   }
   const promptTokens = Number(u.input_tokens ?? u.prompt_tokens ?? 0) || 0;
   const completionTokens = Number(u.output_tokens ?? u.completion_tokens ?? 0) || 0;
@@ -23,12 +27,18 @@ function extractOpenAIUsage(data) {
     u.prompt_tokens_details?.cached_tokens ??
     0
   ) || 0;
+  const cacheWriteTokens = Number(
+    u.input_tokens_details?.cache_creation_tokens ??
+    u.input_tokens_details?.cache_write_tokens ??
+    u.prompt_tokens_details?.cache_creation_tokens ??
+    0
+  ) || 0;
   const reasoningTokens = Number(
     u.output_tokens_details?.reasoning_tokens ??
     u.completion_tokens_details?.reasoning_tokens ??
     0
   ) || 0;
-  return { promptTokens, completionTokens, totalTokens, cachedTokens, reasoningTokens, reportedByProvider: true };
+  return { promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, reasoningTokens, reportedByProvider: true };
 }
 
 function extractResponsesText(data) {
@@ -85,11 +95,11 @@ export class OpenAIProvider extends AIProvider {
       return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de OpenAI en Ajustes.', truncated: false, finishReason: null, usage: null, raw: null };
     }
 
-    // GPT-5.6+ introduced paid cache writes and explicit cache breakpoints.
-    // Inky Paws uses Responses for these models so one-off calls can disable
-    // implicit cache writes, while multi-block chapter generation caches only
-    // the stable lore/instructions prefix.
-    const supportsExplicitCache = /^(?:gpt-5\.6|gpt-[6-9])(?:[.-]|$)/i.test(model);
+    // GPT-5.6+ / GPT-6+ introduced paid cache writes (1.25x for 30m, 2.5x for 12h)
+    // and explicit cache breakpoints. Inky Paws uses Responses for these models so
+    // one-off calls disable implicit cache writes, while multi-block chapter generation
+    // caches only the stable lore/instructions prefix.
+    const supportsExplicitCache = supportsExplicitPromptCacheWrites(model);
     if (supportsExplicitCache) {
       const stable = String(stableSystemPrompt || '').trim();
       const dynamic = String(dynamicSystemPrompt || '').trim();
@@ -118,11 +128,13 @@ export class OpenAIProvider extends AIProvider {
         content: [{ type: 'input_text', text: String(userPrompt || '') }],
       });
 
+      const validResponsesEffort = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+      const chosenEffort = validResponsesEffort.includes(effectiveEffort) ? effectiveEffort : 'none';
       const body = {
         model,
         input,
         max_output_tokens: maxOutputTokens,
-        reasoning: { effort: ['none', 'low', 'medium', 'high'].includes(effectiveEffort) ? effectiveEffort : 'medium' },
+        reasoning: { effort: chosenEffort },
         // Force Standard processing so a project-level Fast setting cannot
         // silently double the per-token price for fanfic generation.
         service_tier: 'default',
@@ -180,7 +192,9 @@ export class OpenAIProvider extends AIProvider {
     };
 
     if (isGpt54) {
-      const effort = ['none', 'low', 'medium', 'high'].includes(effectiveEffort) ? effectiveEffort : 'none';
+      // Official GPT-5.4 / GPT-5.4-mini reasoning_effort: none (default), low, medium, high, xhigh.
+      // Sampling temperature is only supported when reasoning_effort is 'none'.
+      const effort = ['none', 'low', 'medium', 'high', 'xhigh'].includes(effectiveEffort) ? effectiveEffort : 'none';
       body.reasoning_effort = effort;
       if (effort === 'none') body.temperature = temperature;
     } else if (isOSeries) {
@@ -188,7 +202,7 @@ export class OpenAIProvider extends AIProvider {
         body.reasoning_effort = effectiveEffort;
       }
     } else if (isReasoningModel) {
-      if (['none', 'low', 'medium', 'high'].includes(effectiveEffort)) {
+      if (['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effectiveEffort)) {
         body.reasoning_effort = effectiveEffort;
       }
     } else {

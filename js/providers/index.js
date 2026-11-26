@@ -35,7 +35,9 @@ export function getModelOutputLimit(providerId, model = '') {
   }
 
   if (provider === 'openai' || (!provider && /^(?:gpt-|o[134])/i.test(id))) {
-    if (/^(?:gpt-5|gpt-[6-9]|o[134])(?:[.-]|$)/i.test(id)) return 65536;
+    if (/^(?:gpt-5\.4|gpt-5\.[5-9]|gpt-[6-9])(?:[.-]|$)/i.test(id)) return 128000;
+    if (/^o3-mini(?:[.-]|$)/i.test(id)) return 100000;
+    if (/^(?:gpt-5|o[134])(?:[.-]|$)/i.test(id)) return 65536;
     if (/^gpt-4\.1(?:[.-]|$)/i.test(id)) return 32768;
     if (/^gpt-4o(?:[.-]|$)/i.test(id)) return 16384;
     if (/^(?:gpt-4(?:$|[-.])|gpt-3\.5)/i.test(id)) return 4096;

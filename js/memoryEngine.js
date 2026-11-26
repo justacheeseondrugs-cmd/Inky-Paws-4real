@@ -3,7 +3,7 @@ import { getProviderForRole, getModelOutputLimit } from './providers/index.js';
 import { isLikelyInvalidProse } from './providers/base.js';
 import { wordCount, contentFingerprint } from './utils.js';
 import { assembleOperationContext } from './contextEngine.js';
-import { getWalletConfig, checkGenerationBudget, recordUsageEvent } from './inkyWallet.js';
+import { getWalletConfig, checkGenerationBudget, recordUsageEvent, getCumulativeChargeFromUsage } from './inkyWallet.js';
 
 const MEMORY_FIELDS = [
   ['EVENTS', 'events'],
@@ -267,7 +267,7 @@ export async function saveContinuityMemoryEntry(chapter, fields, { projectId = '
   return saved;
 }
 
-export async function generateContinuityMemory(chapter, { signal, stageOnly = false, provider: customProvider = null } = {}) {
+export async function generateContinuityMemory(chapter, { signal, stageOnly = false, provider: customProvider = null, spentSoFarUsd = 0, hasPriorUnknownCost = false } = {}) {
   const projectId = chapter?.projectId || db.getActiveProjectId();
   const scope = { projectId };
   const [settings, walletConfig] = await Promise.all([
@@ -291,21 +291,16 @@ export async function generateContinuityMemory(chapter, { signal, stageOnly = fa
 
   const budget = checkGenerationBudget({
     estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
-    spentSoFarUsd: 0,
+    spentSoFarUsd,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+    hasPriorUnknownCost,
   });
   if (!budget.allowed) {
-    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+    return { ok: false, errorType: 'budget_blocked', reason: budget.reason, error: budget.message };
   }
 
-  const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
-  const modelLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
-  const maxOutputTokens = Math.min(
-    modelLimit,
-    walletConfig.maxOutputTokensPerRequest || modelLimit,
-    reasoningModel ? 4800 : 1800
-  );
-
+  const maxOutputTokens = bundle.modelBound.maxOutputTokens;
   const result = await provider.generate({
     systemPrompt: bundle.modelBound.systemPrompt,
     userPrompt: bundle.modelBound.userPrompt,
@@ -325,6 +320,8 @@ export async function generateContinuityMemory(chapter, { signal, stageOnly = fa
     errorType: result.errorType || null,
     estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
     estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
     providerUsage: result.usage || null,
     walletConfig,
   });
@@ -385,7 +382,7 @@ function evaluateRewriteResult(rewritten, originalWords, rewriteInstructions, pr
   };
 }
 
-export async function rewriteChapter(chapter, rewriteInstructions, { signal, provider: customProvider = null, targetSceneId = null } = {}) {
+export async function rewriteChapter(chapter, rewriteInstructions, { signal, provider: customProvider = null, targetSceneId = null, spentSoFarUsd = 0, hasPriorUnknownCost = false } = {}) {
   const projectId = chapter?.projectId || db.getActiveProjectId();
   const [settings, walletConfig] = await Promise.all([
     db.get('settings', 'main'),
@@ -406,6 +403,7 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal, pro
     targetSceneId,
     chapterTitle: chapter?.title || '',
     originalChapterText: chapter?.content || '',
+    requestedMaxOutputTokens: plan.maxOutputTokens,
     rewriteInstructions,
     providerId: provider.name,
     modelId: provider.config?.model || walletConfig.primaryModel,
@@ -419,14 +417,16 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal, pro
 
   const budget = checkGenerationBudget({
     estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
-    spentSoFarUsd: 0,
+    spentSoFarUsd,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+    hasPriorUnknownCost,
   });
   if (!budget.allowed) {
-    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+    return { ok: false, errorType: 'budget_blocked', reason: budget.reason, error: budget.message };
   }
 
-  const maxOutputTokens = Math.min(plan.maxOutputTokens, walletConfig.maxOutputTokensPerRequest || plan.maxOutputTokens);
+  const maxOutputTokens = bundle.modelBound.maxOutputTokens;
   const result = await provider.generate({
     systemPrompt: bundle.modelBound.systemPrompt,
     stableSystemPrompt: bundle.modelBound.stablePrompt,
@@ -438,7 +438,7 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal, pro
     signal,
   });
 
-  await recordUsageEvent({
+  const usageRec = await recordUsageEvent({
     projectId,
     operation: 'chapter_rewrite',
     provider: provider.name,
@@ -448,20 +448,28 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal, pro
     errorType: result.errorType || null,
     estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
     estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
     providerUsage: result.usage || null,
     walletConfig,
   });
+
+  const charge = getCumulativeChargeFromUsage(usageRec, bundle.modelBound.costEstimate?.costUsd ?? null);
+  const nextSpentUsd = charge.unknown ? spentSoFarUsd : Number((spentSoFarUsd + charge.knownUsd).toFixed(6));
+  const nextHasUnknown = Boolean(hasPriorUnknownCost || charge.unknown);
 
   if (!result.ok) {
     return {
       ok: false,
       errorType: result.errorType || 'http',
       error: result.errorMessage || 'La reescritura falló; no se guardó ningún cambio.',
+      cumulativeSpentUsd: nextSpentUsd,
+      hasPriorUnknownCost: nextHasUnknown,
     };
   }
   const rewritten = String(result.text || '').trim();
   if (isLikelyInvalidProse(rewritten)) {
-    return { ok: false, error: 'La reescritura no devolvió prosa válida; no se guardó ningún cambio.' };
+    return { ok: false, error: 'La reescritura no devolvió prosa válida; no se guardó ningún cambio.', cumulativeSpentUsd: nextSpentUsd, hasPriorUnknownCost: nextHasUnknown };
   }
   const check = evaluateRewriteResult(rewritten, originalWords, rewriteInstructions, result, plan);
   return {
@@ -480,10 +488,12 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal, pro
     baseUpdatedAt,
     snapshotHash: bundle.snapshotHash,
     usage: result.usage || null,
+    cumulativeSpentUsd: nextSpentUsd,
+    hasPriorUnknownCost: nextHasUnknown,
   };
 }
 
-export async function continueRewriteDraft(chapter, rewriteInstructions, draftSoFar, { signal, provider: customProvider = null } = {}) {
+export async function continueRewriteDraft(chapter, rewriteInstructions, draftSoFar, { signal, provider: customProvider = null, spentSoFarUsd = 0, hasPriorUnknownCost = false } = {}) {
   const projectId = chapter?.projectId || db.getActiveProjectId();
   const existingDraft = String(draftSoFar || '').trim();
   if (wordCount(existingDraft) < 15) {
@@ -507,6 +517,7 @@ export async function continueRewriteDraft(chapter, rewriteInstructions, draftSo
     chapterTitle: chapter?.title || '',
     originalChapterText: chapter?.content || '',
     rewriteDraftSoFar: existingDraft,
+    requestedMaxOutputTokens: plan.maxOutputTokens,
     rewriteInstructions,
     providerId: provider.name,
     modelId: provider.config?.model || walletConfig.primaryModel,
@@ -518,7 +529,18 @@ export async function continueRewriteDraft(chapter, rewriteInstructions, draftSo
     return { ok: false, errorType: 'critical_contradiction', error: `Continuación de reescritura bloqueada: ${msg}` };
   }
 
-  const maxOutputTokens = Math.min(plan.maxOutputTokens, walletConfig.maxOutputTokensPerRequest || plan.maxOutputTokens);
+  const budget = checkGenerationBudget({
+    estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
+    spentSoFarUsd,
+    maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+    hasPriorUnknownCost,
+  });
+  if (!budget.allowed) {
+    return { ok: false, errorType: 'budget_blocked', reason: budget.reason, error: budget.message };
+  }
+
+  const maxOutputTokens = bundle.modelBound.maxOutputTokens;
   const result = await provider.generate({
     systemPrompt: bundle.modelBound.systemPrompt,
     userPrompt: bundle.modelBound.userPrompt,
@@ -528,7 +550,7 @@ export async function continueRewriteDraft(chapter, rewriteInstructions, draftSo
     signal,
   });
 
-  await recordUsageEvent({
+  const usageRec = await recordUsageEvent({
     projectId,
     operation: 'chapter_rewrite',
     provider: provider.name,
@@ -538,20 +560,28 @@ export async function continueRewriteDraft(chapter, rewriteInstructions, draftSo
     errorType: result.errorType || null,
     estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
     estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
     providerUsage: result.usage || null,
     walletConfig,
   });
+
+  const charge = getCumulativeChargeFromUsage(usageRec, bundle.modelBound.costEstimate?.costUsd ?? null);
+  const nextSpentUsd = charge.unknown ? spentSoFarUsd : Number((spentSoFarUsd + charge.knownUsd).toFixed(6));
+  const nextHasUnknown = Boolean(hasPriorUnknownCost || charge.unknown);
 
   if (!result.ok) {
     return {
       ok: false,
       errorType: result.errorType || 'http',
       error: result.errorMessage || 'No se pudo continuar la reescritura.',
+      cumulativeSpentUsd: nextSpentUsd,
+      hasPriorUnknownCost: nextHasUnknown,
     };
   }
   const addition = String(result.text || '').trim();
   if (isLikelyInvalidProse(addition)) {
-    return { ok: false, error: 'La continuación no devolvió prosa válida; tu borrador parcial sigue intacto.' };
+    return { ok: false, error: 'La continuación no devolvió prosa válida; tu borrador parcial sigue intacto.', cumulativeSpentUsd: nextSpentUsd, hasPriorUnknownCost: nextHasUnknown };
   }
   const combined = existingDraft + '\n\n' + addition;
   const check = evaluateRewriteResult(combined, originalWords, rewriteInstructions, result, plan);
@@ -570,6 +600,8 @@ export async function continueRewriteDraft(chapter, rewriteInstructions, draftSo
     mayNeedContinuation: plan.mayNeedContinuation,
     snapshotHash: bundle.snapshotHash,
     usage: result.usage || null,
+    cumulativeSpentUsd: nextSpentUsd,
+    hasPriorUnknownCost: nextHasUnknown,
   };
 }
 
@@ -583,6 +615,8 @@ export async function rewriteSelectedPassage(chapter, {
   endOffset = 0,
   rewriteInstructions = '',
   targetSceneId = null,
+  spentSoFarUsd = 0,
+  hasPriorUnknownCost = false,
   signal,
   provider: customProvider = null,
 } = {}) {
@@ -628,17 +662,20 @@ export async function rewriteSelectedPassage(chapter, {
 
   const budget = checkGenerationBudget({
     estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
-    spentSoFarUsd: 0,
+    spentSoFarUsd,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+    hasPriorUnknownCost,
   });
   if (!budget.allowed) {
-    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+    return { ok: false, errorType: 'budget_blocked', reason: budget.reason, error: budget.message };
   }
 
+  const maxOutputTokens = bundle.modelBound.maxOutputTokens;
   const result = await provider.generate({
     systemPrompt: bundle.modelBound.systemPrompt,
     userPrompt: bundle.modelBound.userPrompt,
-    maxOutputTokens: bundle.modelBound.maxOutputTokens,
+    maxOutputTokens,
     temperature: 0.9,
     reasoningEffort: bundle.modelBound.reasoningEffort || '',
     signal,
@@ -654,6 +691,8 @@ export async function rewriteSelectedPassage(chapter, {
     errorType: result.errorType || null,
     estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
     estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
     providerUsage: result.usage || null,
     walletConfig,
   });

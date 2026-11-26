@@ -186,7 +186,10 @@ export async function buildModelTestPack({
     approxInputTokens: modelBound.estimatedInputTokens,
     approxOutputTokens: modelBound.estimatedOutputTokens,
     maxOutputTokens: modelBound.maxOutputTokens,
+    authorizedMaxOutputTokens: modelBound.authorizedMaxOutputTokens,
     costEstimate: modelBound.costEstimate,
+    expectedCostEstimate: modelBound.expectedCostEstimate,
+    budgetCheck: inspectorOnly.budgetCheck || null,
     diagnosticsExcludedFromModelRequest: true,
   };
 
@@ -202,8 +205,9 @@ export async function buildModelTestPack({
     `- Chapter: ${chapterTitle} (target order: ${inspectorOnly.narrativeTarget?.targetChapterOrder ?? 'next'})`,
     `- Target words: ~${targetWords}`,
     `- Provider / model: ${modelBound.providerId} / ${modelBound.modelId}${modelBound.reasoningEffort ? ` (reasoning: ${modelBound.reasoningEffort})` : ''}`,
-    `- Estimated tokens: ~${modelBound.estimatedInputTokens} input / ~${modelBound.estimatedOutputTokens} output (cap ${modelBound.maxOutputTokens})`,
-    `- Estimated cost: ${modelBound.costEstimate?.displayCost || 'costo desconocido'}`,
+    `- Authorized output token cap (sent verbatim to provider; includes reasoning tokens): ${modelBound.maxOutputTokens}`,
+    `- Estimated tokens: ~${modelBound.estimatedInputTokens} input / ~${modelBound.estimatedOutputTokens} expected output`,
+    `- Conservative ceiling cost (local estimate, NOT a guaranteed provider billing cap): ${modelBound.costEstimate?.displayCost || 'costo desconocido'}`,
     `- Universe: ${inspectorOnly.universeSummary?.fandom || 'neutral'} · checkpoint: ${inspectorOnly.universeSummary?.checkpointId || '(none)'}`,
     `- Critical blockers: ${preflight.criticalCount} (${preflight.ok ? 'READY' : 'BLOCKED'})`,
     '',

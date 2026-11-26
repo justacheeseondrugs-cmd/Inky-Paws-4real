@@ -600,9 +600,9 @@ async function showNovelPlanPreview() {
           <b>📚 Plan de Novel Mode (${preview.maxRequests} solicitudes máximas · ~${targetWords} palabras)</b>
           <div class="muted" style="font-size:12px;">
             Modelo: ${escapeHtml(preview.providerId)} / ${escapeHtml(preview.modelId)} ·
-            Tokens estimados: ~${preview.estimatedInputTokensTotal.toLocaleString('es-ES')} entrada / ~${preview.estimatedOutputTokensTotal.toLocaleString('es-ES')} salida ·
-            Costo estimado total: <b>${escapeHtml(preview.costEstimate?.displayCost || 'costo desconocido')}</b> ·
-            Límite configurado: $${Number(preview.maxGenerationSpendUsd || 0).toFixed(2)} USD
+            Tokens estimados: ~${preview.estimatedInputTokensTotal.toLocaleString('es-ES')} entrada · Tope salida autorizado total (incluye razonamiento): ${Number(preview.authorizedOutputTokensTotal || preview.estimatedOutputTokensTotal || 0).toLocaleString('es-ES')} ·
+            Techo conservador estimado: <b>${escapeHtml(preview.costEstimate?.displayCost || 'costo desconocido')}</b> ·
+            Límite estimado local: $${Number(preview.maxGenerationSpendUsd || 0).toFixed(2)} USD (no es límite garantizado del proveedor)
           </div>
         </div>
         <button type="button" class="btn btn-ghost btn-sm" id="w-novel-plan-close">Cerrar</button>
@@ -705,15 +705,16 @@ async function showContextInspectorFromForm(){
       '<span class="pill '+(preflight.ok ? 'pill-active' : 'pill-canon')+'">'+(preflight.ok ? '✅ Listo' : '🛑 BLOQUEADO ('+preflight.criticalCount+' crítico(s))')+'</span>',
       '<span class="pill pill-character">Cap. objetivo #'+escapeHtml(String(target.targetChapterOrder ?? 'nuevo'))+(target.isHistoricalRewrite ? ' (reescritura histórica)' : '')+'</span>',
       '<span class="pill pill-continuity">'+(ctx.characters?.length || 0)+' personajes · '+(uni.allowedRoomCast?.length || 0)+' en sala</span>',
-      '<span class="pill pill-style">≈ '+(ctx.approxInputTokens || 0).toLocaleString('es-ES')+' in / ≈ '+(ctx.approxOutputTokens || 0).toLocaleString('es-ES')+' out</span>',
+      '<span class="pill pill-style">≈ '+(ctx.approxInputTokens || 0).toLocaleString('es-ES')+' in · tope salida '+(ctx.maxOutputTokens || 0).toLocaleString('es-ES')+' tok</span>',
       '<span class="pill pill-reference">💰 '+escapeHtml(ctx.costEstimate?.displayCost || 'costo desconocido')+'</span>',
       '</div>',
+      ctx.budgetCheck && !ctx.budgetCheck.allowed ? '<div class="context-guard-item context-guard-critical" style="margin:6px 0;"><b>🛑 Presupuesto local:</b> '+escapeHtml(ctx.budgetCheck.message || '')+'</div>' : '',
       '<details open><summary>🛡️ Contradicciones e invariantes (diagnóstico exclusivo del Inspector — bloquea si hay críticos)</summary><div class="context-details-body">'+preflightHtml+'</div></details>',
       '<p class="context-lead"><b>🌌 Universo / Checkpoint:</b> '+escapeHtml(uni.fandom || 'neutral')+' · checkpoint: '+escapeHtml(uni.checkpointId || '(ninguno)')+' · Joseph: '+escapeHtml(uni.josephStatus || 'disabled')+' · Anya: '+escapeHtml(uni.anyaStatus || 'disabled')+'</p>',
       '<p class="context-lead"><b>🧬 Writing DNA:</b> idioma manuscrito=<code>'+escapeHtml(dna.manuscriptLanguage || 'en')+'</code> · '+escapeHtml(String(dna.literaryQualitiesCount || 0))+' cualidades · '+escapeHtml(String(dna.activeAntiPatternsCount || 0))+' anti-patrones · '+escapeHtml(String((dna.approvedLearnedRules || []).length))+' reglas aprendidas aprobadas</p>',
       '<p class="context-lead"><b>📋 Brief aprobado:</b> '+(ctx.approvedChapterBrief ? escapeHtml(ctx.approvedChapterBrief.title || ctx.approvedChapterBrief.objective) : 'Ninguno activo para este capítulo')+'</p>',
       '<p class="context-lead"><b>👤 Personajes cargados:</b> '+chars+'</p>',
-      '<p class="muted">Proveedor/modelo: '+escapeHtml(ctx.sourceProvider || 'openai')+' · '+escapeHtml(ctx.sourceModel || '')+(ctx.reasoningEffort ? ' · reasoning='+escapeHtml(ctx.reasoningEffort) : '')+' · tope salida='+escapeHtml(String(ctx.maxOutputTokens || ''))+'</p>',
+      '<p class="muted">Proveedor/modelo: '+escapeHtml(ctx.sourceProvider || 'openai')+' · '+escapeHtml(ctx.sourceModel || '')+(ctx.reasoningEffort ? ' · reasoning='+escapeHtml(ctx.reasoningEffort) : '')+' · tope salida autorizado (enviado exacto al proveedor, incluye razonamiento)='+escapeHtml(String(ctx.maxOutputTokens || ''))+' · aviso: techo de costo estimado local, NO tope garantizado de facturación del proveedor.</p>',
       '<details><summary>🎭 Overlays de personaje activos ('+(uni.activeOverlays?.length || 0)+')</summary><div class="context-details-body"><ul>'+overlaysHtml+'</ul></div></details>',
       '<details><summary>🔐 Restricciones epistémicas y conocimiento individual ('+kEntries.length+')</summary><div class="context-details-body"><ul>'+epistemicHtml+'</ul></div></details>',
       '<details open><summary>📚 Referencias factuales ('+(ctx.retrievedChunks?.length || 0)+') y oficio STYLE_ONLY ('+(refs.styleGuidance?.length || 0)+')</summary><div class="context-details-body">'+chunks+'<div><b>Solo oficio (STYLE_ONLY):</b><ul>'+styleRefs+'</ul></div></div></details>',

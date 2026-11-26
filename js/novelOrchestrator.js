@@ -16,13 +16,15 @@
 import { db } from './db.js';
 import { wordCount } from './utils.js';
 import { assembleOperationContext } from './contextEngine.js';
-import { getProviderForRole } from './providers/index.js';
+import { getProviderForRole, getModelOutputLimit } from './providers/index.js';
 import {
   getWalletConfig,
   checkGenerationBudget,
-  calculateTokenCost,
+  calculateConservativeRequestCost,
+  estimateTokensFromText,
   estimateOutputTokensForWords,
   recordUsageEvent,
+  getCumulativeChargeFromUsage,
 } from './inkyWallet.js';
 
 function cleanString(value) {
@@ -200,30 +202,80 @@ export async function previewOrchestrationBudget({
   });
 
   const baseInputTokens = firstStepBundle.modelBound.estimatedInputTokens;
+  const stablePrefixTokens = estimateTokensFromText(firstStepBundle.modelBound.stablePrompt || '');
+  const modelCap = getModelOutputLimit(firstStepBundle.modelBound.providerId, firstStepBundle.modelBound.modelId);
+  const walletCap = Number(walletConfig?.maxOutputTokensPerRequest) || modelCap;
+  const effectiveCap = Math.min(modelCap, walletCap);
+
   let totalEstInputTokens = 0;
   let totalEstOutputTokens = 0;
+  let totalAuthorizedOutputTokens = 0;
   let accumulatedGrowthTokens = 0;
+  let cumulativeMaxCostUsd = 0;
+  let anyUnknownCost = false;
+  let anyFree = true;
+  let pricingSource = null;
+  let pricingLastUpdated = '';
 
   for (let i = 0; i < plan.length; i += 1) {
-    const segOut = estimateOutputTokensForWords(plan[i].targetWords || 1500);
-    totalEstInputTokens += baseInputTokens + accumulatedGrowthTokens;
-    totalEstOutputTokens += segOut;
-    accumulatedGrowthTokens += segOut;
+    const segWords = plan[i].targetWords || 1500;
+    const segEstOut = estimateOutputTokensForWords(segWords);
+    const segAuthOut = Math.max(256, Math.min(effectiveCap, segEstOut + 800));
+    const stepInputTokens = baseInputTokens + accumulatedGrowthTokens;
+    const stepCost = calculateConservativeRequestCost({
+      providerId: firstStepBundle.modelBound.providerId,
+      modelId: firstStepBundle.modelBound.modelId,
+      inputTokens: stepInputTokens,
+      authorizedMaxOutputTokens: segAuthOut,
+      stablePrefixTokens,
+      cacheStrategy: 'reuse',
+      reasoningEffort: firstStepBundle.modelBound.reasoningEffort || '',
+      walletConfig,
+    });
+
+    totalEstInputTokens += stepInputTokens;
+    totalEstOutputTokens += Math.min(segAuthOut, segEstOut);
+    totalAuthorizedOutputTokens += segAuthOut;
+    accumulatedGrowthTokens += segAuthOut;
+
+    if (stepCost.costStatus === 'unknown' || stepCost.costUsd === null) {
+      anyUnknownCost = true;
+      anyFree = false;
+    } else {
+      cumulativeMaxCostUsd += stepCost.costUsd;
+      if (stepCost.costStatus !== 'free') anyFree = false;
+      pricingSource = pricingSource || stepCost.pricingSource;
+      pricingLastUpdated = pricingLastUpdated || stepCost.pricingLastUpdated;
+    }
   }
 
-  const totalCost = calculateTokenCost({
-    providerId: firstStepBundle.modelBound.providerId,
-    modelId: firstStepBundle.modelBound.modelId,
-    inputTokens: totalEstInputTokens,
-    outputTokens: totalEstOutputTokens,
-    walletConfig,
-    isActual: false,
-  });
+  const totalCost = anyUnknownCost
+    ? {
+        costStatus: 'unknown',
+        costUsd: null,
+        displayCost: 'costo desconocido',
+        basis: 'conservative_authorized_ceiling',
+        authorizedMaxOutputTokensTotal: totalAuthorizedOutputTokens,
+        includesReasoningTokenCeiling: true,
+        pricingSource: null,
+        pricingLastUpdated: null,
+      }
+    : {
+        costStatus: anyFree ? 'free' : 'estimated',
+        costUsd: Number(cumulativeMaxCostUsd.toFixed(6)),
+        displayCost: anyFree ? '$0.00 (gratuito)' : `hasta $${cumulativeMaxCostUsd.toFixed(4)} USD (techo estimado)`,
+        basis: 'conservative_authorized_ceiling',
+        authorizedMaxOutputTokensTotal: totalAuthorizedOutputTokens,
+        includesReasoningTokenCeiling: true,
+        pricingSource,
+        pricingLastUpdated,
+      };
 
   const budgetCheck = checkGenerationBudget({
     estimatedAdditionalUsd: totalCost.costUsd,
     spentSoFarUsd: 0,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
   });
 
   return {
@@ -236,9 +288,11 @@ export async function previewOrchestrationBudget({
     modelId: firstStepBundle.modelBound.modelId,
     estimatedInputTokensTotal: totalEstInputTokens,
     estimatedOutputTokensTotal: totalEstOutputTokens,
+    authorizedOutputTokensTotal: totalAuthorizedOutputTokens,
     costEstimate: totalCost,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
     withinBudget: budgetCheck.allowed,
+    budgetReason: budgetCheck.reason,
     budgetMessage: budgetCheck.message || '',
     snapshotHash: firstStepBundle.snapshotHash,
     contextBundle: firstStepBundle,
@@ -419,10 +473,12 @@ export async function runOrchestratedGeneration({
       estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
       spentSoFarUsd: spentSoFar,
       maxGenerationSpendUsd: spendCap,
+      allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+      hasPriorUnknownCost: (state.unknownCostCalls || 0) > 0,
     });
     if (!budgetCheck.allowed) {
       state.status = 'paused_budget';
-      state.lastError = { type: 'budget_blocked', message: budgetCheck.message, at: new Date().toISOString() };
+      state.lastError = { type: 'budget_blocked', reason: budgetCheck.reason, message: budgetCheck.message, at: new Date().toISOString() };
       state.updatedAt = new Date().toISOString();
       await db.put('generationState', state, scope);
       onProgress?.({ phase: 'budget_stop', state });
@@ -431,14 +487,15 @@ export async function runOrchestratedGeneration({
 
     onProgress?.({ phase: 'requesting_step', stepIndex: i, totalSteps: effectivePlan.length, state });
 
+    const maxOutputTokens = bundle.modelBound.maxOutputTokens;
     const result = await provider.generate({
       systemPrompt: bundle.modelBound.systemPrompt,
       stableSystemPrompt: bundle.modelBound.stablePrompt,
       dynamicSystemPrompt: bundle.modelBound.dynamicPrompt,
-      cacheStrategy: 'reuse',
+      cacheStrategy: bundle.modelBound.cacheStrategy || 'reuse',
       cacheKey: 'inky-paws-novel:' + String(chapterId).slice(0, 40),
       userPrompt: bundle.modelBound.userPrompt,
-      maxOutputTokens: bundle.modelBound.maxOutputTokens,
+      maxOutputTokens,
       temperature: 1.0,
       reasoningEffort: bundle.modelBound.reasoningEffort || '',
       signal,
@@ -454,15 +511,20 @@ export async function runOrchestratedGeneration({
       errorType: result.errorType || null,
       estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
       estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+      authorizedMaxOutputTokens: maxOutputTokens,
+      conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
       providerUsage: result.usage || null,
       walletConfig,
     });
 
     state.requestsExecuted = (state.requestsExecuted || 0) + 1;
-    if (usageRecord.actualCostUsd !== null && usageRecord.actualCostUsd !== undefined) {
-      state.actualSpentUsd = Number(((state.actualSpentUsd || 0) + usageRecord.actualCostUsd).toFixed(6));
-    } else if (usageRecord.estimatedCostUsd !== null && usageRecord.estimatedCostUsd !== undefined) {
-      state.estimatedSpentUsd = Number(((state.estimatedSpentUsd || 0) + usageRecord.estimatedCostUsd).toFixed(6));
+    const charge = getCumulativeChargeFromUsage(usageRecord, bundle.modelBound.costEstimate?.costUsd ?? null);
+    if (charge.unknown) {
+      state.unknownCostCalls = (state.unknownCostCalls || 0) + 1;
+    } else if (charge.source === 'actual') {
+      state.actualSpentUsd = Number(((state.actualSpentUsd || 0) + charge.knownUsd).toFixed(6));
+    } else {
+      state.estimatedSpentUsd = Number(((state.estimatedSpentUsd || 0) + charge.knownUsd).toFixed(6));
     }
 
     if (!result.ok) {

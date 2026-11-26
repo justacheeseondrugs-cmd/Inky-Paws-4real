@@ -167,7 +167,7 @@ def main():
                 text: 'Kael signed the Lusiana marriage deal.',
               }, { projectId: 'story-m5-pts' });
             }''')
-            page.reload(wait_until='networkidle')
+            page.reload(wait_until='load')
             page.wait_for_function("() => Array.from(document.querySelectorAll('#workspace-select option')).some(o => o.value === 'story-m5-pts')")
             page.select_option('#workspace-select', 'story-m5-pts')
             page.wait_for_timeout(150)
@@ -178,8 +178,11 @@ def main():
             page.click('[data-view="settings"]')
             page.wait_for_selector('#inky-wallet-card')
             wallet_text = page.locator('#inky-wallet-card').inner_text()
-            assert 'NO equivale al saldo real' in wallet_text
+            assert 'NO equivalen al saldo real' in wallet_text
+            assert 'límite garantizado' in wallet_text
             assert 'canceladas' in wallet_text
+            assert 'servidor seguro' in wallet_text
+            assert not page.locator('#w-allow-unknown-override').is_checked(), 'Unknown-cost override must be OFF by default!'
             page.fill('#w-primary-model', 'gpt-5.4-mini')
             page.fill('#w-aux-model', 'gpt-4.1-mini')
             page.select_option('#w-reasoning-effort', 'none')
@@ -580,13 +583,214 @@ def main():
             }''')
             assert all(backup_check.values()), f'Backup/isolation check failed: {backup_check}'
 
+            # ------------------------------------------------------------------
+            # TEST 5: Alpha Spending Safety E2E — exact Inspector->provider maxOutputTokens match,
+            # unknown-cost blocking + explicit override, and cumulative caps across
+            # generation -> ending extension -> polish & rewrite -> continuation
+            # ------------------------------------------------------------------
+            alpha_safety = page.evaluate('''async () => {
+              const { db } = await import('/js/db.js');
+              const { saveWalletConfig } = await import('/js/inkyWallet.js');
+              const { assembleOperationContext } = await import('/js/contextEngine.js');
+              const { startOrResumeGeneration, extendPendingBlockWithEnding, polishPendingBlock } = await import('/js/generation.js');
+              const { previewOrchestrationBudget } = await import('/js/novelOrchestrator.js');
+              const { rewriteChapter, continueRewriteDraft } = await import('/js/memoryEngine.js');
+              const { runSemanticEditorialReview, proposePostApprovalContinuity } = await import('/js/postReview.js');
+
+              const pid = 'story-m5-pts';
+              const scope = { projectId: pid };
+
+              // 1. Exact Inspector maxOutputTokens === actual provider request maxOutputTokens
+              await saveWalletConfig({
+                primaryProvider: 'openai',
+                primaryModel: 'gpt-5.4-mini',
+                auxiliaryProvider: 'openai',
+                auxiliaryModel: 'gpt-4.1-mini',
+                maxOutputTokensPerRequest: 6000,
+                maxGenerationSpendUsd: 0.50,
+                allowUnknownCostOverride: false,
+              });
+              const previewBundle = await assembleOperationContext({
+                projectId: pid,
+                operation: 'full_chapter',
+                role: 'primary',
+                chapterTitle: 'Cap Cap Match',
+                instructions: 'Check exact output token budget identity.',
+                targetWords: 5000,
+                allowedCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                roomCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+              });
+              const seenOutCaps = [];
+              const trackingProvider = {
+                name: 'openai',
+                config: { model: 'gpt-5.4-mini' },
+                async generate(args) {
+                  seenOutCaps.push(args.maxOutputTokens);
+                  return {
+                    ok: true,
+                    text: ('Erwin set down his pen while Levi watched the window without saying a word. '.repeat(18)).trim(),
+                    truncated: false,
+                    finishReason: 'stop',
+                    usage: { promptTokens: 5000, completionTokens: 1000, totalTokens: 6000, cachedTokens: 0, reasoningTokens: 0, reportedByProvider: true },
+                  };
+                },
+              };
+              const genState = await startOrResumeGeneration({
+                projectId: pid,
+                chapterId: 'ch-alpha-cap-match',
+                chapterTitle: 'Cap Cap Match',
+                instructions: 'Check exact output token budget identity.',
+                targetWords: 5000,
+                generationMode: 'full_chapter',
+                allowedCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                roomCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                provider: trackingProvider,
+              });
+              const inspectorMatchesProvider =
+                previewBundle.modelBound.maxOutputTokens === 6000 &&
+                seenOutCaps.length === 1 &&
+                seenOutCaps[0] === previewBundle.modelBound.maxOutputTokens;
+
+              // 2. Cumulative spend cap across generation -> ending extension -> polish
+              // Force state spent to $0.495 against $0.50 cap so ending extension & polish MUST be blocked!
+              genState.actualSpentUsd = 0.495;
+              await db.put('generationState', genState, scope);
+              let endingBlockedByCumulative = false;
+              try {
+                await extendPendingBlockWithEnding('ch-alpha-cap-match', genState.pendingText, 'natural', { projectId: pid, provider: trackingProvider });
+              } catch (e) {
+                endingBlockedByCumulative = String(e.message || '').includes('supera tu límite estimado local');
+              }
+              let polishBlockedByCumulative = false;
+              try {
+                await polishPendingBlock('ch-alpha-cap-match', genState.pendingText, { projectId: pid, provider: trackingProvider });
+              } catch (e) {
+                polishBlockedByCumulative = String(e.message || '').includes('supera tu límite estimado local');
+              }
+
+              // 3. Cumulative spend cap across rewriteChapter -> continueRewriteDraft
+              const ch2 = await db.get('chapters', 'ch-m5-2', scope);
+              const contBlocked = await continueRewriteDraft(ch2, 'Finish the scene.', 'Erwin paused by the map table while Levi waited silently near the door for the room to settle.', {
+                provider: trackingProvider,
+                spentSoFarUsd: 0.495,
+              });
+              const rewriteContBlockedOk = contBlocked.ok === false && contBlocked.errorType === 'budget_blocked';
+
+              // 4. Unknown-priced custom model MUST BE BLOCKED when spending cap is active and override=false
+              await saveWalletConfig({
+                primaryProvider: 'openai',
+                primaryModel: 'unpriced-custom-alpha-model',
+                auxiliaryProvider: 'openai',
+                auxiliaryModel: 'unpriced-custom-alpha-model',
+                maxOutputTokensPerRequest: 4000,
+                maxGenerationSpendUsd: 0.50,
+                allowUnknownCostOverride: false,
+              });
+              const unknownProvider = {
+                name: 'openai',
+                config: { model: 'unpriced-custom-alpha-model' },
+                async generate() {
+                  return {
+                    ok: true,
+                    text: ('Unknown priced model prose returned only after explicit author override. '.repeat(12)).trim(),
+                    truncated: false,
+                    finishReason: 'stop',
+                    usage: { promptTokens: 500, completionTokens: 200, totalTokens: 700, cachedTokens: 0, reasoningTokens: 0, reportedByProvider: true },
+                  };
+                },
+              };
+              const unknownGenBlocked = await startOrResumeGeneration({
+                projectId: pid,
+                chapterId: 'ch-alpha-unknown-blocked',
+                chapterTitle: 'Unknown Cost Block',
+                instructions: 'Should block before calling provider.',
+                targetWords: 3000,
+                generationMode: 'full_chapter',
+                allowedCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                roomCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                provider: unknownProvider,
+              });
+              const unknownNovelPreview = await previewOrchestrationBudget({
+                projectId: pid,
+                chapterId: 'ch-alpha-unknown-novel',
+                chapterTitle: 'Unknown Novel Block',
+                instructions: 'Should block preview.',
+                targetWords: 3000,
+                allowedCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                roomCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+              });
+              const unknownRewriteBlocked = await rewriteChapter(ch2, 'Tighten pacing.', { provider: unknownProvider });
+              const reviewSample = 'Erwin folded the dispatch carefully while Levi leaned against the doorframe and Hange whispered an entirely incorrect hypothesis to Petra across the long wooden table.';
+              const unknownReviewBlocked = await runSemanticEditorialReview(reviewSample, { projectId: pid, provider: unknownProvider });
+              const unknownContBlocked = await proposePostApprovalContinuity(ch2, { projectId: pid, provider: unknownProvider });
+
+              const allUnknownBlocked = (
+                unknownGenBlocked.status === 'paused_budget' &&
+                unknownGenBlocked.lastError?.reason === 'unknown_pricing_blocked' &&
+                unknownNovelPreview.withinBudget === false &&
+                unknownNovelPreview.budgetReason === 'unknown_pricing_blocked' &&
+                unknownRewriteBlocked.ok === false && unknownRewriteBlocked.reason === 'unknown_pricing_blocked' &&
+                unknownReviewBlocked.ok === false && unknownReviewBlocked.reason === 'unknown_pricing_blocked' &&
+                unknownContBlocked.ok === false && unknownContBlocked.reason === 'unknown_pricing_blocked'
+              );
+
+              // 5. Explicit author override (`allowUnknownCostOverride: true`) allows unknown-priced request
+              await saveWalletConfig({ allowUnknownCostOverride: true });
+              const overriddenGen = await startOrResumeGeneration({
+                projectId: pid,
+                chapterId: 'ch-alpha-unknown-overridden',
+                chapterTitle: 'Unknown Cost Overridden',
+                instructions: 'Proceeds only because author explicitly acknowledged unknown cost.',
+                targetWords: 3000,
+                generationMode: 'full_chapter',
+                allowedCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                roomCast: 'Erwin, Levi, Hange, Petra, Eren, Mikasa, Armin, Jean, Connie, Sasha, Ymir, Historia',
+                provider: unknownProvider,
+              });
+              const unknownOverrideAllowed = overriddenGen.status === 'awaiting_review' && overriddenGen.unknownCostCalls === 1;
+
+              // Restore clean Wallet defaults
+              await saveWalletConfig({
+                primaryProvider: 'openai',
+                primaryModel: 'gpt-5.4-mini',
+                auxiliaryProvider: 'openai',
+                auxiliaryModel: 'gpt-4.1-mini',
+                maxOutputTokensPerRequest: 16384,
+                maxGenerationSpendUsd: 0.50,
+                allowUnknownCostOverride: false,
+              });
+
+              return {
+                ok: inspectorMatchesProvider && endingBlockedByCumulative && polishBlockedByCumulative && rewriteContBlockedOk && allUnknownBlocked && unknownOverrideAllowed,
+                checks: {
+                  inspectorMatchesProvider,
+                  endingBlockedByCumulative,
+                  polishBlockedByCumulative,
+                  rewriteContBlockedOk,
+                  allUnknownBlocked,
+                  unknownOverrideAllowed,
+                },
+                debug: {
+                  previewMaxOut: previewBundle.modelBound.maxOutputTokens,
+                  seenOutCaps,
+                  genStateStatus: genState.status,
+                  unknownGen: { status: unknownGenBlocked.status, err: unknownGenBlocked.lastError },
+                  unknownNovel: { withinBudget: unknownNovelPreview.withinBudget, reason: unknownNovelPreview.budgetReason },
+                  unknownRewrite: unknownRewriteBlocked,
+                  unknownReview: unknownReviewBlocked,
+                  unknownCont: unknownContBlocked,
+                },
+              };
+            }''')
+            assert alpha_safety['ok'], f"Alpha spending safety E2E checks failed: {alpha_safety}"
+
             assert not external_non_mocked, f'Unexpected external network requests: {external_non_mocked}'
             assert not errors, f'Unexpected page errors: {errors}'
             assert not csp_errs, f'CSP errors: {csp_errs}'
 
             ctx.close()
             browser.close()
-            print('PASS: all Milestone 5 browser E2E acceptance tests passed (7 tabs, Inky Wallet, upgraded Context Inspector + invalidation + contradiction blocking, Full Chapter draft workflow, Novel Mode orchestrated pause/resume/budget-cap, Co-writing targeted passage rewrite + conflict fallback, deterministic vs probabilistic review, editable post-approval continuity, Creative Chat AI via Unified Context Engine, usageLog & API key backup safety, 0 external unmocked calls).')
+            print('PASS: all Milestone 5 + Alpha release review browser E2E acceptance tests passed (7 tabs, Inky Wallet, upgraded Context Inspector + exact output cap match + invalidation + contradiction blocking, Full Chapter draft workflow, Novel Mode orchestrated pause/resume/budget-cap, Co-writing targeted passage rewrite + conflict fallback, deterministic vs probabilistic review, editable post-approval continuity, Creative Chat AI via Unified Context Engine, unknown-cost blocking & explicit override, cumulative spending caps across all operations, usageLog & API key backup safety, 0 external unmocked calls).')
     finally:
         server.shutdown()
 

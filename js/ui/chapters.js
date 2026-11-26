@@ -651,6 +651,8 @@ async function openRewriteModal(id) {
   let stagedTruncated = hasRestoredDraft ? Boolean(savedDraft.truncated) : false;
   let stagedModelMaxOutput = hasRestoredDraft && Number.isFinite(savedDraft.modelMaxOutput) ? savedDraft.modelMaxOutput : 0;
   let stagedMayNeedContinuation = hasRestoredDraft ? Boolean(savedDraft.mayNeedContinuation) : false;
+  let stagedSpentUsd = hasRestoredDraft && Number.isFinite(savedDraft.cumulativeSpentUsd) ? savedDraft.cumulativeSpentUsd : 0;
+  let stagedHasUnknownCost = hasRestoredDraft ? Boolean(savedDraft.hasPriorUnknownCost) : false;
   let previousDraftText = hasRestoredDraft ? String(savedDraft.previousText || '') : '';
   let latestPreviewValue = hasRestoredDraft ? String(savedDraft.text || '') : '';
   let latestInstructionsValue = stagedInstructions;
@@ -674,6 +676,8 @@ async function openRewriteModal(id) {
       truncated: stagedTruncated,
       modelMaxOutput: stagedModelMaxOutput,
       mayNeedContinuation: stagedMayNeedContinuation,
+      cumulativeSpentUsd: stagedSpentUsd,
+      hasPriorUnknownCost: stagedHasUnknownCost,
       updatedAt: new Date().toISOString(),
     });
   };
@@ -811,9 +815,15 @@ async function openRewriteModal(id) {
     controller = new AbortController();
     setBusy(true, 'Reescribiendo… el capítulo original permanece intacto.');
     conflictSlot.innerHTML = '';
-    const result = await rewriteChapter(freshSource, instructions, { signal: controller.signal });
+    const result = await rewriteChapter(freshSource, instructions, {
+      signal: controller.signal,
+      spentSoFarUsd: stagedSpentUsd,
+      hasPriorUnknownCost: stagedHasUnknownCost,
+    });
     controller = null;
     setBusy(false);
+    if (Number.isFinite(result.cumulativeSpentUsd)) stagedSpentUsd = result.cumulativeSpentUsd;
+    if (result.hasPriorUnknownCost) stagedHasUnknownCost = true;
     if (!result.ok) {
       statusEl.textContent = '⚠️ ' + result.error;
       toast(result.errorType === 'aborted' ? 'Reescritura cancelada.' : 'No se guardó ningún cambio: ' + result.error, { error: result.errorType !== 'aborted' });
@@ -852,9 +862,15 @@ async function openRewriteModal(id) {
     const freshSource = (await db.get('chapters', id, scope)) || chapter;
     controller = new AbortController();
     setBusy(true, 'Continuando la reescritura desde el último párrafo…');
-    const result = await continueRewriteDraft(freshSource, instructions, currentDraft, { signal: controller.signal });
+    const result = await continueRewriteDraft(freshSource, instructions, currentDraft, {
+      signal: controller.signal,
+      spentSoFarUsd: stagedSpentUsd,
+      hasPriorUnknownCost: stagedHasUnknownCost,
+    });
     controller = null;
     setBusy(false);
+    if (Number.isFinite(result.cumulativeSpentUsd)) stagedSpentUsd = result.cumulativeSpentUsd;
+    if (result.hasPriorUnknownCost) stagedHasUnknownCost = true;
     if (!result.ok) {
       statusEl.textContent = '⚠️ ' + result.error;
       toast(result.errorType === 'aborted' ? 'Continuación cancelada.' : result.error, { error: result.errorType !== 'aborted' });

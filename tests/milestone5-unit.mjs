@@ -16,11 +16,14 @@ import {
   createDefaultWalletConfig,
   normalizeWalletConfig,
   calculateTokenCost,
+  calculateConservativeRequestCost,
+  getCumulativeChargeFromUsage,
   checkGenerationBudget,
   recordUsageEvent,
   getUsageSummary,
   resetSessionUsageForTests,
 } from '../js/inkyWallet.js';
+import { OpenAIProvider } from '../js/providers/openai.js';
 import {
   CONTEXT_ENGINE_OPERATIONS,
   compileUnifiedContextRequest,
@@ -195,18 +198,165 @@ function makeSyntheticSnapshot({
   assert.equal(customPriced.costStatus, 'actual');
   assert.equal(customPriced.costUsd, 0.15);
 
-  // Spending cap enforcement
+  // Spending cap enforcement (estimated local guard, never guaranteed provider billing cap)
   const overBudget = checkGenerationBudget({ estimatedAdditionalUsd: 0.30, spentSoFarUsd: 0.0, maxGenerationSpendUsd: 0.25 });
   assert.equal(overBudget.allowed, false);
   assert.equal(overBudget.reason, 'estimated_cost_exceeds_limit');
+  assert.equal(overBudget.isLocalEstimateOnly, true);
+  assert.ok(overBudget.message.includes('NO sustituye límites duros'));
 
   const hitCap = checkGenerationBudget({ estimatedAdditionalUsd: 0.01, spentSoFarUsd: 0.25, maxGenerationSpendUsd: 0.25 });
   assert.equal(hitCap.allowed, false);
   assert.equal(hitCap.reason, 'spending_limit_reached');
 
-  // Notices & honest usage tracking (actual vs estimated, zero API keys stored)
-  assert.ok(WALLET_NOTICES.localUsageNotAccountBalance.includes('NO equivale al saldo real'));
+  // CRITICAL ALPHA SPENDING SAFETY: Unknown-priced requests MUST BE BLOCKED when cap is active
+  // unless the author explicitly acknowledges and enables `allowUnknownCostOverride: true`!
+  const unknownBlocked = checkGenerationBudget({ estimatedAdditionalUsd: null, spentSoFarUsd: 0, maxGenerationSpendUsd: 0.50 });
+  assert.equal(unknownBlocked.allowed, false);
+  assert.equal(unknownBlocked.reason, 'unknown_pricing_blocked');
+  assert.equal(unknownBlocked.projectedUsd, null); // NEVER silently treated as 0!
+  assert.equal(unknownBlocked.requiresExplicitUnknownOverride, true);
+
+  // Explicit override allows proceeding while keeping projectedUsd === null (never 0)
+  const unknownOverridden = checkGenerationBudget({
+    estimatedAdditionalUsd: null,
+    spentSoFarUsd: 0,
+    maxGenerationSpendUsd: 0.50,
+    allowUnknownCostOverride: true,
+  });
+  assert.equal(unknownOverridden.allowed, true);
+  assert.equal(unknownOverridden.reason, 'unknown_pricing_explicitly_overridden');
+  assert.equal(unknownOverridden.projectedUsd, null);
+
+  // Cumulative unknown prior spend also blocks when cap is active without override
+  const priorUnknownBlocked = checkGenerationBudget({
+    estimatedAdditionalUsd: 0.05,
+    spentSoFarUsd: 0,
+    maxGenerationSpendUsd: 0.50,
+    hasPriorUnknownCost: true,
+    allowUnknownCostOverride: false,
+  });
+  assert.equal(priorUnknownBlocked.allowed, false);
+  assert.equal(priorUnknownBlocked.reason, 'unknown_pricing_blocked');
+
+  // Conservative request costing: uses FULL authorizedMaxOutputTokens (covering output + reasoning)
+  const consGpt54 = calculateConservativeRequestCost({
+    providerId: 'openai',
+    modelId: 'gpt-5.4-mini',
+    inputTokens: 10000,
+    authorizedMaxOutputTokens: 16384,
+    stablePrefixTokens: 6000,
+    cacheStrategy: 'reuse',
+    reasoningEffort: 'high',
+  });
+  const optGpt54 = calculateTokenCost({ providerId: 'openai', modelId: 'gpt-5.4-mini', inputTokens: 10000, outputTokens: 2000 });
+  assert.equal(consGpt54.basis, 'conservative_authorized_ceiling');
+  assert.equal(consGpt54.includesReasoningTokenCeiling, true);
+  assert.ok(consGpt54.costUsd > optGpt54.costUsd);
+
+  // Paid explicit 30m cache-write surcharge (1.25x) included for GPT-5.6+ / GPT-6+ when cacheStrategy='reuse'
+  const gpt6Wallet = normalizeWalletConfig({
+    customPricingTable: {
+      'openai:gpt-6.2-sol': { inputPer1M: 1.0, outputPer1M: 5.0, cachedInputPer1M: 0.05, source: 'OpenAI pricing', lastUpdated: '2026-11-26' },
+    },
+  });
+  const gpt6Reuse = calculateConservativeRequestCost({
+    providerId: 'openai',
+    modelId: 'gpt-6.2-sol',
+    inputTokens: 100000,
+    authorizedMaxOutputTokens: 4000,
+    stablePrefixTokens: 80000,
+    cacheStrategy: 'reuse',
+    walletConfig: gpt6Wallet,
+  });
+  const gpt6Off = calculateConservativeRequestCost({
+    providerId: 'openai',
+    modelId: 'gpt-6.2-sol',
+    inputTokens: 100000,
+    authorizedMaxOutputTokens: 4000,
+    stablePrefixTokens: 80000,
+    cacheStrategy: 'off',
+    walletConfig: gpt6Wallet,
+  });
+  assert.ok(gpt6Reuse.cacheWriteSurchargeUsd > 0);
+  assert.equal(gpt6Off.cacheWriteSurchargeUsd, 0);
+  assert.ok(gpt6Reuse.costUsd > gpt6Off.costUsd);
+
+  // Long-context multiplier (>272K input tokens on gpt-5.4 -> 2x input, 1.5x output)
+  const longCtx54 = calculateConservativeRequestCost({
+    providerId: 'openai',
+    modelId: 'gpt-5.4',
+    inputTokens: 300000,
+    authorizedMaxOutputTokens: 4000,
+  });
+  assert.equal(longCtx54.longContextMultiplierApplied, true);
+  assert.equal(longCtx54.costUsd, Number(((300000 / 1e6) * 5.0 + (4000 / 1e6) * 22.5).toFixed(6)));
+
+  // getCumulativeChargeFromUsage never treats unknown cost as 0
+  const unknownCharge = getCumulativeChargeFromUsage({ actualCostUsd: null, estimatedCostUsd: null }, null);
+  assert.equal(unknownCharge.unknown, true);
+  assert.equal(unknownCharge.knownUsd, null);
+
+  // Official OpenAI API compatibility (zero network calls — mocked global fetch)
+  assert.equal(normalizeReasoningEffort('openai', 'gpt-5.4', 'xhigh'), 'xhigh');
+  assert.equal(getCatalogModelInfo('openai', 'gpt-5.4').maxOutputTokens, 128000);
+  assert.equal(getCatalogModelInfo('openai', 'gpt-5.4-mini').maxOutputTokens, 128000);
+  assert.equal(getCatalogModelInfo('openai', 'o3-mini').maxOutputTokens, 100000);
+  {
+    const origFetch = globalThis.fetch;
+    const seen = [];
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init.body);
+      seen.push({ url, body });
+      const isResponses = String(url).includes('/v1/responses');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => isResponses
+          ? { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Prose text from responses API with enough words to be valid.' }] }], usage: { input_tokens: 100, output_tokens: 40, total_tokens: 140 } }
+          : { choices: [{ finish_reason: 'stop', message: { content: 'Prose text from chat completions with enough words to be valid.' } }], usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 } },
+      };
+    };
+    try {
+      await new OpenAIProvider({ apiKey: 'test-key', model: 'gpt-5.4' }).generate({ systemPrompt: 's', userPrompt: 'u', maxOutputTokens: 4096, temperature: 0.9, reasoningEffort: 'none' });
+      await new OpenAIProvider({ apiKey: 'test-key', model: 'gpt-5.4' }).generate({ systemPrompt: 's', userPrompt: 'u', maxOutputTokens: 4096, temperature: 0.9, reasoningEffort: 'xhigh' });
+      await new OpenAIProvider({ apiKey: 'test-key', model: 'o3-mini' }).generate({ systemPrompt: 's', userPrompt: 'u', maxOutputTokens: 4096, temperature: 0.9, reasoningEffort: 'low' });
+      await new OpenAIProvider({ apiKey: 'test-key', model: 'gpt-4.1' }).generate({ systemPrompt: 's', userPrompt: 'u', maxOutputTokens: 4096, temperature: 0.9, reasoningEffort: 'high' });
+      await new OpenAIProvider({ apiKey: 'test-key', model: 'gpt-6.2-sol' }).generate({ systemPrompt: 's', stableSystemPrompt: 'stable lore', dynamicSystemPrompt: 'dyn', cacheStrategy: 'reuse', cacheKey: 'k1', userPrompt: 'u', maxOutputTokens: 4096, reasoningEffort: 'none' });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    // 1. gpt-5.4 reasoning_effort='none' -> max_completion_tokens + temperature allowed
+    assert.equal(seen[0].url, 'https://api.openai.com/v1/chat/completions');
+    assert.equal(seen[0].body.max_completion_tokens, 4096);
+    assert.equal(seen[0].body.reasoning_effort, 'none');
+    assert.equal(seen[0].body.temperature, 0.9);
+    // 2. gpt-5.4 reasoning_effort='xhigh' -> temperature MUST BE OMITTED
+    assert.equal(seen[1].body.reasoning_effort, 'xhigh');
+    assert.equal('temperature' in seen[1].body, false);
+    // 3. o3-mini -> max_completion_tokens + reasoning_effort='low', NO temperature
+    assert.equal(seen[2].body.max_completion_tokens, 4096);
+    assert.equal(seen[2].body.reasoning_effort, 'low');
+    assert.equal('temperature' in seen[2].body, false);
+    // 4. gpt-4.1 -> max_tokens + temperature, NO reasoning_effort
+    assert.equal(seen[3].body.max_tokens, 4096);
+    assert.equal(seen[3].body.temperature, 0.9);
+    assert.equal('reasoning_effort' in seen[3].body, false);
+    // 5. gpt-6.2-sol -> Responses API + explicit cache breakpoint + service_tier='default' + reasoning.effort='none'
+    assert.equal(seen[4].url, 'https://api.openai.com/v1/responses');
+    assert.equal(seen[4].body.max_output_tokens, 4096);
+    assert.equal(seen[4].body.service_tier, 'default');
+    assert.equal(seen[4].body.reasoning.effort, 'none');
+    assert.deepEqual(seen[4].body.prompt_cache_options, { mode: 'explicit', ttl: '30m' });
+    assert.deepEqual(seen[4].body.input[0].content[0].prompt_cache_breakpoint, { mode: 'explicit' });
+  }
+
+  // Notices & honest usage tracking (actual vs estimated, zero API keys stored, credentials & transmission notice)
+  assert.ok(WALLET_NOTICES.localUsageNotAccountBalance.includes('NO equivalen al saldo real'));
+  assert.ok(WALLET_NOTICES.localUsageNotAccountBalance.includes('límite garantizado'));
   assert.ok(WALLET_NOTICES.failedOrCancelledChargeWarning.includes('canceladas'));
+  assert.ok(WALLET_NOTICES.localCredentialsAndTransmission.includes('NO equivalen a credenciales protegidas en un servidor seguro'));
+  assert.ok(WALLET_NOTICES.localCredentialsAndTransmission.includes('se transmite al proveedor'));
   resetSessionUsageForTests();
   const ev = await recordUsageEvent({
     projectId: 'p1',
@@ -216,11 +366,13 @@ function makeSyntheticSnapshot({
     status: 'ok',
     estimatedInputTokens: 4000,
     estimatedOutputTokens: 2000,
+    authorizedMaxOutputTokens: 16384,
     providerUsage: { promptTokens: 4200, completionTokens: 1800, totalTokens: 6000, cachedTokens: 0, reasoningTokens: 0, reportedByProvider: true },
     walletConfig: createDefaultWalletConfig(),
   });
   assert.equal(ev.usageSource, 'provider_reported_actual');
   assert.equal(ev.actualInputTokens, 4200);
+  assert.equal(ev.authorizedMaxOutputTokens, 16384);
   const summary = await getUsageSummary();
   assert.equal(summary.session.requests, 1);
   assert.equal(summary.session.actualReportedRequests, 1);

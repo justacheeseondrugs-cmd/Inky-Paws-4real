@@ -37,6 +37,8 @@ import {
   estimateTokensFromText,
   estimateOutputTokensForWords,
   calculateTokenCost,
+  calculateConservativeRequestCost,
+  checkGenerationBudget,
   normalizeReasoningEffort,
   getCatalogModelInfo,
 } from './inkyWallet.js';
@@ -736,12 +738,57 @@ export function compileUnifiedContextRequest(snapshot, {
   const modelCap = getModelOutputLimit(providerId, modelId);
   const walletCap = Number(walletConfig?.maxOutputTokensPerRequest) || modelCap;
   const effectiveMaxOutputCap = Math.min(modelCap, walletCap);
-  const desiredOut = estimateOutputTokensForWords(opCompiled.expectedOutputWords || 1000) + 600;
+
+  const isReasoningCapModel = /^(?:gpt-5(?:[.-]|$)|gpt-[6-9](?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(String(modelId || ''));
+  let desiredOut;
+  if (Number.isFinite(Number(opParams.requestedMaxOutputTokens)) && Number(opParams.requestedMaxOutputTokens) > 0) {
+    desiredOut = Math.floor(Number(opParams.requestedMaxOutputTokens));
+  } else if (safeOp === 'full_chapter') {
+    desiredOut = Math.round((opCompiled.expectedOutputWords || 5000) * 3.2) + 1200;
+  } else if (safeOp === 'manual_block') {
+    desiredOut = Math.round((opCompiled.expectedOutputWords || 1000) * 3.2) + 600;
+  } else if (safeOp === 'continuation') {
+    desiredOut = Math.round((opCompiled.expectedOutputWords || 600) * 3.6) + 500;
+  } else if (safeOp === 'creative_chat') {
+    desiredOut = isReasoningCapModel ? 4200 : 1800;
+  } else if (safeOp === 'editorial_review') {
+    desiredOut = 2400;
+  } else if (safeOp === 'continuity_extraction') {
+    desiredOut = 3200;
+  } else if (safeOp === 'novel_orchestrated') {
+    desiredOut = estimateOutputTokensForWords(opCompiled.expectedOutputWords || 1500) + 800;
+  } else {
+    desiredOut = estimateOutputTokensForWords(opCompiled.expectedOutputWords || 1000) + 600;
+  }
+
   const maxOutputTokens = Math.max(256, Math.min(effectiveMaxOutputCap, desiredOut));
+  const reasoningEffort = normalizeReasoningEffort(providerId, modelId, walletConfig?.reasoningEffort || '');
+  const modelInfo = getCatalogModelInfo(providerId, modelId);
+
+  const defaultCacheStrategy = (safeOp === 'full_chapter' || safeOp === 'manual_block' || safeOp === 'novel_orchestrated')
+    ? 'reuse'
+    : 'off';
+  const cacheStrategy = opParams.cacheStrategy || defaultCacheStrategy;
 
   const estimatedInputTokens = estimateTokensFromText(systemPrompt) + estimateTokensFromText(userPrompt);
+  const stablePrefixTokens = estimateTokensFromText(stablePrompt);
   const estimatedOutputTokens = Math.min(maxOutputTokens, estimateOutputTokensForWords(opCompiled.expectedOutputWords || 1000));
-  const costEstimate = calculateTokenCost({
+
+  // Techo conservador de costo basado en el límite AUTORIZADO de salida (incluye
+  // tokens de salida + razonamiento y posibles recargos de caché de escritura).
+  const costEstimate = calculateConservativeRequestCost({
+    providerId,
+    modelId,
+    inputTokens: estimatedInputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    stablePrefixTokens,
+    cacheStrategy,
+    reasoningEffort,
+    walletConfig,
+  });
+
+  // Referencia informativa basada solo en palabras objetivo (NUNCA sustituye el techo conservador)
+  const expectedCostEstimate = calculateTokenCost({
     providerId,
     modelId,
     inputTokens: estimatedInputTokens,
@@ -750,8 +797,12 @@ export function compileUnifiedContextRequest(snapshot, {
     isActual: false,
   });
 
-  const reasoningEffort = normalizeReasoningEffort(providerId, modelId, walletConfig?.reasoningEffort || '');
-  const modelInfo = getCatalogModelInfo(providerId, modelId);
+  const budgetCheck = checkGenerationBudget({
+    estimatedAdditionalUsd: costEstimate.costUsd,
+    spentSoFarUsd: 0,
+    maxGenerationSpendUsd: walletConfig?.maxGenerationSpendUsd ?? 0.50,
+    allowUnknownCostOverride: walletConfig?.allowUnknownCostOverride === true,
+  });
 
   const snapshotHash = contentFingerprint(JSON.stringify({
     operation: safeOp,
@@ -761,6 +812,7 @@ export function compileUnifiedContextRequest(snapshot, {
     modelId,
     reasoningEffort,
     maxOutputTokens,
+    cacheStrategy,
     systemPrompt,
     userPrompt,
     blockerCodes: criticalBlockers.map((b) => b.code),
@@ -771,15 +823,18 @@ export function compileUnifiedContextRequest(snapshot, {
     providerId,
     modelId,
     reasoningEffort,
+    cacheStrategy,
     modelCapabilityWarning: modelInfo.capabilityWarning || '',
     systemPrompt,
     stablePrompt,
     dynamicPrompt,
     userPrompt,
     maxOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
     estimatedInputTokens,
     estimatedOutputTokens,
     costEstimate,
+    expectedCostEstimate,
     snapshotHash,
   };
 
@@ -789,10 +844,12 @@ export function compileUnifiedContextRequest(snapshot, {
     canGenerate: criticalBlockers.length === 0,
     blockedByCriticalIssues: criticalBlockers.length > 0,
     criticalBlockers,
+    budgetCheck,
     warnings: [
       ...(snapshot?.universe?.warnings || []),
       ...(snapshot?.memory?.budget?.warnings || []),
       ...(modelInfo.capabilityWarning ? [{ code: 'custom_model_id', level: 'warning', message: modelInfo.capabilityWarning }] : []),
+      ...(!budgetCheck.allowed ? [{ code: budgetCheck.reason, level: 'warning', message: budgetCheck.message }] : []),
     ],
     narrativeTarget: snapshot?.narrativeTarget || null,
     universeSummary: {

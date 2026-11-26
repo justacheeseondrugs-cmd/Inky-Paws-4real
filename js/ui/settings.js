@@ -130,14 +130,18 @@ export async function renderSettings(root) {
           <select id="w-reasoning-effort">${REASONING_EFFORT_OPTIONS.map((opt) => `<option value="${opt}" ${walletConfig.reasoningEffort === opt ? 'selected' : ''}>${opt}</option>`).join('')}</select>
         </div>
         <div>
-          <label class="field-label" for="w-max-output">Límite máximo de tokens de salida por solicitud</label>
-          <input type="number" id="w-max-output" min="256" max="65536" step="256" value="${Number(walletConfig.maxOutputTokensPerRequest) || 16384}">
+          <label class="field-label" for="w-max-output">Límite máximo de tokens de salida por solicitud (incluye razonamiento)</label>
+          <input type="number" id="w-max-output" min="256" max="128000" step="256" value="${Number(walletConfig.maxOutputTokensPerRequest) || 16384}">
         </div>
       </div>
       <div class="grid-2" style="margin-top:8px;">
         <div>
-          <label class="field-label" for="w-max-spend">Límite máximo de gasto por generación (USD · 0 = sin tope)</label>
+          <label class="field-label" for="w-max-spend">Límite estimado local por generación (USD · 0 = sin tope local)</label>
           <input type="number" id="w-max-spend" min="0" max="100" step="0.05" value="${Number(walletConfig.maxGenerationSpendUsd ?? 0.50)}">
+          <label style="display:block; font-size:12px; margin-top:6px;">
+            <input type="checkbox" id="w-allow-unknown-override" ${walletConfig.allowUnknownCostOverride === true ? 'checked' : ''}>
+            Reconozco el riesgo y permito solicitudes con <b>costo desconocido</b> aunque haya un límite estimado activo (nunca se trata como $0).
+          </label>
         </div>
         <div>
           <label class="field-label">Análisis opcionales (solo cuando los autorices)</label>
@@ -167,8 +171,9 @@ export async function renderSettings(root) {
         </div>
       </details>
       <div class="context-guard-item context-guard-info" style="margin-top:10px; font-size:12px;">
-        <div><b>ℹ️ Transparencia de costos:</b> ${escapeHtml(WALLET_NOTICES.localUsageNotAccountBalance)}</div>
+        <div><b>ℹ️ Transparencia de costos (estimación local, NO tope garantizado del proveedor):</b> ${escapeHtml(WALLET_NOTICES.localUsageNotAccountBalance)}</div>
         <div style="margin-top:4px;"><b>⚠️ Solicitudes interrumpidas:</b> ${escapeHtml(WALLET_NOTICES.failedOrCancelledChargeWarning)}</div>
+        <div style="margin-top:4px;"><b>🔐 Credenciales locales y envío de contexto:</b> ${escapeHtml(WALLET_NOTICES.localCredentialsAndTransmission)}</div>
         <div style="margin-top:4px;">${escapeHtml(WALLET_NOTICES.geminiBillingNotice)}</div>
       </div>
       <div class="btn-row" style="margin-top:8px;"><button type="button" class="btn btn-primary" id="w-wallet-save-btn">💾 Guardar Inky Wallet</button></div>
@@ -522,6 +527,7 @@ export async function renderSettings(root) {
       reasoningEffort: document.getElementById('w-reasoning-effort')?.value || 'none',
       maxOutputTokensPerRequest: Number(document.getElementById('w-max-output')?.value || 16384),
       maxGenerationSpendUsd: Number(document.getElementById('w-max-spend')?.value ?? 0.50),
+      allowUnknownCostOverride: Boolean(document.getElementById('w-allow-unknown-override')?.checked),
       optionalAnalysis: {
         prepEnabled: false,
         semanticReviewEnabled: Boolean(document.getElementById('w-opt-semantic')?.checked),

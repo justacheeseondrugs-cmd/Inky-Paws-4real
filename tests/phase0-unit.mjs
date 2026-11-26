@@ -116,7 +116,7 @@ function walkJsFiles(dir) {
   assert.equal(getModelOutputLimit('openrouter', 'openrouter/free'), 8192);
   assert.equal(getModelOutputLimit('openai', 'gpt-4o'), 16384);
   assert.equal(getModelOutputLimit('openai', 'gpt-4.1'), 32768);
-  assert.equal(getModelOutputLimit('openai', 'gpt-5.4-mini'), 65536);
+  assert.equal(getModelOutputLimit('openai', 'gpt-5.4-mini'), 128000); // Verified: developers.openai.com/api/docs/models/gpt-5.4-mini
   assert.equal(getModelOutputLimit('openai', 'gpt-4'), 4096);
 
   const words3k = computeRewriteMaxOutputTokens('word '.repeat(3000), 'gpt-5.4-mini', 'openai');

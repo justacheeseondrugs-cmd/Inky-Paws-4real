@@ -21,7 +21,7 @@ import { wordCount, contentFingerprint } from './utils.js';
 import { markChapterMemoriesStale } from './memoryEngine.js';
 import { assembleOperationContext } from './contextEngine.js';
 import { markChapterBriefConsumed } from './creativeChat.js';
-import { getWalletConfig, checkGenerationBudget, recordUsageEvent } from './inkyWallet.js';
+import { getWalletConfig, checkGenerationBudget, recordUsageEvent, getCumulativeChargeFromUsage } from './inkyWallet.js';
 
 const DEFAULT_BLOCK_WORDS = 900;
 let inFlightCount = 0;
@@ -246,17 +246,20 @@ export async function runGenerationLoop(state, onProgress, shouldStop, { signal,
       return state;
     }
 
-    // 3. Control de límite de gasto autorizado (Inky Wallet)
+    // 3. Control acumulativo de límite estimado local (Inky Wallet)
     const spentSoFar = (state.actualSpentUsd || 0) + (state.estimatedSpentUsd || 0);
     const budgetCheck = checkGenerationBudget({
       estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
       spentSoFarUsd: spentSoFar,
       maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+      allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+      hasPriorUnknownCost: (state.unknownCostCalls || 0) > 0,
     });
     if (!budgetCheck.allowed) {
       state.status = 'paused_budget';
       state.lastError = {
         type: 'budget_blocked',
+        reason: budgetCheck.reason,
         message: budgetCheck.message,
         at: new Date().toISOString(),
       };
@@ -268,19 +271,14 @@ export async function runGenerationLoop(state, onProgress, shouldStop, { signal,
 
     onProgress?.({ phase: 'requesting', state, contextBundle: bundle });
 
-    const modelOutputLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
-    const walletMaxOut = walletConfig.maxOutputTokensPerRequest || modelOutputLimit;
-    const maxOutputTokens = Math.min(
-      modelOutputLimit,
-      walletMaxOut,
-      Math.max(bundle.modelBound.maxOutputTokens, Math.round(thisBlockTarget * 3.2) + (fullChapterMode ? 1200 : 600))
-    );
+    // El límite enviado al proveedor SIEMPRE coincide exactamente con el del Context Inspector
+    const maxOutputTokens = bundle.modelBound.maxOutputTokens;
 
     const result = await provider.generate({
       systemPrompt: bundle.modelBound.systemPrompt,
       stableSystemPrompt: bundle.modelBound.stablePrompt,
       dynamicSystemPrompt: bundle.modelBound.dynamicPrompt,
-      cacheStrategy: 'reuse',
+      cacheStrategy: bundle.modelBound.cacheStrategy || 'reuse',
       cacheKey: 'inky-paws:' + String(state.chapterId || '').slice(0, 50),
       userPrompt: bundle.modelBound.userPrompt,
       maxOutputTokens,
@@ -299,14 +297,19 @@ export async function runGenerationLoop(state, onProgress, shouldStop, { signal,
       errorType: result.errorType || null,
       estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
       estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+      authorizedMaxOutputTokens: maxOutputTokens,
+      conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
       providerUsage: result.usage || null,
       walletConfig,
     });
 
-    if (usageRec.actualCostUsd !== null && usageRec.actualCostUsd !== undefined) {
-      state.actualSpentUsd = Number(((state.actualSpentUsd || 0) + usageRec.actualCostUsd).toFixed(6));
-    } else if (usageRec.estimatedCostUsd !== null && usageRec.estimatedCostUsd !== undefined) {
-      state.estimatedSpentUsd = Number(((state.estimatedSpentUsd || 0) + usageRec.estimatedCostUsd).toFixed(6));
+    const charge = getCumulativeChargeFromUsage(usageRec, bundle.modelBound.costEstimate?.costUsd ?? null);
+    if (charge.unknown) {
+      state.unknownCostCalls = (state.unknownCostCalls || 0) + 1;
+    } else if (charge.source === 'actual') {
+      state.actualSpentUsd = Number(((state.actualSpentUsd || 0) + charge.knownUsd).toFixed(6));
+    } else {
+      state.estimatedSpentUsd = Number(((state.estimatedSpentUsd || 0) + charge.knownUsd).toFixed(6));
     }
     state.lastSnapshotHash = bundle.snapshotHash;
     state.lastUsage = usageRec;
@@ -390,17 +393,30 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
       throw new Error('Bloqueado por contradicciones críticas de universo.');
     }
 
+    const spentSoFar = (state.actualSpentUsd || 0) + (state.estimatedSpentUsd || 0);
+    const budgetCheck = checkGenerationBudget({
+      estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
+      spentSoFarUsd: spentSoFar,
+      maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+      allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+      hasPriorUnknownCost: (state.unknownCostCalls || 0) > 0,
+    });
+    if (!budgetCheck.allowed) {
+      throw new Error(budgetCheck.message);
+    }
+
+    const maxOutputTokens = bundle.modelBound.maxOutputTokens;
     const result = await provider.generate({
       systemPrompt: bundle.modelBound.systemPrompt,
       cacheStrategy: 'off',
       userPrompt: bundle.modelBound.userPrompt,
-      maxOutputTokens: Math.min(bundle.modelBound.maxOutputTokens, Math.round(endingWords * 3.6) + 500),
+      maxOutputTokens,
       temperature: 0.95,
       reasoningEffort: bundle.modelBound.reasoningEffort || '',
       signal,
     });
 
-    await recordUsageEvent({
+    const usageRec = await recordUsageEvent({
       projectId: scope.projectId,
       operation: 'continuation',
       provider: provider.name,
@@ -410,14 +426,34 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
       errorType: result.errorType || null,
       estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
       estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+      authorizedMaxOutputTokens: maxOutputTokens,
+      conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
       providerUsage: result.usage || null,
       walletConfig,
     });
 
-    if (!result.ok) throw new Error(result.errorMessage || 'No se pudo generar el final.');
+    const charge = getCumulativeChargeFromUsage(usageRec, bundle.modelBound.costEstimate?.costUsd ?? null);
+    if (charge.unknown) {
+      state.unknownCostCalls = (state.unknownCostCalls || 0) + 1;
+    } else if (charge.source === 'actual') {
+      state.actualSpentUsd = Number(((state.actualSpentUsd || 0) + charge.knownUsd).toFixed(6));
+    } else {
+      state.estimatedSpentUsd = Number(((state.estimatedSpentUsd || 0) + charge.knownUsd).toFixed(6));
+    }
+    state.lastUsage = usageRec;
+
+    if (!result.ok) {
+      state.updatedAt = new Date().toISOString();
+      await db.put('generationState', state, scope);
+      throw new Error(result.errorMessage || 'No se pudo generar el final.');
+    }
 
     const addition = String(result.text || '').trim();
-    if (wordCount(addition) < 8) throw new Error('La IA devolvió un final demasiado corto. No se modificó el bloque.');
+    if (wordCount(addition) < 8) {
+      state.updatedAt = new Date().toISOString();
+      await db.put('generationState', state, scope);
+      throw new Error('La IA devolvió un final demasiado corto. No se modificó el bloque.');
+    }
     const combined = pending + '\n\n' + addition;
     state.previousPendingText = pending;
     state.pendingText = combined;
@@ -464,23 +500,41 @@ export async function polishPendingBlock(chapterId, editedText, { projectId = ''
       forbiddenCast: state.forbiddenCast || '',
       reactionMode: state.reactionMode !== false,
       originalChapterText: draft,
+      requestedMaxOutputTokens: Math.round(wordCount(draft) * 4.0) + 1600,
       rewriteInstructions: 'EDITOR PASS: polish prose rhythm, voices, subtext, and ensemble collision while preserving the exact events, POV, factual content, and ending. Remove redundant emotional explanation.',
       providerId: provider.name,
       modelId: provider.config?.model || walletConfig.primaryModel,
       walletConfig,
     });
 
+    if (!bundle.canGenerate) {
+      throw new Error('Bloqueado por contradicciones críticas de universo.');
+    }
+
+    const spentSoFar = (state.actualSpentUsd || 0) + (state.estimatedSpentUsd || 0);
+    const budgetCheck = checkGenerationBudget({
+      estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
+      spentSoFarUsd: spentSoFar,
+      maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+      allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+      hasPriorUnknownCost: (state.unknownCostCalls || 0) > 0,
+    });
+    if (!budgetCheck.allowed) {
+      throw new Error(budgetCheck.message);
+    }
+
+    const maxOutputTokens = bundle.modelBound.maxOutputTokens;
     const result = await provider.generate({
       systemPrompt: bundle.modelBound.systemPrompt,
       cacheStrategy: 'off',
       userPrompt: bundle.modelBound.userPrompt,
-      maxOutputTokens: Math.min(bundle.modelBound.maxOutputTokens, Math.round(wordCount(draft) * 4.0) + 1600),
+      maxOutputTokens,
       temperature: 0.85,
       reasoningEffort: bundle.modelBound.reasoningEffort || '',
       signal,
     });
 
-    await recordUsageEvent({
+    const usageRec = await recordUsageEvent({
       projectId: scope.projectId,
       operation: 'chapter_rewrite',
       provider: provider.name,
@@ -490,14 +544,34 @@ export async function polishPendingBlock(chapterId, editedText, { projectId = ''
       errorType: result.errorType || null,
       estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
       estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+      authorizedMaxOutputTokens: maxOutputTokens,
+      conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
       providerUsage: result.usage || null,
       walletConfig,
     });
 
-    if (!result.ok) throw new Error(result.errorMessage || 'No se pudo completar el Editor Pass.');
+    const charge = getCumulativeChargeFromUsage(usageRec, bundle.modelBound.costEstimate?.costUsd ?? null);
+    if (charge.unknown) {
+      state.unknownCostCalls = (state.unknownCostCalls || 0) + 1;
+    } else if (charge.source === 'actual') {
+      state.actualSpentUsd = Number(((state.actualSpentUsd || 0) + charge.knownUsd).toFixed(6));
+    } else {
+      state.estimatedSpentUsd = Number(((state.estimatedSpentUsd || 0) + charge.knownUsd).toFixed(6));
+    }
+    state.lastUsage = usageRec;
+
+    if (!result.ok) {
+      state.updatedAt = new Date().toISOString();
+      await db.put('generationState', state, scope);
+      throw new Error(result.errorMessage || 'No se pudo completar el Editor Pass.');
+    }
 
     const revised = String(result.text || '').trim();
-    if (wordCount(revised) < 60) throw new Error('El Editor Pass devolvió un texto demasiado corto. No se modificó el borrador.');
+    if (wordCount(revised) < 60) {
+      state.updatedAt = new Date().toISOString();
+      await db.put('generationState', state, scope);
+      throw new Error('El Editor Pass devolvió un texto demasiado corto. No se modificó el borrador.');
+    }
     state.previousPendingText = draft;
     state.pendingText = revised;
     state.pendingWarnings = collectPendingWarnings({

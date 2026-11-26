@@ -152,15 +152,17 @@ export async function runSemanticEditorialReview(draftText, {
     estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
     spentSoFarUsd: 0,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
   });
   if (!budget.allowed) {
-    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+    return { ok: false, errorType: 'budget_blocked', reason: budget.reason, error: budget.message };
   }
 
+  const maxOutputTokens = bundle.modelBound.maxOutputTokens;
   const result = await provider.generate({
     systemPrompt: bundle.modelBound.systemPrompt,
     userPrompt: bundle.modelBound.userPrompt,
-    maxOutputTokens: Math.min(bundle.modelBound.maxOutputTokens, 2400),
+    maxOutputTokens,
     temperature: 0.2,
     reasoningEffort: bundle.modelBound.reasoningEffort || '',
     signal,
@@ -176,6 +178,8 @@ export async function runSemanticEditorialReview(draftText, {
     errorType: result.errorType || null,
     estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
     estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
     providerUsage: result.usage || null,
     walletConfig,
   });
@@ -242,15 +246,17 @@ export async function proposePostApprovalContinuity(chapter, {
     estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
     spentSoFarUsd: 0,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
   });
   if (!budget.allowed) {
-    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+    return { ok: false, errorType: 'budget_blocked', reason: budget.reason, error: budget.message };
   }
 
+  const maxOutputTokens = bundle.modelBound.maxOutputTokens;
   const result = await provider.generate({
     systemPrompt: bundle.modelBound.systemPrompt,
     userPrompt: bundle.modelBound.userPrompt,
-    maxOutputTokens: Math.min(bundle.modelBound.maxOutputTokens, 3200),
+    maxOutputTokens,
     temperature: 0.25,
     reasoningEffort: bundle.modelBound.reasoningEffort || '',
     signal,
@@ -266,6 +272,8 @@ export async function proposePostApprovalContinuity(chapter, {
     errorType: result.errorType || null,
     estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
     estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
     providerUsage: result.usage || null,
     walletConfig,
   });
@@ -531,15 +539,17 @@ export async function continueFromAuthorPosition(chapter, {
     estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
     spentSoFarUsd: 0,
     maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+    allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
   });
   if (!budget.allowed) {
-    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+    return { ok: false, errorType: 'budget_blocked', reason: budget.reason, error: budget.message };
   }
 
+  const maxOutputTokens = bundle.modelBound.maxOutputTokens;
   const result = await provider.generate({
     systemPrompt: bundle.modelBound.systemPrompt,
     userPrompt: bundle.modelBound.userPrompt,
-    maxOutputTokens: bundle.modelBound.maxOutputTokens,
+    maxOutputTokens,
     temperature: 1.0,
     reasoningEffort: bundle.modelBound.reasoningEffort || '',
     signal,
@@ -555,6 +565,8 @@ export async function continueFromAuthorPosition(chapter, {
     errorType: result.errorType || null,
     estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
     estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    authorizedMaxOutputTokens: maxOutputTokens,
+    conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
     providerUsage: result.usage || null,
     walletConfig,
   });

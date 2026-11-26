@@ -11,7 +11,7 @@ import { getActiveGenerationState } from '../generation.js';
 import { escapeHtml, toast, bus, copyTextToClipboard, openModal, closeModal } from '../utils.js';
 import { getStoryConfig } from '../storyConfigSchema.js';
 import { assembleOperationContext } from '../contextEngine.js';
-import { getWalletConfig, checkGenerationBudget, recordUsageEvent } from '../inkyWallet.js';
+import { getWalletConfig, checkGenerationBudget, recordUsageEvent, getCumulativeChargeFromUsage } from '../inkyWallet.js';
 import {
   getCreativeChat,
   saveCreativeChat,
@@ -371,6 +371,9 @@ export async function renderPlanner(root) {
     status.textContent = 'Nueva conversación lista. Tus capítulos y canon no cambiaron.';
   });
 
+  let chatSpentUsd = 0;
+  let chatUnknownCostCalls = 0;
+
   send.addEventListener('click', async () => {
     const question = input.value.trim();
     if (busy || !question) return;
@@ -403,25 +406,26 @@ export async function renderPlanner(root) {
 
       const budgetCheck = checkGenerationBudget({
         estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
-        spentSoFarUsd: 0,
+        spentSoFarUsd: chatSpentUsd,
         maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+        allowUnknownCostOverride: walletConfig.allowUnknownCostOverride === true,
+        hasPriorUnknownCost: chatUnknownCostCalls > 0,
       });
       if (!budgetCheck.allowed) {
         throw new Error(budgetCheck.message);
       }
 
-      const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
-      const modelLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
+      const maxOutputTokens = bundle.modelBound.maxOutputTokens;
       const result = await provider.generate({
         systemPrompt: bundle.modelBound.systemPrompt,
         userPrompt: bundle.modelBound.userPrompt,
-        maxOutputTokens: Math.min(modelLimit, walletConfig.maxOutputTokensPerRequest || modelLimit, reasoningModel ? 4200 : 1800),
+        maxOutputTokens,
         temperature: 0.9,
         reasoningEffort: bundle.modelBound.reasoningEffort || '',
         signal: activeController.signal,
       });
 
-      await recordUsageEvent({
+      const usageRec = await recordUsageEvent({
         projectId,
         operation: 'creative_chat',
         provider: provider.name,
@@ -431,9 +435,18 @@ export async function renderPlanner(root) {
         errorType: result.errorType || null,
         estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
         estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+        authorizedMaxOutputTokens: maxOutputTokens,
+        conservativeEstimatedCostUsd: bundle.modelBound.costEstimate?.costUsd ?? null,
         providerUsage: result.usage || null,
         walletConfig,
       });
+
+      const charge = getCumulativeChargeFromUsage(usageRec, bundle.modelBound.costEstimate?.costUsd ?? null);
+      if (charge.unknown) {
+        chatUnknownCostCalls += 1;
+      } else {
+        chatSpentUsd = Number((chatSpentUsd + charge.knownUsd).toFixed(6));
+      }
 
       if (!result.ok) throw new Error(result.errorMessage || 'La IA no pudo responder.');
       messages = [
