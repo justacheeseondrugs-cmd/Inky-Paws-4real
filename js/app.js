@@ -302,8 +302,61 @@ async function initWorkspaces() {
 function switchView(name) { bus.emit('view-changing', name); document.querySelectorAll('.view').forEach((v) => v.classList.remove('active')); document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === name)); const el = document.getElementById('view-' + name); el.classList.add('active'); localStorage.setItem('pts_last_view', name); VIEWS[name](el); }
 function initNav() { document.getElementById('tabbar').addEventListener('click', (e) => { const btn = e.target.closest('.tab-btn'); if (!btn) return; switchView(btn.dataset.view); }); bus.on('navigate', (name) => switchView(name)); }
 async function initServiceWorker() { if ('serviceWorker' in navigator) { try { await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }); } catch { } } }
+function showDbBlockedBanner(message) {
+  let banner = document.getElementById('db-blocked-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'db-blocked-banner';
+    banner.className = 'card context-guard-item context-guard-warning';
+    banner.style.cssText = 'position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:9999; max-width:560px; width:calc(100% - 24px); box-shadow:0 8px 24px rgba(0,0,0,.15);';
+    document.body.appendChild(banner);
+  }
+  banner.innerHTML = '';
+  const title = document.createElement('b');
+  title.textContent = '⏳ Actualización de base de datos en espera';
+  const body = document.createElement('div');
+  body.style.marginTop = '4px';
+  body.textContent = message || 'Hay otra pestaña abierta de Inky Paws con una versión anterior. Cierra las demás pestañas de Inky Paws para completar la actualización sin perder tus datos.';
+  const row = document.createElement('div');
+  row.className = 'btn-row';
+  row.style.marginTop = '8px';
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.id = 'db-blocked-retry-btn';
+  retry.className = 'btn btn-primary btn-sm';
+  retry.textContent = '🔄 Reintentar conexión';
+  retry.addEventListener('click', () => {
+    db.resetConnection();
+    boot();
+  });
+  row.appendChild(retry);
+  banner.appendChild(title);
+  banner.appendChild(body);
+  banner.appendChild(row);
+}
+
+function hideDbBlockedBanner() {
+  document.getElementById('db-blocked-banner')?.remove();
+}
+
+window.addEventListener('inky-db-blocked', (ev) => {
+  showDbBlockedBanner(ev?.detail?.message);
+});
+window.addEventListener('inky-db-unblocked', () => {
+  hideDbBlockedBanner();
+});
+window.addEventListener('inky-db-versionchange', () => {
+  toast('Se detectó una versión más reciente de Inky Paws en otra pestaña. Recarga esta pestaña cuando quieras continuar.', { ms: 9000 });
+});
+
 async function boot() {
-  await db.openDb();
+  try {
+    await db.openDb();
+    hideDbBlockedBanner();
+  } catch (err) {
+    showDbBlockedBanner('No se pudo abrir la base de datos local (' + (err?.message || err) + '). Cierra otras pestañas de Inky Paws y pulsa «Reintentar conexión». Tus datos no se han modificado.');
+    return;
+  }
   const kaelCreated = await ensureKaelAuWorkspace(db);
   if (kaelCreated) db.setActiveProjectId(KAEL_AU_PROJECT.id);
   let violetCreated = null;
