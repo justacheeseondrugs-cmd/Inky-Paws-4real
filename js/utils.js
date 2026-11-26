@@ -5,6 +5,16 @@ export function wordCount(text) {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+export function contentFingerprint(text) {
+  const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `v1:${wordCount(normalized)}:${normalized.length}:${hash.toString(16).padStart(8, '0')}`;
+}
+
 export function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',

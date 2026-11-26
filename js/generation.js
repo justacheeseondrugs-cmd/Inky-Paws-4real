@@ -10,7 +10,7 @@
 // mucho la recuperación fiable sin un backend propio).
 
 import { db } from './db.js';
-import { getProvider } from './providers/index.js';
+import { getProvider, getModelOutputLimit } from './providers/index.js';
 import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
 import { wordCount } from './utils.js';
@@ -343,6 +343,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop, { signal 
 
     onProgress?.({ phase: 'requesting', state });
 
+    const modelOutputLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
     const result = await provider.generate({
       systemPrompt,
       stableSystemPrompt: promptParts.stablePrompt,
@@ -350,7 +351,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop, { signal 
       cacheStrategy: 'reuse',
       cacheKey: 'inky-paws:' + String(state.chapterId || '').slice(0, 50),
       userPrompt,
-      maxOutputTokens: Math.min(120000, Math.round(thisBlockTarget * 3.6) + (fullChapterMode ? 1800 : 700)),
+      maxOutputTokens: Math.min(modelOutputLimit, Math.round(thisBlockTarget * 3.6) + (fullChapterMode ? 1800 : 700)),
       temperature: 1.0,
       signal,
     });
@@ -488,6 +489,7 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   });
   const systemPrompt = [endingPromptParts.stablePrompt, endingPromptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
 
+  const modelOutputLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
   const result = await provider.generate({
     systemPrompt,
     // "Add an ending" is normally a one-off request: never pay to cache-write
@@ -500,7 +502,7 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
       '</TEXT_ALREADY_WRITTEN>',
       'Return ONLY the new ending prose to append. No heading, preface, recap, commentary or duplicated sentences.'
     ].join('\n\n'),
-    maxOutputTokens:Math.round(endingWords * 3.6) + 500,
+    maxOutputTokens: Math.min(modelOutputLimit, Math.round(endingWords * 3.6) + 500),
     temperature:0.95,
     signal,
   });
@@ -618,6 +620,7 @@ export async function polishPendingBlock(chapterId, editedText, { projectId = ''
     ].filter(Boolean).join('\n\n')
   });
 
+  const modelOutputLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
   const result = await provider.generate({
     systemPrompt:[promptParts.stablePrompt,promptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n'),
     cacheStrategy:'off',
@@ -628,7 +631,7 @@ export async function polishPendingBlock(chapterId, editedText, { projectId = ''
       '</DRAFT>',
       'Return only the complete edited prose. No notes, headings, explanations, change log or preface.'
     ].join('\n\n'),
-    maxOutputTokens:Math.min(120000,Math.round(wordCount(draft) * 4.0) + 1600),
+    maxOutputTokens: Math.min(modelOutputLimit, Math.round(wordCount(draft) * 4.0) + 1600),
     temperature:0.85,
     signal,
   });

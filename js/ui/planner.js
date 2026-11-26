@@ -2,7 +2,7 @@
 // The conversation is stored per workspace in the existing settings store.
 // It never writes to chapters, character profiles or continuity memory.
 import { db } from '../db.js';
-import { getProvider } from '../providers/index.js';
+import { getProvider, getModelOutputLimit } from '../providers/index.js';
 import { getRelevantChunks } from '../retrieval.js';
 import { getActiveGenerationState } from '../generation.js';
 import { escapeHtml, toast, bus, copyTextToClipboard } from '../utils.js';
@@ -202,10 +202,11 @@ export async function renderPlanner(root) {
       ].filter(Boolean).join('\n\n====\n\n');
       const provider = getProvider(settings);
       const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
+      const modelLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
       const result = await provider.generate({
         systemPrompt: SYSTEM,
         userPrompt,
-        maxOutputTokens: reasoningModel ? 4200 : 1800,
+        maxOutputTokens: Math.min(modelLimit, reasoningModel ? 4200 : 1800),
         temperature: 1,
         signal: activeController.signal,
       });

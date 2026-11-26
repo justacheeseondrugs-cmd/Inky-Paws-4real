@@ -1,12 +1,12 @@
 import { db } from './db.js';
-import { getProvider } from './providers/index.js';
+import { getProvider, getModelOutputLimit } from './providers/index.js';
 import { assembleSystemPrompt } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
 import { isLikelyInvalidProse } from './providers/base.js';
 import { chaptersBefore, memoriesForChapters } from './timeline.js';
 import { selectSmartMemories, canonQueryBoost } from './smartContext.js';
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
-import { wordCount } from './utils.js';
+import { wordCount, contentFingerprint } from './utils.js';
 
 const MEMORY_FIELDS = [
   ['EVENTS', 'events'],
@@ -20,11 +20,23 @@ const MEMORY_FIELDS = [
 
 const SHORTEN_REQUEST_RX = /\b(acort\w*|resum\w*|recort\w*|condens\w*|reduc\w*|breve|shorter|shorten\w*|trim\w*|condens\w*|cut\b|brief)\b/i;
 
-export function computeRewriteMaxOutputTokens(originalText, model = '') {
+export function getRewriteOutputPlan(originalText, model = '', providerId = '') {
   const originalWords = wordCount(originalText);
   const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(String(model || ''));
-  const proseBudget = Math.max(4000, Math.round(originalWords * 3.8) + 2000);
-  return Math.min(120000, proseBudget + (reasoningModel ? 3200 : 0));
+  const proseBudget = Math.max(3200, Math.round(originalWords * 3.6) + 1600);
+  const desiredTokens = proseBudget + (reasoningModel ? 3200 : 0);
+  const modelMaxOutput = getModelOutputLimit(providerId, model);
+  const maxOutputTokens = Math.min(modelMaxOutput, desiredTokens);
+  return {
+    maxOutputTokens,
+    modelMaxOutput,
+    desiredTokens,
+    mayNeedContinuation: desiredTokens > modelMaxOutput,
+  };
+}
+
+export function computeRewriteMaxOutputTokens(originalText, model = '', providerId = '') {
+  return getRewriteOutputPlan(originalText, model, providerId).maxOutputTokens;
 }
 
 function normalizeMemoryValue(value) {
@@ -88,7 +100,8 @@ export async function generateContinuityMemory(chapter, { signal } = {}) {
   // En modelos de razonamiento, max_completion_tokens incluye también los
   // tokens de razonamiento; 900 puede agotarse antes de devolver el JSON.
   const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: reasoningModel ? 4800 : 1400, temperature: 0.3, signal });
+  const modelLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
+  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: Math.min(modelLimit, reasoningModel ? 4800 : 1400), temperature: 0.3, signal });
   if (!result.ok) return { ok: false, error: result.errorMessage || 'No se pudo generar la memoria de continuidad.' };
   const fields = parseMemoryResponse(result.text);
   if (!Object.values(fields).some((value) => String(value || '').trim())) {
@@ -102,6 +115,10 @@ export async function generateContinuityMemory(chapter, { signal } = {}) {
     chapterTitle: chapter.title,
     projectId,
     ...fields,
+    stale: false,
+    staleReason: '',
+    staleAt: null,
+    sourceChapterRevision: contentFingerprint(chapter.content),
     createdAt: new Date().toISOString(),
   };
   const saved = await db.put('memoryEntries', entry, scope);
@@ -109,11 +126,7 @@ export async function generateContinuityMemory(chapter, { signal } = {}) {
   return { ok: true, entry: saved };
 }
 
-export async function rewriteChapter(chapter, rewriteInstructions, { signal } = {}) {
-  const projectId = chapter?.projectId || db.getActiveProjectId();
-  const scope = { projectId };
-  const settings = (await db.get('settings', 'main')) || {};
-  const provider = getProvider(settings);
+async function buildRewriteContext(chapter, rewriteInstructions, scope) {
   const [lockedFacts, characters, memoryEntries, canonNotes, documents, allChunks, chapters] = await Promise.all([
     db.getAll('lockedFacts', scope), db.getAll('characters', scope), db.getAll('memoryEntries', scope),
     db.getAll('canonNotes', scope), db.getAll('documents', scope), db.getAll('docChunks', scope),
@@ -135,16 +148,54 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal } = 
   });
   const previousEnding = getPreviousChapterEnding(priorChapters, chapter.id, 3200);
   const retrievedChunks = getRelevantChunks(documents.filter((d) => d.type !== 'STYLE_ONLY'), allChunks, continuityQuery, { context: 'rewrite' });
+  return { lockedFacts, characters, selectedMemories, canonNotes, previousEnding, storyExcerpts, retrievedChunks };
+}
+
+function evaluateRewriteResult(rewritten, originalWords, rewriteInstructions, providerResult, plan) {
+  const rewrittenWords = wordCount(rewritten);
+  const providerTruncated = providerResult.truncated === true || ['length', 'MAX_TOKENS', 'max_output_tokens'].includes(String(providerResult.finishReason || ''));
+  const suspiciouslyShort = originalWords >= 600 &&
+    rewrittenWords < Math.round(originalWords * 0.45) &&
+    !SHORTEN_REQUEST_RX.test(String(rewriteInstructions || ''));
+  const warnings = [];
+  if (providerTruncated) {
+    warnings.push(`El proveedor alcanzó su límite de salida (${plan.modelMaxOutput} tokens) y la respuesta quedó incompleta. Usa «Continuar reescritura» para completarla sin perder este texto.`);
+  }
+  if (suspiciouslyShort) {
+    warnings.push(`El borrador reescrito (${rewrittenWords} palabras) es mucho más corto que el original (${originalWords} palabras) y podría faltar parte del capítulo.`);
+  }
+  return {
+    rewrittenWords,
+    providerTruncated,
+    suspiciouslyShort,
+    incomplete: providerTruncated || suspiciouslyShort,
+    warnings,
+  };
+}
+
+export async function rewriteChapter(chapter, rewriteInstructions, { signal } = {}) {
+  const projectId = chapter?.projectId || db.getActiveProjectId();
+  const scope = { projectId };
+  const settings = (await db.get('settings', 'main')) || {};
+  const provider = getProvider(settings);
+  const ctx = await buildRewriteContext(chapter, rewriteInstructions, scope);
   const originalWords = wordCount(chapter.content);
-  const maxOutputTokens = computeRewriteMaxOutputTokens(chapter.content, provider.config?.model || '');
+  const baseContentHash = contentFingerprint(chapter.content);
+  const baseUpdatedAt = String(chapter.updatedAt || '');
+  const plan = getRewriteOutputPlan(chapter.content, provider.config?.model || '', provider.name);
   const systemPrompt = assembleSystemPrompt({
-    lockedFacts,
+    lockedFacts: ctx.lockedFacts,
     chapterInstructions: `Vas a REESCRIBIR un capítulo existente según instrucciones del autor. Instrucciones de reescritura: ${rewriteInstructions}`,
-    characters, memoryEntries: selectedMemories, canonNotes, recentChapterExcerpt: previousEnding.text, storyExcerpts, retrievedChunks,
+    characters: ctx.characters,
+    memoryEntries: ctx.selectedMemories,
+    canonNotes: ctx.canonNotes,
+    recentChapterExcerpt: ctx.previousEnding.text,
+    storyExcerpts: ctx.storyExcerpts,
+    retrievedChunks: ctx.retrievedChunks,
     extraGuidance: `Devuelve el capítulo reescrito COMPLETO (~${Math.max(originalWords, 300)} palabras), en prosa, sin omitir escenas no modificadas ni añadir comentarios meta o explicaciones fuera del propio texto narrativo.`,
   });
   const userPrompt = `CAPÍTULO ORIGINAL (${originalWords} palabras):\n\n${chapter.content}\n\n---\n\nReescribe este capítulo completo aplicando las instrucciones indicadas, conservando intactas las escenas que no se pidió cambiar.`;
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens, temperature: 1.0, signal });
+  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: plan.maxOutputTokens, temperature: 1.0, signal });
   if (!result.ok) {
     return {
       ok: false,
@@ -156,27 +207,86 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal } = 
   if (isLikelyInvalidProse(rewritten)) {
     return { ok: false, error: 'La reescritura no devolvió prosa válida; no se guardó ningún cambio.' };
   }
-  const rewrittenWords = wordCount(rewritten);
-  const providerTruncated = result.truncated === true || ['length', 'MAX_TOKENS', 'max_output_tokens'].includes(String(result.finishReason || ''));
-  const suspiciouslyShort = originalWords >= 600 &&
-    rewrittenWords < Math.round(originalWords * 0.45) &&
-    !SHORTEN_REQUEST_RX.test(String(rewriteInstructions || ''));
-  const warnings = [];
-  if (providerTruncated) {
-    warnings.push('El proveedor indicó que la respuesta alcanzó el límite de salida y quedó incompleta.');
-  }
-  if (suspiciouslyShort) {
-    warnings.push(`El borrador reescrito (${rewrittenWords} palabras) es mucho más corto que el original (${originalWords} palabras) y podría faltar parte del capítulo.`);
-  }
+  const check = evaluateRewriteResult(rewritten, originalWords, rewriteInstructions, result, plan);
   return {
     ok: true,
     text: rewritten,
     originalWords,
-    rewrittenWords,
-    truncated: providerTruncated,
-    suspiciouslyShort,
-    incomplete: providerTruncated || suspiciouslyShort,
+    rewrittenWords: check.rewrittenWords,
+    truncated: check.providerTruncated,
+    suspiciouslyShort: check.suspiciouslyShort,
+    incomplete: check.incomplete,
     finishReason: result.finishReason || null,
-    warnings,
+    warnings: check.warnings,
+    modelMaxOutput: plan.modelMaxOutput,
+    mayNeedContinuation: plan.mayNeedContinuation,
+    baseContentHash,
+    baseUpdatedAt,
+  };
+}
+
+export async function continueRewriteDraft(chapter, rewriteInstructions, draftSoFar, { signal } = {}) {
+  const projectId = chapter?.projectId || db.getActiveProjectId();
+  const scope = { projectId };
+  const existingDraft = String(draftSoFar || '').trim();
+  if (wordCount(existingDraft) < 15) {
+    return { ok: false, error: 'No hay suficiente borrador previo para continuar la reescritura.' };
+  }
+  const settings = (await db.get('settings', 'main')) || {};
+  const provider = getProvider(settings);
+  const ctx = await buildRewriteContext(chapter, rewriteInstructions, scope);
+  const originalWords = wordCount(chapter.content);
+  const remainingWords = Math.max(400, originalWords - wordCount(existingDraft) + 300);
+  const plan = getRewriteOutputPlan('w '.repeat(remainingWords), provider.config?.model || '', provider.name);
+  const systemPrompt = assembleSystemPrompt({
+    lockedFacts: ctx.lockedFacts,
+    chapterInstructions: `Vas a CONTINUAR una reescritura incompleta de un capítulo existente. Instrucciones originales de reescritura: ${rewriteInstructions}`,
+    characters: ctx.characters,
+    memoryEntries: ctx.selectedMemories,
+    canonNotes: ctx.canonNotes,
+    recentChapterExcerpt: ctx.previousEnding.text,
+    storyExcerpts: ctx.storyExcerpts,
+    retrievedChunks: ctx.retrievedChunks,
+    extraGuidance: 'Devuelve ÚNICAMENTE la continuación que falta desde la última palabra/frase de <REWRITE_SO_FAR> hasta completar el final del capítulo original. No repitas párrafos ya reescritos, ni añadas encabezados o comentarios.',
+  });
+  const userPrompt = [
+    `CAPÍTULO ORIGINAL COMPLETO (${originalWords} palabras):`,
+    '<ORIGINAL_CHAPTER>',
+    chapter.content,
+    '</ORIGINAL_CHAPTER>',
+    'PARTE YA REESCRITA (NO repetir; continuar exactamente desde el final):',
+    '<REWRITE_SO_FAR>',
+    existingDraft.slice(-55000),
+    '</REWRITE_SO_FAR>',
+    'Continúa la reescritura exactamente donde se cortó y completa el resto del capítulo.',
+  ].join('\n\n');
+
+  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: plan.maxOutputTokens, temperature: 1.0, signal });
+  if (!result.ok) {
+    return {
+      ok: false,
+      errorType: result.errorType || 'http',
+      error: result.errorMessage || 'No se pudo continuar la reescritura.',
+    };
+  }
+  const addition = String(result.text || '').trim();
+  if (isLikelyInvalidProse(addition)) {
+    return { ok: false, error: 'La continuación no devolvió prosa válida; tu borrador parcial sigue intacto.' };
+  }
+  const combined = existingDraft + '\n\n' + addition;
+  const check = evaluateRewriteResult(combined, originalWords, rewriteInstructions, result, plan);
+  return {
+    ok: true,
+    text: combined,
+    addition,
+    originalWords,
+    rewrittenWords: check.rewrittenWords,
+    truncated: check.providerTruncated,
+    suspiciouslyShort: check.suspiciouslyShort,
+    incomplete: check.incomplete,
+    finishReason: result.finishReason || null,
+    warnings: check.warnings,
+    modelMaxOutput: plan.modelMaxOutput,
+    mayNeedContinuation: plan.mayNeedContinuation,
   };
 }
