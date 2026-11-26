@@ -106,7 +106,7 @@ export function selectSmartMemories(memoryEntries, queryText, {
   recentCount = 4,
 } = {}) {
   const chronological = (memoryEntries || []).filter(Boolean).slice()
-    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+    .sort((a, b) => Number.isFinite(a.chapterOrder) && Number.isFinite(b.chapterOrder) ? a.chapterOrder - b.chapterOrder : String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const total = chronological.length;
   const counts = queryCounts(queryText);
   const scoreOf = (memory) => scoreSmartText(memoryText(memory), counts);
