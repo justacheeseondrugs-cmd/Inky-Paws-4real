@@ -185,7 +185,7 @@ def main():
                 cfgPreserved: cfgA?.fandom === 'power_to_strive',
               };
             }''')
-            assert v3_check['version'] == 3 and all(v3_check.values()), f'v2->v3 upgrade check failed: {v3_check}'
+            assert v3_check['version'] >= 3 and all(v3_check.values()), f'v2->v3+ upgrade check failed: {v3_check}'
 
             # ------------------------------------------------------------------
             # TEST 2: Spanish Memory UI — Epistemic fact, false belief, qualitative relationship,
@@ -339,7 +339,7 @@ def main():
               const relsA = await db.getAll('relationshipStates', { projectId: 'story-m3-a' });
               const arcsA = await db.getAll('arcSummaries', { projectId: 'story-m3-a' });
               return {
-                metaV3: dump.__meta.version === DB_VERSION && dump.__meta.schemaVersion === 3,
+                metaV3: dump.__meta.version === DB_VERSION && dump.__meta.schemaVersion === DB_VERSION,
                 derivedExcludedByDefault: dump.__meta.derivedIndexesExcluded === true && !('lexicalIndexes' in dump),
                 crossChapterBeliefInvalidated: staleRes.knowledgeFacts >= 1 && fAfter?.stale === true && fAfter?.beliefHistoryByCharacter?.['hange@room']?.[0]?.stale === true,
                 lexicalIndexInvalidatedAtomically: Boolean(beforeIdx) && afterIdx === null,

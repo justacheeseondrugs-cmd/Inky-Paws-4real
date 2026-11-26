@@ -41,6 +41,7 @@ import {
   searchLexicalIndex,
   tokenizeForBm25,
 } from './lexicalIndex.js';
+import { partitionStoryReferences } from './referenceRoles.js';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -480,6 +481,8 @@ export function assembleHierarchicalMemory({
   targetSceneOrder = null,
   targetChapterId = null,
   currentCheckpoint = '',
+  activeTimelineId = '',
+  fandom = '',
   query = '',
   characterVersion = 'room',
   activeCharacterIds = [],
@@ -638,15 +641,18 @@ export function assembleHierarchicalMemory({
       })
     : [];
 
+  const partitionedRefs = partitionStoryReferences(documents, { activeTimelineId, fandom });
+  const eligibleDocumentIds = new Set(partitionedRefs.factualDocuments.map((d) => d.id));
   let docHits = [];
-  if (query && (documentLexicalIndex || (documents?.length && docChunks?.length))) {
+  if (query && eligibleDocumentIds.size > 0 && (documentLexicalIndex || (partitionedRefs.factualDocuments.length && docChunks?.length))) {
     let dIdx = documentLexicalIndex;
     const dIdxFresh = Boolean(dIdx && isDocumentLexicalIndexFresh(dIdx, documents, docChunks));
     if (!dIdxFresh) {
-      dIdx = buildDocumentLexicalIndex(documents, docChunks, { projectId: effectiveProject });
+      dIdx = buildDocumentLexicalIndex(partitionedRefs.factualDocuments, docChunks, { projectId: effectiveProject });
     }
     docHits = searchLexicalIndex(dIdx, query, {
       topK: maxDocPassages,
+      eligibleDocumentIds,
       excludeDocTypes: ['STYLE_ONLY'],
       maxPerChapter: 2,
     });
@@ -1103,6 +1109,9 @@ export function assembleHierarchicalMemory({
       ...ambiguousArcsExcluded,
     ],
     alternativeSourcesExcluded: epistemic.alternativeExcluded,
+    excludedReferencesByTimeline: partitionedRefs.excludedByTimeline,
+    excludedReferencesByFandom: partitionedRefs.excludedByFandom,
+    excludedStyleOnlyCount: partitionedRefs.styleOnlyDocuments.length,
     chapterIndexValidatedFresh: chIndexFresh,
   };
 

@@ -139,14 +139,25 @@ export async function renderWrite(root) {
     persistFormDraftNow();
   };
 
-  // An explicitly chosen brainstorm suggestion is persisted into the writing
-  // form draft BEFORE deleting plannerDraft, so switching tabs never loses it.
+  // An explicitly chosen brainstorm suggestion or approved Chapter Brief is
+  // persisted into the writing form draft BEFORE deleting plannerDraft.
   if (plannerDraft?.text && !active) {
     root.querySelector('#w-instructions').value = plannerDraft.text;
+    if (plannerDraft.title && !root.querySelector('#w-title').value.trim()) {
+      root.querySelector('#w-title').value = plannerDraft.title;
+    }
+    if (plannerDraft.requiredEnding && !root.querySelector('#w-ending').value.trim()) {
+      root.querySelector('#w-ending').value = plannerDraft.requiredEnding;
+    }
+    if (plannerDraft.targetWords && root.querySelector(`#w-words option[value="${plannerDraft.targetWords}"]`)) {
+      root.querySelector('#w-words').value = String(plannerDraft.targetWords);
+    }
     const mergedDraft = captureWriteFormDraft(root, projectId);
     if (mergedDraft) await db.put('settings', mergedDraft);
     await db.del('settings', plannerDraft.id);
-    toast('Idea de planificación lista para revisar en las instrucciones.');
+    toast(plannerDraft.briefId
+      ? 'Brief de Capítulo aprobado listo para revisar en Escribir.'
+      : 'Idea de planificación lista para revisar en las instrucciones.');
   }
 
   const formCard = root.querySelector('#write-form-card');
