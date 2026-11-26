@@ -10,9 +10,10 @@ import { chaptersBefore, memoriesForChapters } from '../js/timeline.js';
 import { getRelevantStoryExcerpts, chapterNumberFromTitle, isPrologueTitle } from '../js/storyRecall.js';
 import { buildContinuityBlock, buildDocumentsBlock } from '../js/canonGuard.js';
 import { buildAuthorGuidance } from '../js/authorBrain.js';
-import { computeRewriteMaxOutputTokens, parseMemoryResponse } from '../js/memoryEngine.js';
+import { computeRewriteMaxOutputTokens, getRewriteOutputPlan, parseMemoryResponse } from '../js/memoryEngine.js';
 import { findForbiddenCastLeaks } from '../js/generation.js';
-import { debounce } from '../js/utils.js';
+import { debounce, contentFingerprint } from '../js/utils.js';
+import { getModelOutputLimit } from '../js/providers/index.js';
 import { GeminiProvider } from '../js/providers/gemini.js';
 import { OpenAIProvider } from '../js/providers/openai.js';
 import { OpenRouterFreeProvider } from '../js/providers/openrouter.js';
@@ -41,33 +42,98 @@ function walkJsFiles(dir) {
     assert.ok(swText.includes(`'${rel}'`), `Missing ${rel} in sw.js SHELL precache list`);
   }
   assert.ok(swText.includes('ignoreSearch: true'), 'sw.js must support ignoreSearch fallback for cached upgrades');
+  assert.ok(swText.includes('OWNED_CACHE_PREFIXES') && swText.includes('isOwnedCache'), 'sw.js must restrict cache cleanup to Inky Paws cache prefixes');
 }
 
-// 2. Backup schema validation
+// 2. Backup schema validation (duplicate IDs, malformed records, schema versions, full vs partial)
 {
   assert.throws(() => validateBackupDump(null));
   assert.throws(() => validateBackupDump([]));
   assert.throws(() => validateBackupDump({}));
-  assert.throws(() => validateBackupDump({ __meta: { app: 'other-app' }, chapters: [] }));
+  assert.throws(() => validateBackupDump({ __meta: { app: 'other-app', version: 1 }, chapters: [] }));
+  assert.throws(() => validateBackupDump({ __meta: { app: 'pts-studio', version: 99 }, chapters: [] }), 'Unsupported future schema version must fail');
+  assert.throws(() => validateBackupDump({ __meta: { app: 'pts-studio', version: 0 }, chapters: [] }), 'Unsupported version 0 must fail');
+  assert.throws(() => validateBackupDump({ __meta: { app: 'pts-studio', version: 'bad' }, chapters: [] }), 'Non-numeric version must fail');
   assert.throws(() => validateBackupDump({ chapters: 'not-an-array' }));
   assert.throws(() => validateBackupDump({ chapters: [{ title: 'missing id' }] }));
   assert.throws(() => validateBackupDump({ chapters: [{ id: '   ' }] }));
-  const ok = validateBackupDump({
-    __meta: { app: 'pts-studio' },
+  assert.throws(() => validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
+    chapters: [{ id: 'dup-1', title: 'A' }, { id: 'dup-1', title: 'B' }],
+  }), 'Duplicate IDs in a store must be rejected');
+  assert.throws(() => validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
+    chapters: [{ id: 'ch1', versions: 'not-an-array' }],
+  }), 'Malformed chapter.versions must be rejected');
+  assert.throws(() => validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
+    docChunks: [{ id: 'chunk1', text: 'missing documentId' }],
+  }), 'Malformed docChunk without documentId must be rejected');
+  assert.throws(() => validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
+    memoryEntries: [{ id: 'm1', events: 'missing chapterId' }],
+  }), 'Malformed memoryEntry without chapterId must be rejected');
+  assert.throws(() => validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
+    lockedFacts: [{ id: 'lf1', text: 123 }],
+  }), 'Malformed lockedFact with non-string text must be rejected');
+  assert.throws(() => validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
+    settings: [{ id: 'main', apiKeys: ['invalid'] }],
+  }), 'Malformed settings.apiKeys must be rejected');
+
+  const partial = validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
     chapters: [{ id: 'ch1', title: 'Chapter 1' }],
     settings: [{ id: 'main', provider: 'openai' }],
   });
-  assert.deepEqual(ok.targetStores, ['chapters', 'settings']);
+  assert.deepEqual(partial.targetStores, ['chapters', 'settings']);
+  assert.equal(partial.isFull, false);
+  assert.equal(partial.backupKind, 'partial');
+  assert.ok(partial.missingStores.length > 0);
+
+  const full = validateBackupDump({
+    __meta: { app: 'pts-studio', version: 1 },
+    chapters: [{ id: 'ch1', title: 'Chapter 1' }],
+    characters: [],
+    documents: [],
+    docChunks: [],
+    memoryEntries: [],
+    lockedFacts: [],
+    canonNotes: [],
+    generationState: [],
+    settings: [{ id: 'main', provider: 'openai' }],
+  });
+  assert.equal(full.isFull, true);
+  assert.equal(full.backupKind, 'full');
+  assert.deepEqual(full.missingStores, []);
 }
 
-// 3. Rewrite dynamic token budget (no 4k truncation on 5k-7k+ chapters)
+// 3. Provider-aware rewrite output budgets & content fingerprinting
 {
-  const words3k = computeRewriteMaxOutputTokens('word '.repeat(3000), 'gpt-5.4-mini');
-  const words7k = computeRewriteMaxOutputTokens('word '.repeat(7000), 'gpt-5.4-mini');
-  const words7kGemini = computeRewriteMaxOutputTokens('word '.repeat(7000), 'gemini-2.5-flash');
-  assert.ok(words3k >= 13000, `3k chapter budget too small: ${words3k}`);
-  assert.ok(words7k >= 28000, `7k chapter budget too small: ${words7k}`);
-  assert.ok(words7kGemini >= 28000, `7k Gemini budget too small: ${words7kGemini}`);
+  assert.equal(getModelOutputLimit('gemini', 'gemini-2.0-flash'), 8192);
+  assert.equal(getModelOutputLimit('gemini', 'gemini-2.5-flash'), 65536);
+  assert.equal(getModelOutputLimit('openrouter', 'openrouter/free'), 8192);
+  assert.equal(getModelOutputLimit('openai', 'gpt-4o'), 16384);
+  assert.equal(getModelOutputLimit('openai', 'gpt-4.1'), 32768);
+  assert.equal(getModelOutputLimit('openai', 'gpt-5.4-mini'), 65536);
+  assert.equal(getModelOutputLimit('openai', 'gpt-4'), 4096);
+
+  const words3k = computeRewriteMaxOutputTokens('word '.repeat(3000), 'gpt-5.4-mini', 'openai');
+  const words7k = computeRewriteMaxOutputTokens('word '.repeat(7000), 'gpt-5.4-mini', 'openai');
+  const words7kGemini25 = computeRewriteMaxOutputTokens('word '.repeat(7000), 'gemini-2.5-flash', 'gemini');
+  const plan7kGemini20 = getRewriteOutputPlan('word '.repeat(7000), 'gemini-2.0-flash', 'gemini');
+  const plan7kOpenRouter = getRewriteOutputPlan('word '.repeat(7000), 'openrouter/free', 'openrouter');
+  assert.ok(words3k >= 13000 && words3k <= 65536, `3k chapter budget out of bounds: ${words3k}`);
+  assert.ok(words7k >= 28000 && words7k <= 65536, `7k chapter budget out of bounds: ${words7k}`);
+  assert.ok(words7kGemini25 >= 28000 && words7kGemini25 <= 65536, `7k Gemini 2.5 budget out of bounds: ${words7kGemini25}`);
+  assert.equal(plan7kGemini20.maxOutputTokens, 8192, 'Gemini 2.0 Flash must cap at 8192 tokens');
+  assert.equal(plan7kGemini20.mayNeedContinuation, true, '7k chapter on Gemini 2.0 Flash must flag continuation needed');
+  assert.equal(plan7kOpenRouter.maxOutputTokens, 8192, 'OpenRouter free must cap at 8192 tokens');
+  assert.equal(plan7kOpenRouter.mayNeedContinuation, true);
+
+  assert.equal(contentFingerprint('Line 1\r\nLine 2'), contentFingerprint('Line 1\nLine 2'));
+  assert.notEqual(contentFingerprint('Chapter prose A'), contentFingerprint('Chapter prose B'));
 }
 
 // 4. Timeline chronological filtering (prologues, equal-order tie-breaks, alternatives)

@@ -35,7 +35,7 @@ def main():
             browser = launch_browser(playwright)
 
             # ------------------------------------------------------------------
-            # TEST 1: Fresh install + SW upgrade from stale v43 cache + offline boot
+            # TEST 1: SW cache cleanup isolation + upgrade from stale v43 + offline boot
             # ------------------------------------------------------------------
             ctx1 = browser.new_context(service_workers='allow')
             page1 = ctx1.new_page()
@@ -43,27 +43,42 @@ def main():
             csp_violations = []
             page1.on('pageerror', lambda err: page_errors.append(str(err)))
             page1.on('console', lambda msg: csp_violations.append(msg.text) if 'Content Security Policy' in msg.text else None)
-            # Block external font requests offline cleanly without noise
             page1.route('https://fonts.googleapis.com/**', lambda r: r.fulfill(status=200, content_type='text/css', body=''))
             page1.route('https://fonts.gstatic.com/**', lambda r: r.fulfill(status=200, content_type='font/woff2', body=b''))
 
-            # Simulate previously cached v43 SW cache containing stale timeline.js without memoriesForChapters
-            page1.goto(f'{base_url}/index.html')
-            page1.wait_for_function("() => (document.querySelector('#workspace-select')?.options.length || 0) >= 4")
-            sw_state = page1.evaluate('''async () => {
-              const oldCache = await caches.open('inky-paws-es-v43-your-name-v1');
-              await oldCache.put(
+            # Seed BOTH an unrelated same-origin app cache and an old Inky Paws v43 cache
+            # BEFORE sw.js registers and activates!
+            page1.goto(f'{base_url}/manifest.webmanifest')
+            page1.evaluate('''async () => {
+              const unrelated = await caches.open('unrelated-other-app-v1');
+              await unrelated.put(new Request('/other-app.txt'), new Response('keep me'));
+              const oldInky = await caches.open('inky-paws-es-v43-your-name-v1');
+              await oldInky.put(
                 new Request('/js/timeline.js?v=20260928-chapter-variants-v1'),
                 new Response('export function isMainTimelineChapter(){return true;}', {
                   headers: {'Content-Type': 'application/javascript'}
                 })
               );
+            }''')
+
+            page1.goto(f'{base_url}/index.html')
+            page1.wait_for_function("() => (document.querySelector('#workspace-select')?.options.length || 0) >= 4")
+            sw_state = page1.evaluate('''async () => {
               const reg = await navigator.serviceWorker.ready;
-              await reg.update();
-              // Trigger a clean reload wait via caches check
-              return { active: !!reg.active, keys: await caches.keys() };
+              if (reg.active && reg.active.state !== 'activated') {
+                await new Promise((resolve) => {
+                  const sw = reg.active;
+                  if (sw.state === 'activated') return resolve();
+                  sw.addEventListener('statechange', () => {
+                    if (sw.state === 'activated') resolve();
+                  });
+                });
+              }
+              return { active: !!reg.active, state: reg.active?.state, keys: await caches.keys() };
             }''')
             assert sw_state['active'], 'Service Worker failed to activate'
+            assert 'inky-paws-es-v43-your-name-v1' not in sw_state['keys'], f"Old Inky Paws cache was not cleaned up: {sw_state['keys']}"
+            assert 'unrelated-other-app-v1' in sw_state['keys'], f"SW deleted unrelated same-origin cache! {sw_state['keys']}"
 
             # Reload and verify new SW cache is active and app boots offline cleanly
             page1.reload()
@@ -78,8 +93,9 @@ def main():
             ctx1.close()
 
             # ------------------------------------------------------------------
-            # TEST 2-7: IndexedDB backup safety, rewrite staging, quarantine,
-            #           autosave flush, form drafts, workspace-switch race, XSS & CSP
+            # TEST 2-8: Backup validation & workspace collision guards, provider caps,
+            #           reload-resilient staged rewrites, continuation, conflict
+            #           resolution, stale memory & review, quarantine, races, XSS & CSP
             # ------------------------------------------------------------------
             ctx = browser.new_context(service_workers='block')
             page = ctx.new_page()
@@ -114,6 +130,19 @@ def main():
                                 'finish_reason': 'length',
                                 'message': {
                                     'content': 'Rewritten opening paragraph with deeper Levi interiority and dry tension across the room. ' * 25
+                                }
+                            }]
+                        }),
+                    )
+                elif mode == 'rewrite_continue':
+                    route.fulfill(
+                        status=200,
+                        content_type='application/json',
+                        body=json.dumps({
+                            'choices': [{
+                                'finish_reason': 'stop',
+                                'message': {
+                                    'content': 'Continuation closing paragraphs bringing the chapter seamlessly to its final beat in the quiet hall. ' * 30
                                 }
                             }]
                         }),
@@ -169,44 +198,62 @@ def main():
             page.goto(f'{base_url}/index.html')
             page.wait_for_function("() => (document.querySelector('#workspace-select')?.options.length || 0) >= 4")
 
-            # --- TEST 2: Transactional & validated backup import + local API key preservation ---
+            # --- TEST 2: Strengthened backup validation, full vs partial, & cross-workspace ID collision guards ---
             backup_res = page.evaluate('''async () => {
               const { db } = await import('/js/db.js');
               await db.put('settings', {
                 id: 'main',
                 provider: 'openai',
                 apiKeys: { openai: 'LOCAL-OPENAI-KEY', gemini: 'LOCAL-GEMINI-KEY' },
-                models: { openai: 'gpt-5.4-mini', gemini: 'gemini-2.0-flash' },
+                models: { openai: 'gpt-4o', gemini: 'gemini-2.0-flash' },
                 defaultGenerationMode: 'full_chapter',
                 blockWordSize: 1000,
               });
               db.setActiveProjectId('original');
               await db.put('chapters', { id: 'keep-ch-1', title: 'Chapter 1', content: 'Original prose must survive.', wordCount: 4, order: 0, status: 'finished', versions: [] });
 
-              // Invalid imports must fail BEFORE touching existing data
-              for (const bad of [null, [], {}, { __meta: { app: 'evil' }, chapters: [] }, { chapters: 'nope' }, { chapters: [{ title: 'no id' }] }]) {
+              // Invalid imports (including duplicate IDs, unsupported version, malformed records, and partial under merge:false)
+              const invalidDumps = [
+                null,
+                [],
+                {},
+                { __meta: { app: 'evil', version: 1 }, chapters: [] },
+                { __meta: { app: 'pts-studio', version: 99 }, chapters: [] },
+                { chapters: 'nope' },
+                { chapters: [{ title: 'no id' }] },
+                { __meta: { app: 'pts-studio', version: 1 }, chapters: [{ id: 'dup', title: 'A' }, { id: 'dup', title: 'B' }] },
+                { __meta: { app: 'pts-studio', version: 1 }, chapters: [{ id: 'partial-only', title: 'Partial' }] },
+              ];
+              for (const bad of invalidDumps) {
                 let threw = false;
                 try { await db.importAll(bad, { merge: false }); } catch { threw = true; }
-                if (!threw) throw new Error('Invalid backup was accepted: ' + JSON.stringify(bad));
+                if (!threw) throw new Error('Invalid or partial replace backup was accepted: ' + JSON.stringify(bad));
               }
               if ((await db.get('chapters', 'keep-ch-1'))?.content !== 'Original prose must survive.') {
                 throw new Error('Invalid backup erased existing chapter!');
               }
 
-              // Valid import with malicious apiKeys must commit atomically AND keep local keys
+              // Valid FULL 9-store backup with malicious apiKeys must commit atomically AND keep local keys
+              const longCh2 = 'Long chapter prose sentence here. '.repeat(1000); // ~5000 words
               await db.importAll({
                 __meta: { app: 'pts-studio', version: 1 },
                 chapters: [
                   { id: 'ch-1', projectId: 'original', title: 'Chapter 1', content: 'First chapter canon.', wordCount: 3, order: 0, status: 'finished', versions: [] },
-                  { id: 'ch-2', projectId: 'original', title: 'Chapter 2', content: 'Long chapter prose. '.repeat(300), wordCount: 900, order: 1, status: 'finished', versions: [] },
+                  { id: 'ch-2', projectId: 'original', title: 'Chapter 2', content: longCh2, wordCount: 5000, order: 1, status: 'finished', versions: [] },
                   { id: 'ch-3', projectId: 'original', title: 'Chapter 3', content: 'FUTURE_SPOILER_CH3 should never enter Ch 2 rewrite.', wordCount: 8, order: 2, status: 'finished', versions: [] },
                 ],
+                characters: [],
+                documents: [],
+                docChunks: [],
                 memoryEntries: [
                   { id: 'm-1', projectId: 'original', chapterId: 'ch-1', chapterTitle: 'Chapter 1', events: 'Ch1 event', createdAt: '2026-01-01' },
                   { id: 'm-3', projectId: 'original', chapterId: 'ch-3', chapterTitle: 'Chapter 3', events: 'FUTURE_SPOILER_CH3', createdAt: '2026-01-03' },
                 ],
+                lockedFacts: [],
+                canonNotes: [],
+                generationState: [],
                 settings: [
-                  { id: 'main', provider: 'openai', apiKeys: { openai: 'ATTACKER-KEY' }, models: { openai: 'gpt-5.4-mini' }, defaultGenerationMode: 'full_chapter', blockWordSize: 1000 },
+                  { id: 'main', provider: 'openai', apiKeys: { openai: 'ATTACKER-KEY' }, models: { openai: 'gpt-4o', gemini: 'gemini-2.0-flash' }, defaultGenerationMode: 'full_chapter', blockWordSize: 1000 },
                   { id: 'workspaces', items: [{ id: 'story-b', name: 'Story B' }] },
                 ],
               }, { merge: false });
@@ -218,11 +265,54 @@ def main():
               if (await db.get('chapters', 'keep-ch-1')) {
                 throw new Error('Old chapter not cleared on valid full replace import');
               }
+
+              // Cross-workspace ID collision protection on db.put
+              db.setActiveProjectId('story-b');
+              let putCollisionRejected = false;
+              try {
+                await db.put('chapters', { id: 'ch-1', title: 'Hijack', content: 'Should fail!' });
+              } catch (err) {
+                putCollisionRejected = /Colisión de ID/i.test(String(err?.message || ''));
+              }
+              if (!putCollisionRejected) throw new Error('db.put allowed cross-workspace ID collision!');
+
+              // Cross-workspace ID collision protection on partial merge importAll (must rollback atomically!)
+              let mergeCollisionRejected = false;
+              try {
+                await db.importAll({
+                  __meta: { app: 'pts-studio', version: 1 },
+                  chapters: [
+                    { id: 'story-b-rollback', projectId: 'story-b', title: 'Should Rollback', content: 'Must not persist', wordCount: 3, order: 0 },
+                    { id: 'ch-1', projectId: 'story-b', title: 'Colliding Ch1', content: 'Overwrite attempt', wordCount: 2, order: 1 },
+                  ],
+                }, { merge: true });
+              } catch (err) {
+                mergeCollisionRejected = /Colisión entre historias/i.test(String(err?.message || ''));
+              }
+              if (!mergeCollisionRejected) throw new Error('merge importAll allowed cross-workspace ID collision!');
+              if (await db.get('chapters', 'story-b-rollback', { projectId: 'story-b' })) {
+                throw new Error('Failed merge importAll did not rollback earlier records!');
+              }
+              if ((await db.get('chapters', 'ch-1', { projectId: 'original' }))?.content !== 'First chapter canon.') {
+                throw new Error('Cross-workspace collision corrupted original workspace chapter!');
+              }
+
+              // Non-colliding partial merge succeeds cleanly
+              await db.importAll({
+                __meta: { app: 'pts-studio', version: 1 },
+                chapters: [
+                  { id: 'story-b-safe', projectId: 'story-b', title: 'Story B Safe', content: 'Isolated chapter.', wordCount: 2, order: 0 },
+                ],
+              }, { merge: true });
+              const safeMerged = await db.get('chapters', 'story-b-safe', { projectId: 'story-b' });
+              if (!safeMerged) throw new Error('Valid non-colliding partial merge did not save!');
+
+              db.setActiveProjectId('original');
               return { ok: true, count: (await db.getAll('chapters')).length };
             }''')
             assert backup_res['count'] == 3
 
-            # --- TEST 3: Staged rewrite (no silent overwrite, dynamic budget, chronological filter) ---
+            # --- TEST 3: Provider output limit, reload-resilient staged rewrite, continuation, & concurrent-edit conflict ---
             page.click('[data-view="chapters"]')
             page.wait_for_selector('#chapters-list .list-item[data-id="ch-2"]')
             page.click('#chapters-list .list-item[data-id="ch-2"] .act-rewrite')
@@ -231,27 +321,75 @@ def main():
             page.click('#rewrite-go-btn')
             page.wait_for_selector('#rewrite-review-pane', state='visible')
 
-            # Verify dynamic budget and zero future spoiler in request
+            # Verify provider ceiling respected (gpt-4o = 16384, never 120000) & zero future spoiler
             req_body = mock_state['last_openai_body']
-            assert req_body['max_completion_tokens'] >= 5000, f"Budget too small: {req_body.get('max_completion_tokens')}"
+            assert req_body.get('max_tokens') == 16384, f"Expected gpt-4o cap 16384, got: {req_body.get('max_tokens')}"
             sys_msg = req_body['messages'][0]['content']
             assert 'FUTURE_SPOILER_CH3' not in sys_msg, 'Future chapter leaked into Chapter 2 rewrite!'
             assert 'Ch1 event' in sys_msg, 'Prior Chapter 1 memory missing from Chapter 2 rewrite!'
-            # Warning banner should show because mocked response had finish_reason='length'
-            assert 'incompleta' in page.locator('#rewrite-warning-slot').inner_text().lower()
+            warn_text = page.locator('#rewrite-warning-slot').inner_text().lower()
+            assert 'incompleta' in warn_text and '16384' in warn_text
 
-            # Original chapter in IndexedDB MUST STILL BE UNCHANGED before approval!
+            # Original chapter MUST STILL BE UNCHANGED before approval
             before_approve = page.evaluate("async () => { const {db} = await import('/js/db.js'); return (await db.get('chapters','ch-2')).content; }")
-            assert before_approve.startswith('Long chapter prose.'), 'Rewrite overwrote chapter before approval!'
+            assert before_approve.startswith('Long chapter prose sentence here.'), 'Rewrite overwrote chapter before approval!'
 
-            # Approve rewrite -> original saved in versions, content updated
-            page.click('#rewrite-approve-btn')
+            # Close modal accidentally AND reload full page -> staged draft MUST survive!
+            page.click('#rewrite-cancel-btn')
             page.wait_for_selector('#active-modal', state='detached')
-            after_approve = page.evaluate("async () => { const {db} = await import('/js/db.js'); return await db.get('chapters','ch-2'); }")
-            assert after_approve['content'].startswith('Rewritten opening paragraph')
-            assert len(after_approve['versions']) == 1 and after_approve['versions'][0]['content'].startswith('Long chapter prose.')
+            page.reload()
+            page.wait_for_function("() => (document.querySelector('#workspace-select')?.options.length || 0) >= 4")
+            page.select_option('#workspace-select', 'original')
+            page.click('[data-view="chapters"]')
+            page.wait_for_selector('#chapters-list .list-item[data-id="ch-2"]')
+            ch2_card_text = page.locator('#chapters-list .list-item[data-id="ch-2"]').inner_text()
+            assert 'Borrador de reescritura guardado' in ch2_card_text, f'Missing persisted rewrite draft badge: {ch2_card_text}'
 
-            # --- TEST 4: Chapter editor autosave flush-on-close (<100ms) ---
+            # Reopen Rewrite modal -> restored draft appears automatically
+            page.click('#chapters-list .list-item[data-id="ch-2"] .act-rewrite')
+            page.wait_for_selector('#rewrite-review-pane', state='visible')
+            restored_val = page.input_value('#rewrite-preview')
+            assert restored_val.startswith('Rewritten opening paragraph'), 'Staged rewrite did not survive page reload!'
+            assert 'restaurado' in page.locator('#rewrite-warning-slot').inner_text().lower()
+
+            # Continue truncated rewrite -> appends continuation cleanly and shows Undo button
+            mock_state['mode'] = 'rewrite_continue'
+            page.click('#rewrite-continue-btn')
+            page.wait_for_function("() => (document.querySelector('#rewrite-preview')?.value || '').includes('Continuation closing paragraphs')")
+            assert page.locator('#rewrite-undo-cont-btn').is_visible(), 'Undo continuation button did not appear'
+
+            # Simulate concurrent modification of ch-2 while rewrite is staged -> approval must trigger conflict workflow!
+            page.evaluate('''async () => {
+              const { db } = await import('/js/db.js');
+              const ch = await db.get('chapters', 'ch-2', { projectId: 'original' });
+              ch.content = 'CONCURRENT_AUTHOR_EDIT saved while rewrite was staged.';
+              ch.wordCount = 7;
+              ch.updatedAt = new Date().toISOString();
+              await db.put('chapters', ch, { projectId: 'original' });
+            }''')
+            page.click('#rewrite-approve-btn')
+            page.wait_for_selector('#rewrite-conflict-panel', state='visible')
+            after_conflict_attempt = page.evaluate("async () => { const {db} = await import('/js/db.js'); return (await db.get('chapters','ch-2')).content; }")
+            assert after_conflict_attempt == 'CONCURRENT_AUTHOR_EDIT saved while rewrite was staged.', 'Conflict overwrite was NOT blocked!'
+
+            # Resolve conflict by saving rewrite as alternative -> main edit stays intact, alternative has full rewrite, staged draft cleared
+            page.click('#rewrite-conflict-alt-btn')
+            page.wait_for_selector('#active-modal', state='detached')
+            conflict_res = page.evaluate('''async () => {
+              const { db } = await import('/js/db.js');
+              const all = await db.getAll('chapters', { projectId: 'original' });
+              const main = all.find(c => c.id === 'ch-2');
+              const alts = all.filter(c => c.branchRole === 'alternative' && c.alternativeSourceId === 'ch-2');
+              const draft = await db.get('settings', 'rewrite-draft:original:ch-2');
+              return { mainContent: main?.content, altCount: alts.length, altContent: alts[0]?.content || '', draftExists: !!draft };
+            }''')
+            assert conflict_res['mainContent'] == 'CONCURRENT_AUTHOR_EDIT saved while rewrite was staged.'
+            assert conflict_res['altCount'] == 1
+            assert 'Rewritten opening paragraph' in conflict_res['altContent'] and 'Continuation closing paragraphs' in conflict_res['altContent']
+            assert not conflict_res['draftExists'], 'Staged rewrite draft was not cleared after saving as alternative'
+
+            # --- TEST 4: Chapter editor autosave flush + stale memory marking (0 API calls) + non-destructive memory review ---
+            calls_before_edit = mock_state['calls']
             page.click('#chapters-list .list-item[data-id="ch-1"] .act-open')
             page.wait_for_selector('#editor-mode-toggle')
             page.click('#editor-mode-toggle')
@@ -259,8 +397,37 @@ def main():
             page.click('#editor-close-btn')
             page.wait_for_selector('#active-modal', state='detached')
             page.wait_for_timeout(150)
-            flushed = page.evaluate("async () => { const {db} = await import('/js/db.js'); return (await db.get('chapters','ch-1')).content; }")
-            assert flushed == 'Flushed immediately before 700ms debounce!', f'Autosave lost on close: {flushed}'
+
+            edit_check = page.evaluate('''async () => {
+              const { db } = await import('/js/db.js');
+              const ch = await db.get('chapters', 'ch-1', { projectId: 'original' });
+              const mems = await db.getByIndex('memoryEntries', 'by_chapter', 'ch-1', { projectId: 'original' });
+              return { content: ch?.content, mem: mems[0] || null };
+            }''')
+            assert edit_check['content'] == 'Flushed immediately before 700ms debounce!', f"Autosave lost on close: {edit_check}"
+            assert mock_state['calls'] == calls_before_edit, 'Editing a chapter must NOT trigger automatic paid API requests!'
+            assert edit_check['mem']['stale'] is True, f"Memory was not marked stale after editing source chapter: {edit_check['mem']}"
+            assert edit_check['mem']['events'] == 'Ch1 event', 'Existing memory content was altered when marked stale!'
+            page.wait_for_function("() => (document.querySelector('#chapters-list .list-item[data-id=\"ch-1\"]')?.innerText || '').includes('Memoria desactualizada')")
+
+            # Regenerating an existing memory must open review modal and preserve old memory until approved!
+            mock_state['mode'] = 'memory_json'
+            page.click('#chapters-list .list-item[data-id="ch-1"] .act-memory')
+            page.wait_for_selector('#mem-review-save-btn', state='visible')
+            while_reviewing = page.evaluate("async () => { const {db} = await import('/js/db.js'); return (await db.getByIndex('memoryEntries','by_chapter','ch-1',{projectId:'original'}))[0]; }")
+            assert while_reviewing['events'] == 'Ch1 event' and while_reviewing['stale'] is True, 'Existing memory was overwritten before author review!'
+            # Keep previous memory -> must remain intact
+            page.click('#mem-review-keep-btn')
+            page.wait_for_selector('#active-modal', state='detached')
+            after_keep = page.evaluate("async () => { const {db} = await import('/js/db.js'); return (await db.getByIndex('memoryEntries','by_chapter','ch-1',{projectId:'original'}))[0]; }")
+            assert after_keep['events'] == 'Ch1 event' and after_keep['stale'] is True
+            # Now approve replacement -> memory updates and stale clears
+            page.click('#chapters-list .list-item[data-id="ch-1"] .act-memory')
+            page.wait_for_selector('#mem-review-save-btn', state='visible')
+            page.click('#mem-review-save-btn')
+            page.wait_for_selector('#active-modal', state='detached')
+            after_replace = page.evaluate("async () => { const {db} = await import('/js/db.js'); return (await db.getByIndex('memoryEntries','by_chapter','ch-1',{projectId:'original'}))[0]; }")
+            assert after_replace['events'] == 'Levi confronted Erwin after the footage paused.' and after_replace['stale'] is False
 
             # --- TEST 5: Persistent writing-form draft across tab switches ---
             page.click('[data-view="write"]')
@@ -288,11 +455,9 @@ def main():
             assert 'Kael' in quarantine_text, 'Quarantine warning did not list forbidden name Kael'
             assert 'truncada' in quarantine_text.lower(), 'Quarantine warning did not note truncation'
             assert page.locator('#w-approve-btn').is_disabled(), 'Approve button must be locked while forbidden name remains'
-            # Paid text must be preserved in textarea and NOT yet added to accumulatedText
             staged_val = page.input_value('#w-review-text')
             assert 'Kael' in staged_val and len(staged_val) > 80
 
-            # Clean forbidden name in editor -> approve button unlocks automatically
             cleaned_text = staged_val.replace('Kael', 'the scout')
             page.fill('#w-review-text', cleaned_text)
             assert not page.locator('#w-approve-btn').is_disabled(), 'Approve button did not unlock after cleaning forbidden name'
@@ -354,7 +519,7 @@ def main():
             assert not csp_errs, f'CSP violations detected: {csp_errs}'
             ctx.close()
             browser.close()
-            print('PASS: all Phase 0 browser integration checks (SW fresh+upgrade+offline, transactional backup, staged rewrite, autosave flush, form drafts, quarantine, workspace-switch race, XSS, CSP/PDF) passed.')
+            print('PASS: all Phase 0 + follow-up browser integration checks passed.')
     finally:
         server.shutdown()
 
