@@ -284,7 +284,13 @@ export async function importGlobalWritingDnaProfile(payload) {
  */
 export function detectPlotOrAuSpecificContent(text) {
   const src = cleanString(text);
-  if (!src) return { isSpecific: false, matches: [] };
+  if (!src) {
+    return {
+      isSpecific: false,
+      matches: [],
+      detectionMode: 'heuristic_warning_not_semantic_guarantee',
+    };
+  }
   const matches = [];
   const rx = new RegExp(AU_OR_PLOT_SPECIFIC_RX.source, 'gi');
   let m;
@@ -295,6 +301,7 @@ export function detectPlotOrAuSpecificContent(text) {
   return {
     isSpecific: matches.length > 0,
     matches,
+    detectionMode: 'heuristic_warning_not_semantic_guarantee',
   };
 }
 
@@ -375,6 +382,7 @@ export async function recordEditorialFeedback({
   fandom = '',
   projectId = '',
   chapterId = null,
+  sceneId = null,
   analyzerProvider = null,
 } = {}) {
   const orig = cleanString(originalPassage);
@@ -405,15 +413,16 @@ export async function recordEditorialFeedback({
     proposal = inferLocalEditorialProposal({ originalPassage: orig, revisedPassage: rev, authorNote: note });
   }
 
-  // Verificar contaminación de trama / AU antes de asignar ámbito global
+  // Guardia heurística (advertencia, no garantía semántica) para evitar contaminar Global/Fandom
   const guardRule = detectPlotOrAuSpecificContent(`${proposal.ruleText} ${note}`);
   const targetProject = cleanString(projectId) || db.getActiveProjectId();
   const normalizedFandom = normalizeFandomNamespace(fandom || 'neutral');
   let resolvedScope = WRITING_DNA_SCOPES.has(requestedScope) ? requestedScope : 'global';
   let scopeGuardWarning = '';
-  if (resolvedScope === 'global' && guardRule.isSpecific) {
+  if ((resolvedScope === 'global' || resolvedScope === 'fandom') && guardRule.isSpecific) {
+    const prevScope = resolvedScope;
     resolvedScope = 'story';
-    scopeGuardWarning = `Se detectaron elementos específicos de historia/AU (${guardRule.matches.join(', ')}). Esta propuesta se restringió automáticamente al ámbito de historia para no contaminar el Writing DNA global.`;
+    scopeGuardWarning = `Aviso heurístico: se detectaron elementos específicos de historia/AU (${guardRule.matches.join(', ')}). Esta propuesta se restringió automáticamente de «${prevScope}» a «story» para no contaminar el Writing DNA global ni de fandom.`;
   }
 
   const now = new Date().toISOString();
@@ -422,7 +431,8 @@ export async function recordEditorialFeedback({
     scope: resolvedScope,
     fandom: resolvedScope === 'fandom' ? normalizedFandom : '',
     projectId: (resolvedScope === 'story' || resolvedScope === 'chapter_scene') ? targetProject : null,
-    chapterId: chapterId || null,
+    chapterId: resolvedScope === 'chapter_scene' ? (cleanString(chapterId) || null) : null,
+    sceneId: resolvedScope === 'chapter_scene' ? (cleanString(sceneId) || null) : null,
     originalPassage: orig,
     revisedPassage: rev,
     authorNote: note,
@@ -431,6 +441,7 @@ export async function recordEditorialFeedback({
     reason: proposal.reason,
     supportingExamples: [{ original: orig.slice(0, 500), revised: rev.slice(0, 500), note }],
     isPlotOrAuSpecific: guardRule.isSpecific,
+    guardDetectionMode: guardRule.detectionMode,
     scopeGuardWarning,
     status: 'proposed',
     revisionHistory: [
@@ -467,10 +478,10 @@ export async function decideEditorialProposal(feedbackId, decision, { editedRule
   if (!nextRuleText) throw new Error('La regla editorial no puede quedar vacía.');
 
   const nextScope = targetScope && WRITING_DNA_SCOPES.has(targetScope) ? targetScope : existing.scope;
-  if (decision === 'approved' && nextScope === 'global') {
+  if (decision === 'approved' && (nextScope === 'global' || nextScope === 'fandom')) {
     const guard = detectPlotOrAuSpecificContent(`${nextRuleText} ${existing.authorNote || ''}`);
-    if (guard.isSpecific) {
-      throw new Error(`No se puede aprobar una regla con hechos de trama o AU (${guard.matches.join(', ')}) dentro del Writing DNA global. Cambia el ámbito a «story» o «fandom» o redacta una regla puramente literaria.`);
+    if (guard.isSpecific && nextScope === 'global') {
+      throw new Error(`No se puede aprobar una regla con hechos de trama o AU (${guard.matches.join(', ')}) dentro del Writing DNA global. Cambia el ámbito a «story» o redacta una regla puramente literaria.`);
     }
   }
 
@@ -500,7 +511,11 @@ export async function deleteEditorialFeedback(feedbackId) {
 /**
  * Resuelve la jerarquía aprobada de Writing DNA en 4 ámbitos:
  * Global → Fandom → Historia → Capítulo/Escena + reglas aprendidas APROBADAS.
- * Las propuestas rechazadas, pendientes o desactivadas NUNCA entran en el perfil efectivo.
+ *
+ * Aislamiento estricto por ámbito:
+ * - Las reglas `chapter_scene` se filtran por `projectId`, `targetChapterId` y `targetSceneId`
+ *   exactos; jamás se filtran a otros capítulos ni a otras escenas.
+ * - Las propuestas rechazadas, pendientes o desactivadas NUNCA entran en el perfil efectivo.
  */
 export function resolveWritingDna({
   globalProfile = null,
@@ -510,6 +525,8 @@ export function resolveWritingDna({
   editorialFeedback = [],
   fandom = 'neutral',
   projectId = '',
+  targetChapterId = null,
+  targetSceneId = null,
 } = {}) {
   const ns = normalizeFandomNamespace(fandom || 'neutral');
   const global = globalProfile ? normalizeWritingDnaProfile(globalProfile) : createDefaultGlobalWritingDna();
@@ -519,7 +536,11 @@ export function resolveWritingDna({
   const sProf = storyProfile && (!projectId || storyProfile.projectId === projectId)
     ? normalizeWritingDnaProfile(storyProfile)
     : null;
-  const chProf = chapterSceneOverride ? normalizeWritingDnaProfile(chapterSceneOverride) : null;
+  const chMatches = chapterSceneOverride &&
+    (!projectId || !chapterSceneOverride.projectId || chapterSceneOverride.projectId === projectId) &&
+    (!chapterSceneOverride.chapterId || chapterSceneOverride.chapterId === targetChapterId) &&
+    (!chapterSceneOverride.sceneId || chapterSceneOverride.sceneId === targetSceneId);
+  const chProf = chMatches ? normalizeWritingDnaProfile(chapterSceneOverride) : null;
 
   const qualities = cleanStringArray([
     ...global.literaryQualities,
@@ -539,17 +560,34 @@ export function resolveWritingDna({
   }
   const activeAntiPatterns = [...apMap.values()].filter((ap) => ap.enabled !== false);
 
-  // Solo reglas editoriales APROBADAS cuyo ámbito coincida con esta historia/fandom
+  // Solo reglas editoriales APROBADAS que coincidan exactamente con su ámbito autorizado
   const approvedRules = (editorialFeedback || []).filter((item) => {
     if (!item || item.deletedAt || item.status !== 'approved') return false;
     if (item.scope === 'global') return !detectPlotOrAuSpecificContent(item.ruleText).isSpecific;
-    if (item.scope === 'fandom') return normalizeFandomNamespace(item.fandom || '') === ns;
-    if (item.scope === 'story' || item.scope === 'chapter_scene') return Boolean(projectId) && item.projectId === projectId;
+    if (item.scope === 'fandom') {
+      return normalizeFandomNamespace(item.fandom || '') === ns &&
+        !detectPlotOrAuSpecificContent(item.ruleText).isSpecific;
+    }
+    if (item.scope === 'story') {
+      return Boolean(projectId) && item.projectId === projectId;
+    }
+    if (item.scope === 'chapter_scene') {
+      if (!projectId || item.projectId !== projectId) return false;
+      const itemCh = cleanString(item.chapterId || '');
+      const itemSc = cleanString(item.sceneId || '');
+      // Una regla chapter_scene debe tener al menos capítulo o escena explícitos y coincidir exactamente
+      if (!itemCh && !itemSc) return false;
+      if (itemCh && itemCh !== cleanString(targetChapterId || '')) return false;
+      if (itemSc && itemSc !== cleanString(targetSceneId || '')) return false;
+      return true;
+    }
     return false;
   }).map((item) => ({
     id: item.id,
     scope: item.scope,
     category: item.category,
+    chapterId: item.chapterId || null,
+    sceneId: item.sceneId || null,
     ruleText: item.ruleText,
     reason: item.reason,
   }));
@@ -559,6 +597,8 @@ export function resolveWritingDna({
     uiLanguage: global.uiLanguage || 'es',
     fandom: ns,
     projectId: projectId || null,
+    targetChapterId: cleanString(targetChapterId || '') || null,
+    targetSceneId: cleanString(targetSceneId || '') || null,
     literaryQualities: qualities,
     activeAntiPatterns,
     approvedLearnedRules: approvedRules,
@@ -569,5 +609,6 @@ export function resolveWritingDna({
       chapter_scene: chProf?.customNotes || '',
     },
     wordBlacklistsUsed: false,
+    antiContaminationDetectionMode: 'heuristic_warning_not_semantic_guarantee',
   };
 }

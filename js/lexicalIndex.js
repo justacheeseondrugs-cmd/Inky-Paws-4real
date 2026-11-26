@@ -456,7 +456,9 @@ function computeDocumentSignatures(documents, docChunks) {
     const joined = chunks.map((c) => `${c.id}:${contentFingerprint(c.text || '')}`).join('|');
     sigs[doc.id] = {
       filename: String(doc.filename || ''),
-      type: String(doc.type || 'REFERENCE'),
+      type: String(doc.role || doc.type || 'REFERENCE').toUpperCase(),
+      timelineId: String(doc.timelineId || 'shared_active'),
+      fandom: String(doc.fandom || ''),
       active: doc.active !== false,
       chunkCount: chunks.length,
       chunkHash: contentFingerprint(joined),
@@ -474,7 +476,16 @@ export function isDocumentLexicalIndexFresh(existingIndex, documents, docChunks)
   for (const id of curKeys) {
     const cur = currentSigs[id];
     const prev = prevSigs[id];
-    if (!prev || prev.filename !== cur.filename || prev.type !== cur.type || prev.active !== cur.active || prev.chunkCount !== cur.chunkCount || prev.chunkHash !== cur.chunkHash) {
+    if (
+      !prev ||
+      prev.filename !== cur.filename ||
+      prev.type !== cur.type ||
+      prev.timelineId !== cur.timelineId ||
+      prev.fandom !== cur.fandom ||
+      prev.active !== cur.active ||
+      prev.chunkCount !== cur.chunkCount ||
+      prev.chunkHash !== cur.chunkHash
+    ) {
       return false;
     }
   }
@@ -497,7 +508,7 @@ export function buildDocumentLexicalIndex(documents, docChunks, { projectId = ''
       docId: chunk.id,
       documentId: doc.id,
       filename: doc.filename || 'documento',
-      docType: doc.type || 'REFERENCE',
+      docType: String(doc.role || doc.type || 'REFERENCE').toUpperCase(),
       passageIndex: chunk.index ?? 0,
       text,
       excerpt: text.length <= EXCERPT_MAX_CHARS ? text : `${text.slice(0, EXCERPT_MAX_CHARS - 1).trimEnd()}…`,
@@ -514,6 +525,7 @@ export function buildDocumentLexicalIndex(documents, docChunks, { projectId = ''
 /**
  * Consulta BM25 determinista y explicable con soporte para:
  * - Filtrado cronológico estricto (`eligibleChapterIds` o `maxChapterOrder`).
+ * - Filtrado estricto de documentos permitidos (`eligibleDocumentIds`).
  * - Búsqueda exacta consciente de prólogos y numeración real de títulos (EN/ES),
  *   evitando el fallo off-by-one o por números saltados/reordenados.
  * - Filtrado por tipo de documento (`excludeDocTypes`, `includeDocTypes`).
@@ -522,6 +534,7 @@ export function searchLexicalIndex(index, query, {
   topK = 8,
   maxChapterOrder = null,
   eligibleChapterIds = null,
+  eligibleDocumentIds = null,
   excludeChapterId = null,
   exactChapterNumber = null,
   excludeDocTypes = [],
@@ -532,11 +545,16 @@ export function searchLexicalIndex(index, query, {
   if (!index || !Array.isArray(index.docs) || !index.docs.length) return [];
   const N = index.totalDocs || index.docs.length;
   const avgdl = index.avgdl || 1;
-  const excludeTypesSet = new Set(excludeDocTypes || []);
-  const includeTypesSet = Array.isArray(includeDocTypes) && includeDocTypes.length ? new Set(includeDocTypes) : null;
+  const excludeTypesSet = new Set((excludeDocTypes || []).map((t) => String(t).toUpperCase()));
+  const includeTypesSet = Array.isArray(includeDocTypes) && includeDocTypes.length
+    ? new Set(includeDocTypes.map((t) => String(t).toUpperCase()))
+    : null;
   const eligibleSet = eligibleChapterIds instanceof Set
     ? eligibleChapterIds
     : (Array.isArray(eligibleChapterIds) ? new Set(eligibleChapterIds) : null);
+  const eligibleDocSet = eligibleDocumentIds instanceof Set
+    ? eligibleDocumentIds
+    : (Array.isArray(eligibleDocumentIds) ? new Set(eligibleDocumentIds) : null);
 
   const requestedNums = new Set(requestedChapterNumbers(query));
   if (exactChapterNumber !== null && exactChapterNumber !== undefined && Number.isFinite(Number(exactChapterNumber))) {
@@ -557,9 +575,11 @@ export function searchLexicalIndex(index, query, {
     if (!doc) return false;
     if (excludeChapterId && doc.chapterId === excludeChapterId) return false;
     if (eligibleSet && doc.chapterId && !eligibleSet.has(doc.chapterId)) return false;
+    if (eligibleDocSet && doc.documentId && !eligibleDocSet.has(doc.documentId)) return false;
     if (!eligibleSet && maxChapterOrder !== null && doc.chapterOrder !== null && doc.chapterOrder >= maxChapterOrder) return false;
-    if (doc.docType && excludeTypesSet.has(doc.docType)) return false;
-    if (includeTypesSet && doc.docType && !includeTypesSet.has(doc.docType)) return false;
+    const normType = doc.docType ? String(doc.docType).toUpperCase() : '';
+    if (normType && excludeTypesSet.has(normType)) return false;
+    if (includeTypesSet && normType && !includeTypesSet.has(normType)) return false;
     return true;
   };
 

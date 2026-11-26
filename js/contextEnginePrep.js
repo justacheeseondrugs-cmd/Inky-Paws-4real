@@ -14,6 +14,7 @@
 // - Brief de capítulo aprobado (chapterBriefs)
 
 import { db } from './db.js';
+import { sortMainTimelineChapters } from './timeline.js';
 import { getStoryConfig } from './storyConfigSchema.js';
 import { resolveUniverseConfiguration, normalizeRoomGuestInvitations } from './universeResolver.js';
 import { listKnowledgeFacts, listRelationshipStates } from './knowledgeLedger.js';
@@ -25,7 +26,91 @@ import {
   resolveWritingDna,
 } from './writingDna.js';
 import { retrieveRoleSeparatedReferences } from './referenceRoles.js';
-import { listChapterBriefs } from './creativeChat.js';
+import { listChapterBriefs, selectEligibleChapterBrief } from './creativeChat.js';
+
+function cleanStr(v) {
+  return String(v ?? '').trim();
+}
+
+/**
+ * Resuelve UNA única posición narrativa canónica (capítulo, escena, checkpoint y línea temporal)
+ * ANTES de consultar Writing DNA, universo, conocimiento epistémico, memoria, overlays,
+ * referencias y Brief de Capítulo.
+ *
+ * Invariante crítico de reescritura histórica:
+ * Cuando `isHistoricalRewrite === true`, JAMÁS usa `storyConfig.checkpointId` (que refleja el
+ * estado más reciente de la historia) para evitar filtrar llegadas, secretos o checkpoints
+ * futuros hacia un capítulo anterior.
+ */
+export function resolveCanonicalNarrativeTarget({
+  storyConfig = null,
+  chapters = [],
+  targetChapterId = null,
+  targetChapterOrder = null,
+  targetSceneId = null,
+  targetSceneOrder = null,
+  currentCheckpoint = '',
+  fandom = '',
+} = {}) {
+  const effectiveFandom = cleanStr(fandom || storyConfig?.fandom || 'neutral');
+  const allChapters = Array.isArray(chapters) ? chapters.filter(Boolean) : [];
+  const mainChapters = sortMainTimelineChapters(allChapters);
+  const latestMainOrder = mainChapters.reduce((acc, ch) => Math.max(acc, Number(ch.order ?? 0)), 0);
+
+  const reqChapterId = cleanStr(targetChapterId || '') || null;
+  const targetChapter = reqChapterId ? (allChapters.find((c) => c.id === reqChapterId) || null) : null;
+
+  let resolvedChapterOrder;
+  const hasExplicitOrder = targetChapterOrder !== null && targetChapterOrder !== undefined && targetChapterOrder !== '' && Number.isFinite(Number(targetChapterOrder));
+  if (hasExplicitOrder) {
+    resolvedChapterOrder = Math.floor(Number(targetChapterOrder));
+  } else if (targetChapter && Number.isFinite(Number(targetChapter.order))) {
+    resolvedChapterOrder = Math.floor(Number(targetChapter.order));
+  } else {
+    resolvedChapterOrder = latestMainOrder + 1;
+  }
+
+  const isHistoricalRewrite = Boolean(
+    mainChapters.length > 0 && (
+      (targetChapter && resolvedChapterOrder <= latestMainOrder) ||
+      (hasExplicitOrder && resolvedChapterOrder <= latestMainOrder)
+    )
+  );
+
+  const explicitCheckpoint = cleanStr(currentCheckpoint || '');
+  let checkpointId = '';
+  if (explicitCheckpoint) {
+    checkpointId = explicitCheckpoint;
+  } else if (isHistoricalRewrite) {
+    // Usar el checkpoint registrado del capítulo objetivo (o vacío si no tenía), NUNCA el checkpoint actual/futuro de la historia
+    checkpointId = cleanStr(targetChapter?.checkpointId || '');
+  } else {
+    checkpointId = cleanStr(storyConfig?.checkpointId || '');
+  }
+
+  const activeTimelineId = cleanStr(
+    targetChapter?.timelineId ||
+    storyConfig?.timelineId ||
+    (checkpointId === 's3_alternate'
+      ? 'pts_iii_part_1_alternate'
+      : (effectiveFandom === 'power_to_strive' ? 'pts_i_ii_original' : ''))
+  );
+
+  const resolvedSceneOrder = targetSceneOrder !== null && targetSceneOrder !== undefined && targetSceneOrder !== '' && Number.isFinite(Number(targetSceneOrder))
+    ? Math.floor(Number(targetSceneOrder))
+    : null;
+
+  return {
+    targetChapterId: reqChapterId,
+    targetChapterOrder: resolvedChapterOrder,
+    targetSceneId: cleanStr(targetSceneId || '') || null,
+    targetSceneOrder: resolvedSceneOrder,
+    checkpointId,
+    activeTimelineId,
+    isHistoricalRewrite,
+    latestMainChapterOrder: latestMainOrder,
+  };
+}
 
 /**
  * Ensambla una instantánea determinista y gratuita (0 tokens) con las interfaces
@@ -37,6 +122,8 @@ export async function assembleUnifiedContextSnapshot({
   targetChapterOrder = null,
   targetSceneOrder = null,
   targetChapterId = null,
+  targetSceneId = null,
+  currentCheckpoint = '',
   query = '',
   characterVersion = 'room',
   sceneId = null,
@@ -88,7 +175,20 @@ export async function assembleUnifiedContextSnapshot({
   const fandom = storyConfig?.fandom || 'neutral';
   const fandomDna = await getWritingDnaProfile({ scope: 'fandom', fandom });
 
-  // 1. Writing DNA aprobado (4 ámbitos)
+  // 0. Resolver UNA posición narrativa canónica ANTES de todos los subsistemas
+  const effectiveSceneId = targetSceneId || sceneId || null;
+  const narrativeTarget = resolveCanonicalNarrativeTarget({
+    storyConfig,
+    chapters,
+    targetChapterId,
+    targetChapterOrder,
+    targetSceneId: effectiveSceneId,
+    targetSceneOrder,
+    currentCheckpoint,
+    fandom,
+  });
+
+  // 1. Writing DNA aprobado (4 ámbitos con aislamiento estricto capítulo/escena)
   const writingDna = resolveWritingDna({
     globalProfile: globalDna,
     fandomProfile: fandomDna,
@@ -97,6 +197,8 @@ export async function assembleUnifiedContextSnapshot({
     editorialFeedback,
     fandom,
     projectId: pid,
+    targetChapterId: narrativeTarget.targetChapterId,
+    targetSceneId: narrativeTarget.targetSceneId,
   });
 
   // 2. Configuración de universo, reparto permitido, overlays y contradicciones
@@ -109,16 +211,18 @@ export async function assembleUnifiedContextSnapshot({
     context: {
       fandom,
       characterVersion,
-      sceneId,
-      currentCheckpoint: storyConfig?.checkpointId || '',
-      chapterOrder: targetChapterOrder,
+      sceneId: narrativeTarget.targetSceneId,
+      currentCheckpoint: narrativeTarget.checkpointId,
+      chapterOrder: narrativeTarget.targetChapterOrder,
     },
   });
 
-  // 3. Brief de capítulo aprobado (si existe)
-  const approvedBrief = activeBriefId
-    ? briefs.find((b) => b.id === activeBriefId) || null
-    : (briefs.find((b) => b.status === 'approved' || b.status === 'transferred') || null);
+  // 3. Brief de capítulo ELEGIBLE (solo `approved`/`transferred` y compatible con capítulo objetivo)
+  const approvedBrief = selectEligibleChapterBrief(briefs, {
+    activeBriefId,
+    targetChapterId: narrativeTarget.targetChapterId,
+    targetChapterOrder: narrativeTarget.targetChapterOrder,
+  });
 
   // 4. Recuperación jerárquica de memoria (BM25 + 6 capas + epistémico + relaciones + arcos)
   const effectiveQuery = [
@@ -137,10 +241,12 @@ export async function assembleUnifiedContextSnapshot({
 
   const memory = assembleHierarchicalMemory({
     projectId: pid,
-    targetChapterOrder,
-    targetSceneOrder,
-    targetChapterId,
-    currentCheckpoint: storyConfig?.checkpointId || '',
+    targetChapterOrder: narrativeTarget.targetChapterOrder,
+    targetSceneOrder: narrativeTarget.targetSceneOrder,
+    targetChapterId: narrativeTarget.targetChapterId,
+    currentCheckpoint: narrativeTarget.checkpointId,
+    activeTimelineId: narrativeTarget.activeTimelineId,
+    fandom,
     query: effectiveQuery,
     characterVersion,
     activeCharacterIds: universe.allowedRoomCast,
@@ -159,22 +265,21 @@ export async function assembleUnifiedContextSnapshot({
     maxTotalChars: maxMemoryChars,
   });
 
-  // 5. Referencias filtradas por rol y línea temporal (factual vs STYLE_ONLY)
-  const activeTimelineId = storyConfig?.timelineId || (
-    storyConfig?.checkpointId === 's3_alternate' ? 'pts_iii_part_1_alternate' : (fandom === 'power_to_strive' ? 'pts_i_ii_original' : '')
-  );
+  // 5. Referencias filtradas por rol, fandom y línea temporal (mismo filtro que BM25)
   const references = retrieveRoleSeparatedReferences({
     documents,
     docChunks,
     query: effectiveQuery,
-    activeTimelineId,
+    activeTimelineId: narrativeTarget.activeTimelineId,
+    fandom,
     context: 'chapter_generation',
   });
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectId: pid,
     fandom,
+    narrativeTarget,
     writingDna,
     universe,
     memory: {
@@ -197,7 +302,7 @@ export async function assembleUnifiedContextSnapshot({
         'Aplicación automática de reglas aprendidas editoriales aprobadas (editorialFeedback)',
         'Inyección de perfiles de Biblioteca Universal, overlays Character Lab e invariantes de universeResolver',
         'Inyección del payload serializado de 6 capas (epistémico temporal, relaciones cualitativas, BM25, arcos)',
-        'Perfiles de oficio STYLE_ONLY y filtrado estricto por 6 roles y línea temporal (referenceRoles.js)',
+        'Perfiles de oficio STYLE_ONLY y filtrado estricto por 6 roles, fandom y línea temporal (referenceRoles.js)',
         'Auditoría semántica post-generación sobre semanticReviewPayload',
       ],
     },

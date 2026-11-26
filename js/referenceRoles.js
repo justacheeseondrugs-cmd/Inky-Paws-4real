@@ -12,6 +12,7 @@
 //   estrictamente separadas de la línea original (PtS I-II).
 
 import { getRelevantChunks } from './retrieval.js';
+import { normalizeFandomNamespace } from './characterLibrary.js';
 
 export const REFERENCE_ROLES = [
   { id: 'CHARACTER_BIBLE', label: 'Biblia de personajes (CHARACTER_BIBLE)', factual: true, pillClass: 'pill-character' },
@@ -100,26 +101,41 @@ export function isDocumentTimelineCompatible(doc, activeTimelineId = '') {
 }
 
 /**
+ * Verifica compatibilidad de fandom para documentos factuales.
+ * Los documentos sin fandom explícito (o `shared`/`all`/`neutral`) se tratan como compatibles;
+ * un documento marcado con otro fandom distinto se excluye de recuperación factual.
+ */
+export function isDocumentFandomCompatible(doc, activeFandom = '') {
+  const rawDocFandom = cleanString(doc?.fandom || '');
+  const rawActive = cleanString(activeFandom || '');
+  if (!rawDocFandom || !rawActive) return true;
+  const low = rawDocFandom.toLowerCase();
+  if (low === 'shared' || low === 'all' || low === 'neutral') return true;
+  return normalizeFandomNamespace(rawDocFandom) === normalizeFandomNamespace(rawActive);
+}
+
+/**
  * Filtra y separa estrictamente los documentos activos de una historia en:
- * 1) `factualDocuments`: únicamente roles factuales compatibles con la línea temporal actual.
+ * 1) `factualDocuments`: únicamente roles factuales activos, compatibles con la línea temporal y el fandom actual.
  * 2) `styleCraftProfiles`: descriptores generales de oficio literario para documentos `STYLE_ONLY`
  *    (sin copiar fragmentos de trama, personajes ni relaciones, y sin activar overlays).
- * 3) `excludedByTimeline` / `inactiveDocuments`: trazabilidad para inspección.
+ * 3) `excludedByTimeline` / `excludedByFandom` / `inactiveDocuments`: trazabilidad para inspección.
  */
-export function partitionStoryReferences(documents = [], { activeTimelineId = '' } = {}) {
+export function partitionStoryReferences(documents = [], { activeTimelineId = '', fandom = '' } = {}) {
   const factualDocuments = [];
   const styleOnlyDocuments = [];
   const styleCraftProfiles = [];
   const excludedByTimeline = [];
+  const excludedByFandom = [];
   const inactiveDocuments = [];
 
   for (const doc of (documents || [])) {
     if (!doc) continue;
+    const role = normalizeReferenceRole(doc.role || doc.type);
     if (doc.active === false) {
-      inactiveDocuments.push({ id: doc.id, filename: doc.filename, role: normalizeReferenceRole(doc.role || doc.type) });
+      inactiveDocuments.push({ id: doc.id, filename: doc.filename, role });
       continue;
     }
-    const role = normalizeReferenceRole(doc.role || doc.type);
     const enriched = { ...doc, role };
 
     if (role === 'STYLE_ONLY') {
@@ -133,6 +149,17 @@ export function partitionStoryReferences(documents = [], { activeTimelineId = ''
         importsPlotOrCharacters: false,
         prohibitVerbatimCopying: true,
         safetyNote: 'Solo oficio literario (ritmo, distancia, atmósfera, contención). Nunca importa tramas, personajes, diálogos ni activa rasgos Violet.',
+      });
+      continue;
+    }
+
+    if (!isDocumentFandomCompatible(enriched, fandom)) {
+      excludedByFandom.push({
+        id: doc.id,
+        filename: doc.filename,
+        role,
+        documentFandom: enriched.fandom,
+        activeFandom: fandom,
       });
       continue;
     }
@@ -156,13 +183,14 @@ export function partitionStoryReferences(documents = [], { activeTimelineId = ''
     styleOnlyDocuments,
     styleCraftProfiles,
     excludedByTimeline,
+    excludedByFandom,
     inactiveDocuments,
   };
 }
 
 /**
  * Recuperación acotada y estrictamente separada para el motor de contexto:
- * - `factualChunks`: solo fragmentos de documentos factuales activos y compatibles en línea temporal.
+ * - `factualChunks`: solo fragmentos de documentos factuales activos y compatibles en línea temporal y fandom.
  * - `styleGuidance`: únicamente perfiles de oficio literario de `STYLE_ONLY` (NUNCA pasajes textuales
  *   copiables ni hechos de trama).
  */
@@ -171,10 +199,11 @@ export function retrieveRoleSeparatedReferences({
   docChunks = [],
   query = '',
   activeTimelineId = '',
+  fandom = '',
   context = 'chapter_generation',
   maxFactualChunks = 6,
 } = {}) {
-  const partitioned = partitionStoryReferences(documents, { activeTimelineId });
+  const partitioned = partitionStoryReferences(documents, { activeTimelineId, fandom });
   const rawFactualChunks = partitioned.factualDocuments.length
     ? getRelevantChunks(partitioned.factualDocuments, docChunks, query, { context }).slice(0, maxFactualChunks)
     : [];
@@ -186,11 +215,13 @@ export function retrieveRoleSeparatedReferences({
       filename: c.document?.filename || '',
       role: normalizeReferenceRole(c.document?.role || c.document?.type),
       timelineId: c.document?.timelineId || 'shared_active',
+      fandom: c.document?.fandom || '',
       text: c.text,
       score: c.score,
     })),
     styleGuidance: partitioned.styleCraftProfiles,
     excludedByTimeline: partitioned.excludedByTimeline,
+    excludedByFandom: partitioned.excludedByFandom,
     inactiveCount: partitioned.inactiveDocuments.length,
     styleOnlyNeverActivatesOverlays: true,
     verbatimReferenceCopyingForbidden: true,

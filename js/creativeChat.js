@@ -12,10 +12,11 @@
 
 import { db } from './db.js';
 import { normalizeFandomNamespace, extractLogicalId } from './characterLibrary.js';
-import { createDefaultStoryConfig, getStoryConfig, saveStoryConfig } from './storyConfigSchema.js';
+import { createDefaultStoryConfig, getStoryConfig, normalizeStoryConfig } from './storyConfigSchema.js';
+import { resolveUniverseConfiguration } from './universeResolver.js';
 import {
   listKnowledgeFacts,
-  saveKnowledgeFact,
+  normalizeKnowledgeFact,
   appendBeliefTransitionToFact,
   makeCharacterVersionKey,
 } from './knowledgeLedger.js';
@@ -413,6 +414,7 @@ export async function extractConversationalProposal(rawMessage, {
       items.push({
         itemId: db.uid(),
         kind: 'epistemic_knowledge',
+        claimCategory: isConditional ? 'hypothesis' : 'author_established_truth',
         label: `Conocimiento privado de ${charId}: sabe «${clause.slice(0, 64)}»`,
         summary: `Registra en el libro epistémico que ${charId} conoce este dato de forma privada (sin revelarlo automáticamente a otros personajes).`,
         payload: {
@@ -420,6 +422,8 @@ export async function extractConversationalProposal(rawMessage, {
           factTruth: detectedEruriState === 'former_lovers'
             ? 'Erwin and Levi used to date in the past.'
             : clause,
+          truthStatus: 'author_established_truth',
+          claimCategory: isConditional ? 'hypothesis' : 'author_established_truth',
           characterId: charId,
           characterVersion: charId === 'joseph' ? 'outside' : 'room',
           state: 'knows',
@@ -439,16 +443,21 @@ export async function extractConversationalProposal(rawMessage, {
     const charId = normalizeCharName(falseBeliefMatch[1]);
     const rawBelief = cleanString(falseBeliefMatch[2]).replace(/\b(?:hahaha+|jaja+|lol|lmao)\b/gi, '').trim();
     if (charId && rawBelief) {
+      const hasObjectiveTruth = detectedEruriState === 'former_lovers';
       items.push({
         itemId: db.uid(),
         kind: 'epistemic_false_belief',
+        claimCategory: 'character_belief',
         label: `Falsa creencia de ${charId}: «${rawBelief.slice(0, 64)}»`,
-        summary: `Registra que ${charId} sostiene una interpretación incorrecta/diferente sin alterar la verdad objetiva del canon.`,
+        summary: hasObjectiveTruth
+          ? `Registra que ${charId} sostiene una interpretación incorrecta/diferente sin alterar la verdad objetiva del canon.`
+          : `Registra la creencia falsa/suposición de ${charId}. La verdad objetiva queda marcada como sin confirmar hasta que la autora la establezca.`,
         payload: {
           factTitle: detectedEruriState ? 'Historia privada Eruri' : `Creencia errónea (${charId})`,
-          factTruth: detectedEruriState === 'former_lovers'
-            ? 'Erwin and Levi used to date in the past.'
-            : 'Verdad objetiva separada de la suposición errónea del personaje.',
+          factTruth: hasObjectiveTruth ? 'Erwin and Levi used to date in the past.' : '',
+          truthStatus: hasObjectiveTruth ? 'author_established_truth' : 'unresolved_author_confirmation_required',
+          requiresAuthorTruthConfirmation: !hasObjectiveTruth,
+          claimCategory: 'character_belief',
           characterId: charId,
           characterVersion: 'room',
           state: 'believes_false',
@@ -457,7 +466,10 @@ export async function extractConversationalProposal(rawMessage, {
           isSecret: true,
         },
         status: 'proposed',
-        safetyNotes: ['Las falsas creencias NUNCA modifican la verdad objetiva del canon.'],
+        safetyNotes: [
+          'Las falsas creencias NUNCA se convierten en verdad objetiva del canon.',
+          ...(!hasObjectiveTruth ? ['Verdad objetiva pendiente de confirmación explícita por la autora.'] : []),
+        ],
       });
     }
   }
@@ -467,10 +479,12 @@ export async function extractConversationalProposal(rawMessage, {
     items.push({
       itemId: db.uid(),
       kind: 'possible_idea',
+      claimCategory: 'possible_plot_idea',
       label: 'Guardar como idea posible de trama (sin aplicar al canon)',
       summary: `Idea exploratoria para considerar en un futuro Brief de Capítulo: «${text.slice(0, 140)}»`,
       payload: {
         ideaText: text,
+        claimCategory: 'possible_plot_idea',
       },
       status: 'proposed',
       safetyNotes: ['Las ideas posibles no alteran el canon ni la configuración de la historia.'],
@@ -489,6 +503,13 @@ export async function extractConversationalProposal(rawMessage, {
   });
 }
 
+const VALID_CLAIM_CATEGORIES = new Set([
+  'author_established_truth',
+  'character_belief',
+  'hypothesis',
+  'possible_plot_idea',
+]);
+
 function enforceProposalSafetyInvariants(proposal) {
   const safeItems = [];
   const safetyBlocks = [...(proposal.safetyBlocks || [])];
@@ -506,9 +527,14 @@ function enforceProposalSafetyInvariants(proposal) {
         continue;
       }
     }
+    const rawCat = cleanString(item.claimCategory || item?.payload?.claimCategory || '');
+    const defaultCat = item.kind === 'epistemic_false_belief'
+      ? 'character_belief'
+      : (item.kind === 'possible_idea' ? 'possible_plot_idea' : 'author_established_truth');
     safeItems.push({
       itemId: cleanString(item.itemId) || db.uid(),
       kind: cleanString(item.kind || 'possible_idea'),
+      claimCategory: VALID_CLAIM_CATEGORIES.has(rawCat) ? rawCat : defaultCat,
       label: cleanString(item.label || 'Cambio propuesto'),
       summary: cleanString(item.summary || ''),
       payload: isPlainObject(item.payload) ? structuredClone(item.payload) : {},
@@ -523,9 +549,19 @@ function enforceProposalSafetyInvariants(proposal) {
   };
 }
 
+export const UNRESOLVED_TRUTH_PLACEHOLDER = '[Verdad objetiva sin confirmar — requiere confirmación de la autora]';
+
 /**
- * Aplica de forma SELECTIVA únicamente los ítems que la autora aprobó explícitamente.
- * Los ítems rechazados quedan marcados como `rejected` y JAMÁS tocan el canon ni `storyConfigs`.
+ * Aplica de forma SELECTIVA, IDEMPOTENTE y ATÓMICA únicamente los ítems pendientes
+ * que la autora aprobó explícitamente:
+ * - Preserva el estado de los ítems ya decididos (`approved` / `rejected`).
+ * - Una falsa creencia JAMÁS se convierte en verdad objetiva (`fact.truth`):
+ *   si la verdad objetiva no fue confirmada, queda marcada explícitamente como
+ *   `unresolved_author_confirmation_required`.
+ * - Valida cualquier cambio de configuración (incluidos payloads editados) con
+ *   `resolveUniverseConfiguration` ANTES de persistir.
+ * - Previene duplicación de hechos epistémicos e ideas archivadas.
+ * - Persiste todos los cambios en una única transacción atómica (`db.runAtomicTransaction`).
  */
 export async function applySelectiveProposalDecision(projectId, proposal, {
   approvedItemIds = [],
@@ -533,16 +569,48 @@ export async function applySelectiveProposalDecision(projectId, proposal, {
   editedPayloads = {},
 } = {}) {
   const pid = cleanString(projectId) || db.getActiveProjectId();
+  const scope = { projectId: pid };
   const approvedSet = new Set(approvedItemIds || []);
   const rejectedSet = new Set(rejectedItemIds || []);
 
-  let config = (await getStoryConfig(pid)) || createDefaultStoryConfig(pid, { fandom: proposal?.fandom || 'neutral' });
+  const [
+    existingConfig,
+    existingFactsRaw,
+    existingChat,
+    universalCharacters,
+    storyCharacters,
+    overlays,
+    documents,
+  ] = await Promise.all([
+    getStoryConfig(pid),
+    listKnowledgeFacts(scope),
+    getCreativeChat(pid),
+    db.getAll('universalCharacters'),
+    db.getAll('characters', scope),
+    db.getAll('characterOverlays'),
+    db.getAll('documents', scope),
+  ]);
+
+  let config = existingConfig
+    ? structuredClone(existingConfig)
+    : createDefaultStoryConfig(pid, { fandom: proposal?.fandom || 'neutral' });
   let configDirty = false;
-  const appliedFacts = [];
+
+  // Trabajar sobre una copia en memoria de los hechos y las ideas archivadas
+  // para garantizar deduplicación, validación completa y escritura atómica al final.
+  const workingFacts = (existingFactsRaw || []).map((f) => structuredClone(f));
+  const modifiedFactIds = new Set();
+  const existingIdeas = Array.isArray(existingChat?.archivedIdeas) ? existingChat.archivedIdeas.map((i) => structuredClone(i)) : [];
   const savedIdeas = [];
   const updatedItems = [];
 
   for (const item of (proposal?.items || [])) {
+    // Idempotencia: preservar estados ya resueltos sin volver a aplicar ni sobrescribir
+    if (item.status === 'approved' || item.status === 'rejected') {
+      updatedItems.push({ ...item });
+      continue;
+    }
+
     if (rejectedSet.has(item.itemId) && !approvedSet.has(item.itemId)) {
       updatedItems.push({ ...item, status: 'rejected' });
       continue;
@@ -553,7 +621,7 @@ export async function applySelectiveProposalDecision(projectId, proposal, {
     }
 
     const payload = isPlainObject(editedPayloads[item.itemId])
-      ? { ...item.payload, ...editedPayloads[item.itemId] }
+      ? { ...(item.payload || {}), ...editedPayloads[item.itemId] }
       : (item.payload || {});
 
     if (item.kind === 'relationship_state' && isPlainObject(payload.relationshipOps?.set)) {
@@ -592,50 +660,167 @@ export async function applySelectiveProposalDecision(projectId, proposal, {
       }
       config.overlayActivations = nextOv;
       configDirty = true;
+    } else if (isPlainObject(payload.guestInvitationOps) && Array.isArray(payload.guestInvitationOps.invite)) {
+      config.roomGuestInvitations = [
+        ...(config.roomGuestInvitations || []),
+        ...structuredClone(payload.guestInvitationOps.invite),
+      ];
+      configDirty = true;
+    } else if (isPlainObject(payload.configPatch)) {
+      config = { ...config, ...structuredClone(payload.configPatch) };
+      configDirty = true;
     } else if (item.kind === 'epistemic_knowledge' || item.kind === 'epistemic_false_belief') {
-      const existingFacts = await listKnowledgeFacts({ projectId: pid });
       const titleKey = cleanString(payload.factTitle).toLowerCase();
-      let fact = existingFacts.find((f) => cleanString(f.title).toLowerCase() === titleKey) || null;
+      let factIdx = workingFacts.findIndex((f) =>
+        (f.sourceProposalItemId && f.sourceProposalItemId === item.itemId) ||
+        (titleKey && cleanString(f.title).toLowerCase() === titleKey)
+      );
+      let fact = factIdx >= 0 ? workingFacts[factIdx] : null;
+
       if (!fact) {
-        fact = await saveKnowledgeFact({
-          title: cleanString(payload.factTitle) || 'Hecho epistémico propuesto',
-          truth: cleanString(payload.factTruth) || cleanString(payload.beliefText) || 'Verdad objetiva pendiente de detallar.',
+        const explicitTruth = cleanString(payload.factTruth || '');
+        const isFalseBelief = item.kind === 'epistemic_false_belief';
+        // REGLA CRÍTICA: una creencia falsa JAMÁS se promueve a verdad objetiva (`fact.truth`).
+        // Si la verdad objetiva no ha sido confirmada por la autora, se representa explícitamente
+        // como `unresolved_author_confirmation_required`.
+        let truthText = '';
+        let truthStatus = 'author_established_truth';
+        let requiresAuthorTruthConfirmation = false;
+        let claimCategory = VALID_CLAIM_CATEGORIES.has(payload.claimCategory)
+          ? payload.claimCategory
+          : (isFalseBelief ? 'character_belief' : 'author_established_truth');
+
+        if (explicitTruth && payload.truthStatus !== 'unresolved_author_confirmation_required') {
+          truthText = explicitTruth;
+          truthStatus = 'author_established_truth';
+          requiresAuthorTruthConfirmation = false;
+        } else {
+          truthText = UNRESOLVED_TRUTH_PLACEHOLDER;
+          truthStatus = 'unresolved_author_confirmation_required';
+          requiresAuthorTruthConfirmation = true;
+          claimCategory = isFalseBelief ? 'character_belief' : (payload.claimCategory === 'hypothesis' ? 'hypothesis' : 'character_belief');
+        }
+
+        fact = normalizeKnowledgeFact({
+          title: cleanString(payload.factTitle) || (isFalseBelief ? 'Creencia de personaje (verdad por confirmar)' : 'Hecho epistémico propuesto'),
+          truth: truthText,
+          truthStatus,
+          requiresAuthorTruthConfirmation,
+          claimCategory,
+          sourceProposalItemId: item.itemId,
           scope: 'world_fact',
           layer: cleanString(payload.characterVersion || 'room') === 'outside' ? 'outside' : 'room',
           isSecret: payload.isSecret !== false,
           firstEffectiveChapterOrder: payload.effectiveChapterOrder ?? 1,
           disclosureConstraints: ['No divulgar automáticamente sin escena o evidencia.'],
-        }, { projectId: pid });
+        }, scope);
+        workingFacts.push(fact);
+        factIdx = workingFacts.length - 1;
       }
+
       const charKey = makeCharacterVersionKey(payload.characterId || 'unknown', payload.characterVersion || 'room');
-      const updatedFact = appendBeliefTransitionToFact(fact, charKey, {
-        state: payload.state || (item.kind === 'epistemic_false_belief' ? 'believes_false' : 'knows'),
-        beliefText: cleanString(payload.beliefText || ''),
-        evidence: cleanString(payload.evidence || ''),
-        effectiveChapterOrder: payload.effectiveChapterOrder ?? 1,
-      });
-      const savedFact = await saveKnowledgeFact(updatedFact, { projectId: pid });
-      appliedFacts.push(savedFact);
+      const nextState = payload.state || (item.kind === 'epistemic_false_belief' ? 'believes_false' : 'knows');
+      const nextBeliefText = cleanString(payload.beliefText || '');
+      const nextOrder = payload.effectiveChapterOrder ?? 1;
+      const existingHistory = fact.beliefHistoryByCharacter?.[charKey] || [];
+      const alreadyRecorded = existingHistory.some((entry) =>
+        entry.state === nextState &&
+        cleanString(entry.beliefText).toLowerCase() === nextBeliefText.toLowerCase() &&
+        (entry.effectiveChapterOrder ?? null) === nextOrder
+      );
+
+      if (!alreadyRecorded) {
+        const updatedFact = appendBeliefTransitionToFact(fact, charKey, {
+          state: nextState,
+          beliefText: nextBeliefText,
+          evidence: cleanString(payload.evidence || ''),
+          effectiveChapterOrder: nextOrder,
+        });
+        workingFacts[factIdx] = normalizeKnowledgeFact(updatedFact, { existing: fact, projectId: pid });
+      }
+      modifiedFactIds.add(workingFacts[factIdx].id);
     } else if (item.kind === 'possible_idea') {
-      savedIdeas.push({
-        id: db.uid(),
-        text: cleanString(payload.ideaText || item.summary),
-        savedAt: new Date().toISOString(),
-      });
+      const ideaText = cleanString(payload.ideaText || item.summary);
+      if (ideaText) {
+        const normIdea = ideaText.toLowerCase();
+        const duplicate = existingIdeas.some((x) =>
+          (x.sourceProposalItemId && x.sourceProposalItemId === item.itemId) ||
+          cleanString(x.text).toLowerCase() === normIdea
+        ) || savedIdeas.some((x) => cleanString(x.text).toLowerCase() === normIdea);
+        if (!duplicate) {
+          savedIdeas.push({
+            id: db.uid(),
+            sourceProposalItemId: item.itemId,
+            claimCategory: 'possible_plot_idea',
+            text: ideaText,
+            savedAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    // Permitir también que un ítem editado de cualquier tipo que toque `roomCast` o `roomGuestInvitations` sea validado
+    if (isPlainObject(payload.storyConfigOverrides)) {
+      config = { ...config, ...structuredClone(payload.storyConfigOverrides) };
+      configDirty = true;
     }
 
     updatedItems.push({ ...item, status: 'approved' });
   }
 
+  // Validar cualquier cambio de configuración con `resolveUniverseConfiguration` ANTES de persistir nada
+  let normalizedConfig = config;
   if (configDirty) {
-    config = await saveStoryConfig(config);
+    normalizedConfig = normalizeStoryConfig(config, { existing: existingConfig });
+    const validation = resolveUniverseConfiguration({
+      storyConfig: normalizedConfig,
+      universalCharacters,
+      storyCharacters,
+      overlays,
+      documents,
+      context: { fandom: normalizedConfig.fandom },
+    });
+    if (!validation.ok) {
+      const details = (validation.criticalIssues || []).map((i) => i.message || i.code).join(' | ');
+      throw new Error(`La propuesta editada viola invariantes del universo y fue rechazada sin guardar cambios parciales: ${details || 'contradicción crítica detectada'}`);
+    }
   }
-  if (savedIdeas.length) {
-    const chat = await getCreativeChat(pid);
-    await saveCreativeChat({
-      ...chat,
-      archivedIdeas: [...(chat.archivedIdeas || []), ...savedIdeas],
-    }, { projectId: pid });
+
+  const factsToPersist = workingFacts.filter((f) => modifiedFactIds.has(f.id));
+  const now = new Date().toISOString();
+  const nextChat = savedIdeas.length
+    ? {
+        id: makeCreativeChatId(pid),
+        projectId: pid,
+        messages: Array.isArray(existingChat?.messages) ? existingChat.messages : [],
+        rollingSummary: cleanString(existingChat?.rollingSummary || ''),
+        pendingProposals: Array.isArray(existingChat?.pendingProposals) ? existingChat.pendingProposals : [],
+        archivedIdeas: [...existingIdeas, ...savedIdeas],
+        createdAt: existingChat?.createdAt || now,
+        updatedAt: now,
+      }
+    : null;
+
+  // Transacción atómica única sobre todos los almacenes afectados
+  const storesToWrite = [];
+  if (configDirty) storesToWrite.push('storyConfigs');
+  if (factsToPersist.length) storesToWrite.push('knowledgeFacts');
+  if (nextChat) storesToWrite.push('creativeChats');
+
+  if (storesToWrite.length) {
+    await db.runAtomicTransaction(storesToWrite, 'readwrite', ({ stores }) => {
+      if (configDirty && stores.storyConfigs) {
+        stores.storyConfigs.put({ ...normalizedConfig, projectId: pid, updatedAt: now });
+      }
+      if (factsToPersist.length && stores.knowledgeFacts) {
+        for (const f of factsToPersist) {
+          stores.knowledgeFacts.put({ ...f, projectId: pid, updatedAt: now });
+        }
+      }
+      if (nextChat && stores.creativeChats) {
+        stores.creativeChats.put(nextChat);
+      }
+    });
   }
 
   const allDecided = updatedItems.every((i) => i.status !== 'proposed');
@@ -645,11 +830,11 @@ export async function applySelectiveProposalDecision(projectId, proposal, {
       ...proposal,
       items: updatedItems,
       status: !allDecided ? 'partially_resolved' : (anyApproved ? 'approved' : 'rejected'),
-      decidedAt: new Date().toISOString(),
+      decidedAt: now,
     },
-    config,
+    config: normalizedConfig,
     configUpdated: configDirty,
-    appliedFacts,
+    appliedFacts: factsToPersist,
     savedIdeas,
   };
 }
@@ -658,16 +843,30 @@ export async function applySelectiveProposalDecision(projectId, proposal, {
 // 3. Briefs de Capítulo aprobados (Creative Chat -> Brief -> Escribir)
 // ---------------------------------------------------------------------------
 
+export const CHAPTER_BRIEF_STATUSES = new Set([
+  'draft',
+  'approved',
+  'transferred',
+  'consumed',
+  'rejected',
+]);
+
 export function normalizeChapterBrief(input, { existing = null, projectId = '' } = {}) {
   if (!isPlainObject(input)) throw new Error('El brief de capítulo debe ser un objeto válido.');
   const now = new Date().toISOString();
   const pid = cleanString(projectId || input.projectId || existing?.projectId) || db.getActiveProjectId();
   const rawTargetLen = Number(input.targetLength ?? existing?.targetLength ?? 5000);
   const targetLength = Number.isFinite(rawTargetLen) && rawTargetLen >= 500 ? Math.floor(rawTargetLen) : 5000;
+  const rawChapterOrder = input.targetChapterOrder !== undefined ? input.targetChapterOrder : existing?.targetChapterOrder;
+  const parsedOrder = rawChapterOrder !== null && rawChapterOrder !== undefined && rawChapterOrder !== '' && Number.isFinite(Number(rawChapterOrder))
+    ? Math.floor(Number(rawChapterOrder))
+    : null;
 
   return {
     id: cleanString(input.id || existing?.id) || db.uid(),
     projectId: pid,
+    targetChapterId: cleanString(input.targetChapterId !== undefined ? input.targetChapterId : (existing?.targetChapterId || '')) || null,
+    targetChapterOrder: parsedOrder,
     title: cleanString(input.title !== undefined ? input.title : (existing?.title || '')),
     objective: cleanString(input.objective !== undefined ? input.objective : (existing?.objective || '')),
     perspective: cleanString(input.perspective !== undefined ? input.perspective : (existing?.perspective || '')),
@@ -686,10 +885,56 @@ export function normalizeChapterBrief(input, { existing = null, projectId = '' }
       existing?.guidanceNote ||
       'Guía creativa flexible: sirve de brújula narrativa, no obliga a forzar cada evento si la escena descubre un camino orgánico mejor.'
     ),
-    status: ['draft', 'approved', 'transferred'].includes(input.status) ? input.status : (existing?.status || 'draft'),
+    status: CHAPTER_BRIEF_STATUSES.has(input.status) ? input.status : (existing?.status || 'draft'),
+    consumedAt: input.consumedAt !== undefined ? input.consumedAt : (existing?.consumedAt || null),
+    consumedByChapterId: cleanString(input.consumedByChapterId !== undefined ? input.consumedByChapterId : (existing?.consumedByChapterId || '')) || null,
     createdAt: existing?.createdAt || input.createdAt || now,
     updatedAt: now,
   };
+}
+
+/**
+ * Selecciona únicamente un Brief de Capítulo ELEGIBLE (`approved` o `transferred`)
+ * que coincida con el capítulo objetivo.
+ * - Rechaza incluso un `activeBriefId` explícito si está en estado `draft`, `rejected` o `consumed`.
+ * - Nunca reutiliza un brief vinculado a otro capítulo distinto al objetivo.
+ */
+export function selectEligibleChapterBrief(briefs = [], {
+  activeBriefId = null,
+  targetChapterId = null,
+  targetChapterOrder = null,
+} = {}) {
+  const isEligibleStatus = (b) => b && !b.deletedAt && (b.status === 'approved' || b.status === 'transferred');
+  const reqChId = cleanString(targetChapterId || '') || null;
+  const reqChOrder = targetChapterOrder !== null && targetChapterOrder !== undefined && targetChapterOrder !== '' && Number.isFinite(Number(targetChapterOrder))
+    ? Math.floor(Number(targetChapterOrder))
+    : null;
+
+  const matchesTarget = (b) => {
+    const bChId = cleanString(b.targetChapterId || '') || null;
+    const bChOrder = b.targetChapterOrder !== null && b.targetChapterOrder !== undefined && Number.isFinite(Number(b.targetChapterOrder))
+      ? Math.floor(Number(b.targetChapterOrder))
+      : null;
+
+    if (bChId && reqChId && bChId !== reqChId) return false;
+    if (bChId && !reqChId) return false;
+    if (bChOrder !== null && reqChOrder !== null && bChOrder !== reqChOrder) return false;
+    return true;
+  };
+
+  const eligible = (briefs || []).filter((b) => isEligibleStatus(b) && matchesTarget(b));
+  if (!eligible.length) return null;
+
+  if (activeBriefId) {
+    return eligible.find((b) => b.id === activeBriefId) || null;
+  }
+
+  // Priorizar coincidencia exacta por targetChapterId, luego por targetChapterOrder, luego brief genérico sin capítulo fijo
+  const exactId = reqChId ? eligible.find((b) => b.targetChapterId === reqChId) : null;
+  if (exactId) return exactId;
+  const exactOrder = reqChOrder !== null ? eligible.find((b) => b.targetChapterOrder === reqChOrder) : null;
+  if (exactOrder) return exactOrder;
+  return eligible.find((b) => !b.targetChapterId && (b.targetChapterOrder === null || b.targetChapterOrder === undefined)) || null;
 }
 
 export async function listChapterBriefs({ projectId = '' } = {}) {
@@ -706,6 +951,19 @@ export async function saveChapterBrief(input, { projectId = '' } = {}) {
   const existing = input?.id ? await db.get('chapterBriefs', input.id, scope) : null;
   const normalized = normalizeChapterBrief(input, { existing, projectId: pid });
   return db.put('chapterBriefs', normalized, scope);
+}
+
+export async function markChapterBriefConsumed(projectId, briefId, { chapterId = null } = {}) {
+  const pid = cleanString(projectId) || db.getActiveProjectId();
+  const scope = { projectId: pid };
+  const existing = await db.get('chapterBriefs', briefId, scope);
+  if (!existing) return null;
+  return saveChapterBrief({
+    ...existing,
+    status: 'consumed',
+    consumedAt: new Date().toISOString(),
+    consumedByChapterId: cleanString(chapterId || existing.targetChapterId || '') || null,
+  }, scope);
 }
 
 export function formatChapterBriefAsInstructions(brief) {
@@ -735,11 +993,16 @@ export async function transferApprovedBriefToWrite(projectId, briefId) {
   const scope = { projectId: pid };
   const brief = await db.get('chapterBriefs', briefId, scope);
   if (!brief) throw new Error('No se encontró el brief de capítulo.');
+  if (brief.status === 'rejected' || brief.status === 'consumed') {
+    throw new Error(`No se puede transferir un brief en estado «${brief.status}».`);
+  }
   const approved = await saveChapterBrief({ ...brief, status: 'transferred' }, scope);
   const formattedText = formatChapterBriefAsInstructions(approved);
   await db.put('settings', {
     id: `planner-draft:${pid}`,
     briefId: approved.id,
+    targetChapterId: approved.targetChapterId || null,
+    targetChapterOrder: approved.targetChapterOrder ?? null,
     title: approved.title || '',
     text: formattedText,
     targetWords: approved.targetLength || 5000,

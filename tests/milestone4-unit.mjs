@@ -42,9 +42,13 @@ import {
   buildBoundedChatContext,
   extractConversationalProposal,
   normalizeChapterBrief,
+  selectEligibleChapterBrief,
   formatChapterBriefAsInstructions,
 } from '../js/creativeChat.js';
 import { resolveUniverseConfiguration } from '../js/universeResolver.js';
+import { assembleHierarchicalMemory } from '../js/hierarchicalMemory.js';
+import { buildDocumentLexicalIndex } from '../js/lexicalIndex.js';
+import { resolveCanonicalNarrativeTarget } from '../js/contextEnginePrep.js';
 
 // 1. IndexedDB v4 additive schema & v1/v2/v3/v4 backup compatibility
 {
@@ -293,4 +297,126 @@ import { resolveUniverseConfiguration } from '../js/universeResolver.js';
   assert.ok(formatted.includes('flexible') || formatted.includes('brújula narrativa'));
 }
 
-console.log('PASS: all Milestone 4 offline unit tests passed (v4 schema, 4-scope Writing DNA, 14 anti-patterns, AU anti-contamination guard, 6 reference roles & STYLE_ONLY isolation, PtS timeline separation, bounded Creative Chat, NL selective proposals & Chapter Briefs).');
+// 8. PART A #1: Standalone false belief NEVER promotes belief text to objective truth
+{
+  const prop = await extractConversationalProposal(
+    'Hange thinks Levi is secretly running an underground tea smuggling ring.',
+    { fandom: 'power_to_strive' }
+  );
+  const fb = prop.items.find((i) => i.kind === 'epistemic_false_belief');
+  assert.ok(fb, 'Should extract standalone false belief');
+  assert.equal(fb.claimCategory, 'character_belief');
+  assert.equal(fb.payload.factTruth, '', 'Objective truth must remain empty when unconfirmed');
+  assert.equal(fb.payload.truthStatus, 'unresolved_author_confirmation_required');
+  assert.equal(fb.payload.requiresAuthorTruthConfirmation, true);
+}
+
+// 9. PART A #2: Writing DNA chapter_scene scope isolation & heuristic warning label
+{
+  const feedback = [
+    { id: 'fb-ch2-scA', scope: 'chapter_scene', projectId: 'p1', chapterId: 'ch-2', sceneId: 'sc-a', status: 'approved', ruleText: 'ONLY_CH2_SCENE_A' },
+    { id: 'fb-ch2-all', scope: 'chapter_scene', projectId: 'p1', chapterId: 'ch-2', sceneId: null, status: 'approved', ruleText: 'ONLY_CH2_ALL_SCENES' },
+    { id: 'fb-ch-missing', scope: 'chapter_scene', projectId: 'p1', chapterId: null, sceneId: null, status: 'approved', ruleText: 'UNSCOPED_MUST_NOT_APPLY' },
+    { id: 'fb-fandom-polluted', scope: 'fandom', fandom: 'power_to_strive', status: 'approved', ruleText: 'Levi married Joseph in Violet AU.' },
+  ];
+
+  const rCh2ScA = resolveWritingDna({ editorialFeedback: feedback, fandom: 'power_to_strive', projectId: 'p1', targetChapterId: 'ch-2', targetSceneId: 'sc-a' });
+  const rCh2ScB = resolveWritingDna({ editorialFeedback: feedback, fandom: 'power_to_strive', projectId: 'p1', targetChapterId: 'ch-2', targetSceneId: 'sc-b' });
+  const rCh3ScA = resolveWritingDna({ editorialFeedback: feedback, fandom: 'power_to_strive', projectId: 'p1', targetChapterId: 'ch-3', targetSceneId: 'sc-a' });
+
+  assert.equal(rCh2ScA.antiContaminationDetectionMode, 'heuristic_warning_not_semantic_guarantee');
+  assert.ok(rCh2ScA.approvedLearnedRules.some((r) => r.id === 'fb-ch2-scA'));
+  assert.ok(rCh2ScA.approvedLearnedRules.some((r) => r.id === 'fb-ch2-all'));
+  assert.ok(!rCh2ScA.approvedLearnedRules.some((r) => r.id === 'fb-ch-missing'));
+  assert.ok(!rCh2ScA.approvedLearnedRules.some((r) => r.id === 'fb-fandom-polluted'), 'Story/AU-specific rule must NOT leak through fandom scope');
+
+  assert.ok(!rCh2ScB.approvedLearnedRules.some((r) => r.id === 'fb-ch2-scA'), 'Scene A rule must NOT leak into Scene B');
+  assert.ok(rCh2ScB.approvedLearnedRules.some((r) => r.id === 'fb-ch2-all'));
+  assert.ok(!rCh3ScA.approvedLearnedRules.some((r) => r.id === 'fb-ch2-scA'), 'Chapter 2 rule must NOT leak into Chapter 3');
+  assert.ok(!rCh3ScA.approvedLearnedRules.some((r) => r.id === 'fb-ch2-all'), 'Chapter 2 rule must NOT leak into Chapter 3');
+
+  const guard = detectPlotOrAuSpecificContent('Violet AU marriage');
+  assert.equal(guard.detectionMode, 'heuristic_warning_not_semantic_guarantee');
+}
+
+// 10. PART A #3: Strict eligible Chapter Brief selection (rejects draft, rejected, consumed, wrong chapter even with explicit activeBriefId)
+{
+  const briefs = [
+    normalizeChapterBrief({ id: 'br-draft', projectId: 'p1', status: 'draft', targetChapterOrder: 5, objective: 'Draft' }),
+    normalizeChapterBrief({ id: 'br-rejected', projectId: 'p1', status: 'rejected', targetChapterOrder: 5, objective: 'Rejected' }),
+    normalizeChapterBrief({ id: 'br-consumed', projectId: 'p1', status: 'consumed', targetChapterOrder: 5, objective: 'Consumed' }),
+    normalizeChapterBrief({ id: 'br-ch3', projectId: 'p1', status: 'approved', targetChapterId: 'ch-3', targetChapterOrder: 3, objective: 'Ch 3 brief' }),
+    normalizeChapterBrief({ id: 'br-ch5', projectId: 'p1', status: 'transferred', targetChapterId: 'ch-5', targetChapterOrder: 5, objective: 'Ch 5 brief' }),
+  ];
+
+  assert.equal(selectEligibleChapterBrief(briefs, { activeBriefId: 'br-draft', targetChapterOrder: 5 }), null);
+  assert.equal(selectEligibleChapterBrief(briefs, { activeBriefId: 'br-rejected', targetChapterOrder: 5 }), null);
+  assert.equal(selectEligibleChapterBrief(briefs, { activeBriefId: 'br-consumed', targetChapterOrder: 5 }), null);
+  assert.equal(selectEligibleChapterBrief(briefs, { activeBriefId: 'br-ch3', targetChapterId: 'ch-5', targetChapterOrder: 5 }), null);
+  assert.equal(selectEligibleChapterBrief(briefs, { targetChapterId: 'ch-5', targetChapterOrder: 5 })?.id, 'br-ch5');
+  assert.equal(selectEligibleChapterBrief(briefs, { targetChapterId: 'ch-9', targetChapterOrder: 9 }), null);
+}
+
+// 11. PART A #4: BM25 reference retrieval in assembleHierarchicalMemory enforces identical role/timeline/fandom/active filters
+{
+  const docs = [
+    { id: 'doc-style-legacy', filename: 'Violet.txt', type: 'REFERENCE', role: 'STYLE_ONLY', active: true, timelineId: 'shared_active' },
+    { id: 'doc-alt-timeline', filename: 'PtS_III.txt', type: 'CANON', role: 'AU_CANON', active: true, timelineId: 'pts_iii_part_1_alternate', fandom: 'power_to_strive' },
+    { id: 'doc-foreign-fandom', filename: 'SciFiLore.txt', type: 'CANON', role: 'WORLD_BUILDING', active: true, timelineId: 'shared_active', fandom: 'starlight_original' },
+    { id: 'doc-inactive', filename: 'Disabled.txt', type: 'CANON', role: 'AU_CANON', active: false, timelineId: 'pts_i_ii_original', fandom: 'power_to_strive' },
+    { id: 'doc-valid', filename: 'PtS_I_II.txt', type: 'CANON', role: 'AU_CANON', active: true, timelineId: 'pts_i_ii_original', fandom: 'power_to_strive' },
+  ];
+  const chunks = [
+    { id: 'c-1', documentId: 'doc-style-legacy', index: 0, text: 'Secret silver compass melody in Leiden typewriter letters.' },
+    { id: 'c-2', documentId: 'doc-alt-timeline', index: 0, text: 'Secret silver compass alternate timeline Season 3 continuation.' },
+    { id: 'c-3', documentId: 'doc-foreign-fandom', index: 0, text: 'Secret silver compass starship hyperdrive core.' },
+    { id: 'c-4', documentId: 'doc-inactive', index: 0, text: 'Secret silver compass inactive archive draft.' },
+    { id: 'c-5', documentId: 'doc-valid', index: 0, text: 'Secret silver compass watching room canon reference.' },
+  ];
+  // Even if a pre-built persisted documentLexicalIndex contains ALL docs, BM25 must exclude STYLE_ONLY, alt timeline, foreign fandom, and inactive!
+  const fullIndex = buildDocumentLexicalIndex(docs, chunks, { projectId: 'p-pts' });
+  const mem = assembleHierarchicalMemory({
+    projectId: 'p-pts',
+    targetChapterOrder: 2,
+    activeTimelineId: 'pts_i_ii_original',
+    fandom: 'power_to_strive',
+    query: 'secret silver compass',
+    documents: docs,
+    docChunks: chunks,
+    documentLexicalIndex: fullIndex,
+  });
+  const refHits = mem.modelPayload.layers.C_historical_episodic.referencePassages;
+  assert.equal(refHits.length, 1);
+  assert.equal(refHits[0].documentId, 'doc-valid');
+  assert.ok(!refHits.some((h) => h.documentId === 'doc-style-legacy'), 'STYLE_ONLY must NEVER leak via BM25');
+  assert.ok(!refHits.some((h) => h.documentId === 'doc-alt-timeline'), 'Alternate timeline must NEVER leak via BM25');
+  assert.ok(!refHits.some((h) => h.documentId === 'doc-foreign-fandom'), 'Foreign fandom must NEVER leak via BM25');
+  assert.ok(!refHits.some((h) => h.documentId === 'doc-inactive'), 'Inactive doc must NEVER leak via BM25');
+}
+
+// 12. PART A #6: Canonical narrative target prevents latest story checkpoint leaking into historical rewrites
+{
+  const chapters = [
+    { id: 'ch-1', order: 1, title: 'Chapter 1', checkpointId: 's1_beginning', timelineId: 'pts_i_ii_original' },
+    { id: 'ch-10', order: 10, title: 'Chapter 10', checkpointId: 's2_end', timelineId: 'pts_i_ii_original' },
+  ];
+  const storyConfig = { fandom: 'power_to_strive', checkpointId: 's3_alternate', timelineId: 'pts_iii_part_1_alternate' };
+
+  const histTarget = resolveCanonicalNarrativeTarget({
+    storyConfig,
+    chapters,
+    targetChapterId: 'ch-1',
+    targetSceneId: 'sc-1',
+  });
+  assert.equal(histTarget.isHistoricalRewrite, true);
+  assert.equal(histTarget.targetChapterOrder, 1);
+  assert.equal(histTarget.checkpointId, 's1_beginning', 'Historical rewrite MUST use target chapter checkpoint, NEVER latest storyConfig.checkpointId');
+  assert.equal(histTarget.activeTimelineId, 'pts_i_ii_original');
+
+  const newTarget = resolveCanonicalNarrativeTarget({ storyConfig, chapters });
+  assert.equal(newTarget.isHistoricalRewrite, false);
+  assert.equal(newTarget.targetChapterOrder, 11);
+  assert.equal(newTarget.checkpointId, 's3_alternate');
+}
+
+console.log('PASS: all Milestone 4 + Part A offline unit tests passed (v4 schema, 4-scope Writing DNA + chapter/scene isolation, 14 anti-patterns, AU anti-contamination guard, 6 reference roles & BM25 consistency, PtS timeline separation, bounded Creative Chat, false-belief truth isolation, eligible Chapter Briefs & canonical narrative target).');

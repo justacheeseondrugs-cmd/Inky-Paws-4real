@@ -302,12 +302,28 @@ export function normalizeKnowledgeFact(input, { existing = null, projectId = '' 
     : (Array.isArray(existing?.disclosureHistory) ? existing.disclosureHistory : []);
   const disclosureHistory = rawDisclosureHistory.map(normalizeDisclosureEntry).filter(Boolean).sort(compareTemporalPoint);
 
+  const rawTruthStatus = cleanString(input.truthStatus !== undefined ? input.truthStatus : (existing?.truthStatus || 'author_established_truth'));
+  const truthStatus = ['author_established_truth', 'unresolved_author_confirmation_required'].includes(rawTruthStatus)
+    ? rawTruthStatus
+    : 'author_established_truth';
+  const rawClaimCategory = cleanString(input.claimCategory !== undefined ? input.claimCategory : (existing?.claimCategory || 'author_established_truth'));
+  const claimCategory = ['author_established_truth', 'character_belief', 'hypothesis', 'possible_plot_idea'].includes(rawClaimCategory)
+    ? rawClaimCategory
+    : 'author_established_truth';
+  const requiresAuthorTruthConfirmation = typeof input.requiresAuthorTruthConfirmation === 'boolean'
+    ? input.requiresAuthorTruthConfirmation
+    : (existing?.requiresAuthorTruthConfirmation ?? (truthStatus === 'unresolved_author_confirmation_required'));
+
   const effectiveProjectId = cleanString(projectId || input.projectId || existing?.projectId) || db.getActiveProjectId();
   return {
     id: cleanString(input.id || existing?.id) || db.uid(),
     projectId: effectiveProjectId,
     title: cleanString(input.title !== undefined ? input.title : (existing?.title || truth.slice(0, 72))),
     truth,
+    truthStatus,
+    requiresAuthorTruthConfirmation,
+    claimCategory,
+    sourceProposalItemId: cleanString(input.sourceProposalItemId !== undefined ? input.sourceProposalItemId : existing?.sourceProposalItemId) || null,
     scope,
     layer,
     isSecret: typeof input.isSecret === 'boolean'

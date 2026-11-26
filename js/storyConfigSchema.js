@@ -269,13 +269,12 @@ export async function getStoryConfig(projectId) {
   return stored || null;
 }
 
-export async function saveStoryConfig(config) {
+export function normalizeStoryConfig(config, { existing = null } = {}) {
   if (!isPlainObject(config)) throw new Error('Configuración de historia inválida.');
-  const id = cleanString(config.id || config.projectId) || db.getActiveProjectId();
-  const existing = await db.get('storyConfigs', id);
+  const id = cleanString(config.id || config.projectId || existing?.id) || db.getActiveProjectId();
   const base = existing || createDefaultStoryConfig(id, { fandom: config.fandom || 'neutral' });
   const now = new Date().toISOString();
-  const merged = {
+  return {
     ...base,
     ...config,
     id,
@@ -283,6 +282,13 @@ export async function saveStoryConfig(config) {
     fandom: normalizeFandomNamespace(config.fandom !== undefined ? config.fandom : base.fandom),
     updatedAt: now,
   };
+}
+
+export async function saveStoryConfig(config) {
+  if (!isPlainObject(config)) throw new Error('Configuración de historia inválida.');
+  const id = cleanString(config.id || config.projectId) || db.getActiveProjectId();
+  const existing = await db.get('storyConfigs', id);
+  const merged = normalizeStoryConfig(config, { existing });
   return db.put('storyConfigs', merged);
 }
 

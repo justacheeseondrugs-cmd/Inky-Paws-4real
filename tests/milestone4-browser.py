@@ -316,13 +316,137 @@ def main():
               };
             }''')
             assert all(final_check.values()), f'Milestone 4 final verification failed: {final_check}'
+
+            # ------------------------------------------------------------------
+            # TEST 6: PART A integration fixes (atomic proposal rollback, idempotency,
+            # unresolved false-belief truth, BM25 STYLE_ONLY exclusion, historical checkpoint)
+            # ------------------------------------------------------------------
+            part_a_check = page.evaluate('''async () => {
+              const { db } = await import('/js/db.js');
+              const { extractConversationalProposal, applySelectiveProposalDecision, getCreativeChat } = await import('/js/creativeChat.js');
+              const { listKnowledgeFacts } = await import('/js/knowledgeLedger.js');
+              const { assembleUnifiedContextSnapshot } = await import('/js/contextEnginePrep.js');
+
+              // 1. Standalone false belief -> unresolved truth (never uses beliefText as fact.truth)
+              const fbProp = await extractConversationalProposal(
+                'Connie thinks Levi hides secret candy inside his boots.',
+                { fandom: 'power_to_strive' }
+              );
+              const fbItem = fbProp.items.find(i => i.kind === 'epistemic_false_belief');
+              const ideaItem = fbProp.items.find(i => i.kind === 'possible_idea');
+              const firstApply = await applySelectiveProposalDecision('story-m4-pts', fbProp, {
+                approvedItemIds: [fbItem.itemId],
+                rejectedItemIds: ideaItem ? [ideaItem.itemId] : [],
+              });
+              const createdFact = firstApply.appliedFacts[0];
+              const falseBeliefNeverTruth = Boolean(
+                createdFact &&
+                createdFact.truthStatus === 'unresolved_author_confirmation_required' &&
+                createdFact.requiresAuthorTruthConfirmation === true &&
+                !createdFact.truth.toLowerCase().includes('candy inside his boots')
+              );
+
+              // 2. Idempotency: re-applying the decided proposal preserves statuses and creates zero duplicates
+              const factsBefore = (await listKnowledgeFacts({ projectId: 'story-m4-pts' })).length;
+              const ideasBefore = ((await getCreativeChat('story-m4-pts')).archivedIdeas || []).length;
+              const secondApply = await applySelectiveProposalDecision('story-m4-pts', firstApply.proposal, {
+                approvedItemIds: fbProp.items.map(i => i.itemId),
+              });
+              const factsAfter = (await listKnowledgeFacts({ projectId: 'story-m4-pts' })).length;
+              const ideasAfter = ((await getCreativeChat('story-m4-pts')).archivedIdeas || []).length;
+              const idempotentOk = (
+                factsAfter === factsBefore &&
+                ideasAfter === ideasBefore &&
+                secondApply.proposal.items.find(i => i.itemId === fbItem.itemId)?.status === 'approved' &&
+                (!ideaItem || secondApply.proposal.items.find(i => i.itemId === ideaItem.itemId)?.status === 'rejected')
+              );
+
+              // 3. Atomic validation rollback: edited payload inviting Anya must throw and leave zero partial writes!
+              const badProp = {
+                id: 'prop-bad-atomic',
+                fandom: 'power_to_strive',
+                items: [
+                  {
+                    itemId: 'item-good-idea',
+                    kind: 'possible_idea',
+                    label: 'Good idea',
+                    payload: { ideaText: 'SHOULD_ROLL_BACK_ON_INVALID_CONFIG' },
+                    status: 'proposed',
+                  },
+                  {
+                    itemId: 'item-bad-anya',
+                    kind: 'optional_character_enable',
+                    label: 'Edited bad config',
+                    payload: { optionalCharacterOps: { enable: ['anya'] } },
+                    status: 'proposed',
+                  },
+                ],
+              };
+              let invalidRejected = false;
+              try {
+                await applySelectiveProposalDecision('story-m4-pts', badProp, {
+                  approvedItemIds: ['item-good-idea', 'item-bad-anya'],
+                  editedPayloads: {
+                    'item-bad-anya': {
+                      storyConfigOverrides: { roomGuestInvitations: [{ characterId: 'anya', temporary: true }] },
+                    },
+                  },
+                });
+              } catch (err) {
+                invalidRejected = String(err.message || err).includes('invariantes');
+              }
+              const ideasAfterBad = (await getCreativeChat('story-m4-pts')).archivedIdeas || [];
+              const atomicRollbackOk = invalidRejected && !ideasAfterBad.some(i => i.text === 'SHOULD_ROLL_BACK_ON_INVALID_CONFIG');
+
+              // 4. Historical rewrite canonical target + BM25 STYLE_ONLY exclusion
+              await db.put('chapters', {
+                id: 'ch-m4-1',
+                projectId: 'story-m4-pts',
+                order: 1,
+                title: 'Chapter 1',
+                content: 'Levi drank tea in the watching room while the screen paused.',
+                checkpointId: 's1_beginning',
+                timelineId: 'pts_i_ii_original',
+              }, { projectId: 'story-m4-pts' });
+              await db.put('chapters', {
+                id: 'ch-m4-5',
+                projectId: 'story-m4-pts',
+                order: 5,
+                title: 'Chapter 5',
+                content: 'Later chapter in season 2.',
+                checkpointId: 's2_end',
+                timelineId: 'pts_i_ii_original',
+              }, { projectId: 'story-m4-pts' });
+
+              const histSnap = await assembleUnifiedContextSnapshot({
+                projectId: 'story-m4-pts',
+                targetChapterId: 'ch-m4-1',
+                query: 'Violet Leiden typewriter letters',
+              });
+              const bm25StyleExcluded = !(histSnap.memory.modelPayload.layers.C_historical_episodic.referencePassages || [])
+                .some(p => p.documentId === 'doc-ve-m4');
+              const historicalTargetOk = (
+                histSnap.narrativeTarget.isHistoricalRewrite === true &&
+                histSnap.narrativeTarget.checkpointId === 's1_beginning' &&
+                histSnap.memory.modelPayload.currentCheckpoint === 's1_beginning'
+              );
+
+              return {
+                falseBeliefNeverTruth,
+                idempotentOk,
+                atomicRollbackOk,
+                bm25StyleExcluded,
+                historicalTargetOk,
+              };
+            }''')
+            assert all(part_a_check.values()), f'Part A browser integration checks failed: {part_a_check}'
             assert not network_external, f'Unexpected external network/API requests made: {network_external}'
             assert not errors, f'Unexpected page errors: {errors}'
             assert not csp_errs, f'CSP violations: {csp_errs}'
 
             ctx.close()
             browser.close()
-            print('PASS: all Milestone 4 browser integration tests passed (v3->v4 upgrade, 4-scope Writing DNA, AU anti-contamination guard, editorial feedback approval/rejection, 6 reference roles & STYLE_ONLY craft profile, independent Creative Chat, selective NL proposal approval, Chapter Brief -> Escribir transfer, unified Context Engine prep snapshot, v4 backup round-trip, 0 external API calls).')
+            print('PASS: all Milestone 4 + Part A browser integration tests passed (v3->v4 upgrade, 4-scope Writing DNA, AU anti-contamination guard, editorial feedback approval/rejection, 6 reference roles & STYLE_ONLY craft profile, BM25 reference consistency, independent Creative Chat, selective atomic idempotent NL proposals, unresolved false-belief truth, Chapter Brief -> Escribir transfer, canonical historical target, unified Context Engine prep snapshot, v4 backup round-trip, 0 external API calls).')
     finally:
         server.shutdown()
 
