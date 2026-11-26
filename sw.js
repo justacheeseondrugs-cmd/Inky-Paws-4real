@@ -1,7 +1,9 @@
 // sw.js — cachea sólo el "shell" de la app (HTML/CSS/JS propios) para que
 // abra offline. Las llamadas a la API de IA siempre necesitan red y nunca
 // se cachean aquí.
-const CACHE = 'inky-paws-es-v43-your-name-v1';
+const CACHE = 'inky-paws-es-v44-phase0-v1';
+const OWNED_CACHE_PREFIXES = ['inky-paws-', 'pts-studio-'];
+const isOwnedCache = (name) => OWNED_CACHE_PREFIXES.some((prefix) => String(name || '').startsWith(prefix));
 const SHELL = [
   './',
   './index.html',
@@ -56,18 +58,31 @@ const SHELL = [
   './icons/logo-maskable-512.png',
 ];
 
+async function cacheFreshShell() {
+  const cache = await caches.open(CACHE);
+  await Promise.all(SHELL.map(async (asset) => {
+    try {
+      const response = await fetch(new Request(asset, { cache: 'reload' }));
+      if (response.ok) await cache.put(asset, response);
+    } catch {
+      // Allow partial pre-cache if one non-critical asset fails offline.
+    }
+  }));
+}
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).catch(() => {})
-  );
+  event.waitUntil(cacheFreshShell());
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys.filter((k) => isOwnedCache(k) && k !== CACHE).map((k) => caches.delete(k))
+      ))
+      .then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
@@ -84,7 +99,18 @@ self.addEventListener('fetch', (event) => {
         caches.open(CACHE).then((cache) => cache.put(event.request, copy)).catch(() => {});
       }
       return response;
-    }).catch(async () => (await caches.match(event.request)) || Response.error())
+    }).catch(async () => {
+      const cache = await caches.open(CACHE);
+      const exact = await cache.match(event.request);
+      if (exact) return exact;
+      const stripped = await cache.match(event.request, { ignoreSearch: true });
+      if (stripped) return stripped;
+      if (event.request.mode === 'navigate') {
+        const index = await cache.match('./index.html');
+        if (index) return index;
+      }
+      return Response.error();
+    })
   );
 });
 

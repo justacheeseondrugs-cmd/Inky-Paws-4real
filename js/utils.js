@@ -5,6 +5,16 @@ export function wordCount(text) {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+export function contentFingerprint(text) {
+  const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `v1:${wordCount(normalized)}:${normalized.length}:${hash.toString(16).padStart(8, '0')}`;
+}
+
 export function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -71,27 +81,66 @@ export function fmtDate(iso) {
 }
 
 // ---- modal genérico (sheet) ----
-export function openModal(innerHtml) {
+let activeModalCleanup = null;
+
+export function openModal(innerHtml, { onClose } = {}) {
   closeModal();
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   backdrop.id = 'active-modal';
-  backdrop.innerHTML = `<div class="modal-sheet">${innerHtml}</div>`;
+  backdrop.innerHTML = `<div class="modal-sheet" role="dialog" aria-modal="true">${innerHtml}</div>`;
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') closeModal();
+  };
+  let closed = false;
+  activeModalCleanup = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKeyDown);
+    if (typeof onClose === 'function') {
+      try { onClose(); } catch { }
+    }
+  };
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeModal(); });
+  document.addEventListener('keydown', onKeyDown);
   document.body.appendChild(backdrop);
   return backdrop;
 }
 
 export function closeModal() {
+  const cleanup = activeModalCleanup;
+  activeModalCleanup = null;
+  if (cleanup) cleanup();
   document.getElementById('active-modal')?.remove();
 }
 
 export function debounce(fn, wait = 600) {
   let t = null;
-  return (...args) => {
+  let lastArgs = null;
+  const debounced = (...args) => {
+    lastArgs = args;
     clearTimeout(t);
-    t = setTimeout(() => fn(...args), wait);
+    t = setTimeout(() => {
+      const argsToRun = lastArgs;
+      t = null;
+      lastArgs = null;
+      fn(...argsToRun);
+    }, wait);
   };
+  debounced.flush = () => {
+    if (t === null) return undefined;
+    clearTimeout(t);
+    const argsToRun = lastArgs;
+    t = null;
+    lastArgs = null;
+    return fn(...argsToRun);
+  };
+  debounced.cancel = () => {
+    clearTimeout(t);
+    t = null;
+    lastArgs = null;
+  };
+  return debounced;
 }
 
 // ---- bus de eventos minimalista ----

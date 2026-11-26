@@ -1,4 +1,4 @@
-import { hasMatchingCharacterSheet } from './characterMatch.js?v=20261003-name-match-v2';
+import { hasMatchingCharacterSheet } from './characterMatch.js';
 
 // contextGuard.js — preflight local y explicable antes de gastar API.
 // No intenta "entender" toda la historia: detecta conflictos estructurales

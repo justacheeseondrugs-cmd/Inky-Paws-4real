@@ -39,25 +39,47 @@ export function sortChaptersWithVariants(chapters) {
   });
 }
 
+export function sortMainTimelineChapters(chapters) {
+  return (chapters || [])
+    .filter((ch) => isMainTimelineChapter(ch))
+    .slice()
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) ||
+      String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+}
+
 // A chapter may be reopened or an alternative may be drafted in an old slot.
 // Future chapters and the main version of the same slot are never past canon.
 export function chaptersBefore(chapters, currentChapterId) {
   const all = (chapters || []).filter(Boolean);
-  const current = all.find(ch => ch.id === currentChapterId);
+  const current = currentChapterId ? all.find((ch) => ch.id === currentChapterId) : null;
   if (currentChapterId && !current) return []; // fail closed on an unknown target
   const scope = current?.projectId || 'original';
-  return all.filter(ch => isMainTimelineChapter(ch) &&
-    ch.id !== currentChapterId &&
-    (!current || (ch.projectId || 'original') === scope) &&
-    (!current || (ch.order ?? 0) < (current.order ?? 0)) &&
-    String(ch.content || '').trim())
-    .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) ||
-      String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const currentOrder = current ? (current.order ?? 0) : null;
+  const currentCreated = current ? String(current.createdAt || '') : '';
+  const currentGroup = current?.branchGroupId || '';
+  const isAlternativeTarget = current?.branchRole === 'alternative';
+
+  return all.filter((ch) => {
+    if (!isMainTimelineChapter(ch)) return false;
+    if (ch.id === currentChapterId) return false;
+    if (!String(ch.content || '').trim()) return false;
+    if (!current) return true;
+    if ((ch.projectId || 'original') !== scope) return false;
+    if (currentGroup && ch.branchGroupId === currentGroup) return false;
+    const chOrder = ch.order ?? 0;
+    if (chOrder < currentOrder) return true;
+    if (chOrder === currentOrder && !isAlternativeTarget) {
+      const chCreated = String(ch.createdAt || '');
+      return !!(chCreated && currentCreated && chCreated < currentCreated);
+    }
+    return false;
+  }).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) ||
+    String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
 }
 
 // Narrative order, not the timestamp of a later memory regeneration.
 export function memoriesForChapters(memories, chapters) {
-  const rank = new Map((chapters || []).map((ch,i) => [ch.id,i]));
+  const rank = new Map((chapters || []).map((ch, i) => [ch.id, i]));
   const newest = new Map();
   for (const m of memories || []) {
     if (!m || !rank.has(m.chapterId)) continue;
@@ -65,8 +87,8 @@ export function memoriesForChapters(memories, chapters) {
     if ((m.projectId || 'original') !== (ch.projectId || 'original')) continue;
     const previous = newest.get(m.chapterId);
     if (!previous || String(m.createdAt || '') >= String(previous.createdAt || ''))
-      newest.set(m.chapterId,m);
+      newest.set(m.chapterId, m);
   }
-  return [...newest.values()].sort((a,b)=>rank.get(a.chapterId)-rank.get(b.chapterId))
-    .map(m=>({...m, chapterOrder:rank.get(m.chapterId)}));
+  return [...newest.values()].sort((a, b) => rank.get(a.chapterId) - rank.get(b.chapterId))
+    .map((m) => ({ ...m, chapterOrder: rank.get(m.chapterId) }));
 }

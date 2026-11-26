@@ -89,7 +89,7 @@ try:
         }''')
         # Boot the real app against the same browser data and inspect actual tabs.
         page.goto(f'http://127.0.0.1:{server.server_port}/index.html')
-        page.wait_for_function("document.querySelector('#workspace-select')?.options.length >= 4")
+        page.wait_for_function("() => document.querySelector('#workspace-select')?.options.length >= 4")
         page.select_option('#workspace-select',result['project'])
         page.click('[data-view="characters"]')
         page.wait_for_selector('#char-list .list-item')

@@ -1,13 +1,13 @@
-import { AIProvider, isLikelyInvalidProse } from './base.js';
+import { AIProvider, isLikelyInvalidProse, isAbortError } from './base.js';
 
 function apiError(res, data) {
   if (res.status === 429) {
-    return { ok: false, text: null, errorType: 'quota', errorMessage: 'OpenAI devolvió 429 (cuota/límite de tasa excedido). No reintentes automáticamente; espera y vuelve a intentar.', raw: data };
+    return { ok: false, text: null, errorType: 'quota', errorMessage: 'OpenAI devolvió 429 (cuota/límite de tasa excedido). No reintentes automáticamente; espera y vuelve a intentar.', truncated: false, finishReason: null, raw: data };
   }
   if (res.status === 401 || res.status === 403) {
-    return { ok: false, text: null, errorType: 'auth', errorMessage: 'clave API de OpenAI inválida o sin permisos (HTTP ' + res.status + ').', raw: data };
+    return { ok: false, text: null, errorType: 'auth', errorMessage: 'clave API de OpenAI inválida o sin permisos (HTTP ' + res.status + ').', truncated: false, finishReason: null, raw: data };
   }
-  return { ok: false, text: null, errorType: 'http', errorMessage: 'OpenAI devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), raw: data };
+  return { ok: false, text: null, errorType: 'http', errorMessage: 'OpenAI devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), truncated: false, finishReason: null, raw: data };
 }
 
 function extractResponsesText(data) {
@@ -21,7 +21,7 @@ function extractResponsesText(data) {
   return pieces.join('').trim();
 }
 
-async function postJson(url, apiKey, body) {
+async function postJson(url, apiKey, body, signal) {
   let res;
   try {
     res = await fetch(url, {
@@ -31,8 +31,10 @@ async function postJson(url, apiKey, body) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
+      signal,
     });
   } catch (err) {
+    if (isAbortError(err) || signal?.aborted) return { aborted: true };
     return { networkError: err };
   }
   let data = null;
@@ -52,11 +54,12 @@ export class OpenAIProvider extends AIProvider {
     cacheKey = '',
     maxOutputTokens = 2048,
     temperature = 1.0,
+    signal,
   }) {
-    const apiKey = this.config.apiKey;
-    const model = this.config.model || 'gpt-5.4-mini';
+    const apiKey = String(this.config.apiKey || '').trim();
+    const model = String(this.config.model || 'gpt-5.4-mini').trim();
     if (!apiKey) {
-      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de OpenAI en Ajustes.', raw: null };
+      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de OpenAI en Ajustes.', truncated: false, finishReason: null, raw: null };
     }
 
     // GPT-5.6+ introduced paid cache writes and explicit cache breakpoints.
@@ -108,23 +111,33 @@ export class OpenAIProvider extends AIProvider {
         ...(reusable && cacheKey ? { prompt_cache_key: String(cacheKey).slice(0, 64) } : {}),
       };
 
-      const req = await postJson('https://api.openai.com/v1/responses', apiKey, body);
+      const req = await postJson('https://api.openai.com/v1/responses', apiKey, body, signal);
+      if (req.aborted) {
+        return { ok: false, text: null, errorType: 'aborted', errorMessage: 'Solicitud a OpenAI cancelada por la autora.', truncated: false, finishReason: null, raw: null };
+      }
       if (req.networkError) {
-        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, raw: req.networkError };
+        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, truncated: false, finishReason: null, raw: req.networkError };
       }
       const { res, data } = req;
       if (!res.ok) return apiError(res, data);
+
+      const incompleteReason = String(data?.incomplete_details?.reason || '');
+      const truncated = data?.status === 'incomplete' || incompleteReason === 'max_output_tokens';
+      const finishReason = truncated ? (incompleteReason || 'length') : (data?.status || 'completed');
 
       const text = extractResponsesText(data);
       if (!text || isLikelyInvalidProse(text)) {
         const refusal = (data?.output || []).flatMap((item) => item?.content || []).find((part) => part?.type === 'refusal');
         if (refusal) {
-          return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', raw: data };
+          return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', truncated: false, finishReason: 'refusal', raw: data };
         }
-        return { ok: false, text: null, errorType: 'empty', errorMessage: 'OpenAI devolvió una respuesta vacía o inválida.', raw: data };
+        const msg = truncated
+          ? 'OpenAI alcanzó el límite de tokens de salida antes de devolver texto utilizable.'
+          : 'OpenAI devolvió una respuesta vacía o inválida.';
+        return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, raw: data };
       }
 
-      return { ok: true, text, errorType: null, errorMessage: null, raw: data };
+      return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, raw: data };
     }
 
     // Compatibility path for older GPT / o-series models.
@@ -150,9 +163,12 @@ export class OpenAIProvider extends AIProvider {
     // No se vuelve a enviar una generación que haya tenido éxito.
     let res, data;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const req = await postJson(url, apiKey, body);
+      const req = await postJson(url, apiKey, body, signal);
+      if (req.aborted) {
+        return { ok: false, text: null, errorType: 'aborted', errorMessage: 'Solicitud a OpenAI cancelada por la autora.', truncated: false, finishReason: null, raw: null };
+      }
       if (req.networkError) {
-        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, raw: req.networkError };
+        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, truncated: false, finishReason: null, raw: req.networkError };
       }
       res = req.res;
       data = req.data;
@@ -176,15 +192,20 @@ export class OpenAIProvider extends AIProvider {
     if (!res.ok) return apiError(res, data);
 
     const choice = data?.choices?.[0];
-    if (choice?.finish_reason === 'content_filter') {
-      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', raw: data };
+    const finishReason = choice?.finish_reason || null;
+    if (finishReason === 'content_filter') {
+      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', truncated: false, finishReason, raw: data };
     }
 
+    const truncated = finishReason === 'length';
     const text = (choice?.message?.content || '').trim();
     if (!text || isLikelyInvalidProse(text)) {
-      return { ok: false, text: null, errorType: 'empty', errorMessage: 'OpenAI devolvió una respuesta vacía o inválida.', raw: data };
+      const msg = truncated
+        ? 'OpenAI alcanzó el límite de tokens de salida antes de devolver texto utilizable.'
+        : 'OpenAI devolvió una respuesta vacía o inválida.';
+      return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, raw: data };
     }
 
-    return { ok: true, text, errorType: null, errorMessage: null, raw: data };
+    return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, raw: data };
   }
 }

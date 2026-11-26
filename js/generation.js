@@ -10,33 +10,82 @@
 // mucho la recuperación fiable sin un backend propio).
 
 import { db } from './db.js';
-import { getProvider } from './providers/index.js?v=20260928-economy-mini-v1';
-import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js?v=20261003-canon-scope-v1';
+import { getProvider, getModelOutputLimit } from './providers/index.js';
+import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
-import { wordCount } from './utils.js';
-import { chaptersBefore, memoriesForChapters } from './timeline.js?v=20260928-chapter-variants-v1';
-import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
-import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
-import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js?v=20260928-ownership-guard-v1';
-import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost } from './smartContext.js?v=20261003-smart-context-v1';
-import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v2';
+import { wordCount, contentFingerprint } from './utils.js';
+import { chaptersBefore, memoriesForChapters } from './timeline.js';
+import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js';
+import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
+import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js';
+import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost } from './smartContext.js';
+import { filterCharactersByAllowedCast } from './characterMatch.js';
+import { markChapterMemoriesStale } from './memoryEngine.js';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
+let inFlightCount = 0;
 
+export function hasInFlightGeneration() {
+  return inFlightCount > 0;
+}
 
-export async function getActiveGenerationState() {
-  const all = await db.getAll('generationState');
+export function findForbiddenCastLeaks(text, forbiddenCast) {
+  const source = String(text || '');
+  if (!source) return [];
+  const forbidden = String(forbiddenCast || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+  const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const leaks = [];
+  for (const name of forbidden) {
+    const rx = new RegExp('(?<![\\p{L}\\p{N}_])' + escaped(name) + '(?![\\p{L}\\p{N}_])', 'iu');
+    if (rx.test(source)) leaks.push(name);
+  }
+  return leaks;
+}
+
+function collectPendingWarnings({ text, forbiddenCast, truncated = false, finishReason = null }) {
+  const warnings = [];
+  const leaks = findForbiddenCastLeaks(text, forbiddenCast);
+  if (leaks.length) {
+    warnings.push({
+      type: 'forbidden_cast',
+      leaks,
+      message: 'Este borrador incluye personajes prohibidos (' + leaks.join(', ') + '). Se guardó en cuarentena para no perder texto: edita o elimina esos nombres antes de aprobar, o descarta el bloque.',
+    });
+  }
+  if (truncated) {
+    warnings.push({
+      type: 'truncated',
+      finishReason: finishReason || 'length',
+      message: 'La respuesta alcanzó el límite de tokens de salida y pudo quedar incompleta. Revisa el final y usa «Add an ending» o edítalo antes de aprobar.',
+    });
+  }
+  return warnings;
+}
+
+async function trackInFlight(fn) {
+  inFlightCount += 1;
+  try {
+    return await fn();
+  } finally {
+    inFlightCount = Math.max(0, inFlightCount - 1);
+  }
+}
+
+export async function getActiveGenerationState(opts) {
+  const all = await db.getAll('generationState', opts);
   return all.filter((g) => ['in_progress','awaiting_review','review_target_reached'].includes(g.status) || g.status?.startsWith('paused_'))
     .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
 }
 
-export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', roomCast = '', onscreenCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', generationIntent = 'continue', generationMode = 'blocks', onProgress, shouldStop }) {
-  let state = await db.get('generationState', chapterId);
+export async function startOrResumeGeneration({ chapterId, chapterTitle, instructions, targetWords, requiredEnding = '', scenePlan = [], sceneIndex, allowedCast = '', roomCast = '', onscreenCast = '', forbiddenCast = '', documentIds = [], reactionMode = true, blockNotes = '', generationIntent = 'continue', generationMode = 'blocks', projectId = '', signal, onProgress, shouldStop }) {
+  const scope = { projectId: projectId || db.getActiveProjectId() };
+  let state = await db.get('generationState', chapterId, scope);
   if (!state) {
     state = {
       id: chapterId,
       chapterId,
+      projectId: scope.projectId,
       chapterTitle,
       instructions,
       targetWords,
@@ -53,6 +102,7 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
       generationIntent,
       generationMode,
       pendingText: '',
+      pendingWarnings: [],
       accumulatedText: '',
       wordsSoFar: 0,
       blocksDone: 0,
@@ -61,9 +111,10 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    await db.put('generationState', state);
+    await db.put('generationState', state, scope);
   } else {
     if (state.status === 'awaiting_review') return state;
+    state.projectId = state.projectId || scope.projectId;
     state.status = 'in_progress';
     state.instructions = instructions || state.instructions;
     if (roomCast) state.roomCast = roomCast;
@@ -73,25 +124,27 @@ export async function startOrResumeGeneration({ chapterId, chapterTitle, instruc
     state.blockNotes = blockNotes || '';
     state.generationIntent = generationIntent || 'continue';
     state.generationMode = generationMode || state.generationMode || 'blocks';
-    await db.put('generationState', state);
+    await db.put('generationState', state, scope);
   }
 
-  return runGenerationLoop(state, onProgress, shouldStop);
+  return runGenerationLoop(state, onProgress, shouldStop, { signal });
 }
 
-export async function runGenerationLoop(state, onProgress, shouldStop) {
+export async function runGenerationLoop(state, onProgress, shouldStop, { signal } = {}) {
+  return trackInFlight(async () => {
+  const scope = { projectId: state.projectId || db.getActiveProjectId() };
   const settings = (await db.get('settings', 'main')) || {};
   const blockWords = settings.blockWordSize || DEFAULT_BLOCK_WORDS;
   const provider = getProvider(settings);
 
   const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks, allChapters] = await Promise.all([
-    db.getAll('lockedFacts'),
-    db.getAll('characters'),
-    db.getAll('memoryEntries'),
-    db.getAll('canonNotes'),
-    db.getAll('documents'),
-    db.getAll('docChunks'),
-    db.getAll('chapters'),
+    db.getAll('lockedFacts', scope),
+    db.getAll('characters', scope),
+    db.getAll('memoryEntries', scope),
+    db.getAll('canonNotes', scope),
+    db.getAll('documents', scope),
+    db.getAll('docChunks', scope),
+    db.getAll('chapters', scope),
   ]);
 
   // A single API call produces one PENDING block. Never auto-append it:
@@ -151,7 +204,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
         '. Do not import any plot, character, relationship, dialogue or event from this file.' });
     }
 
-    const authorBrain = await getAuthorBrain();
+    const authorBrain = await getAuthorBrain(scope.projectId);
     if (isFirstBlock && !state.authorBrief && authorBrain.prepEnabled !== false) {
       onProgress?.({ phase:'preflight', state });
       try {
@@ -182,12 +235,21 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
           ].filter(Boolean).join('\n\n'),
           maxOutputTokens:1200,
           temperature:0.2,
+          signal,
         });
+        if (prepResult.errorType === 'aborted') {
+          state.status = state.wordsSoFar ? 'paused_manual' : 'paused_error';
+          state.lastError = { type: 'aborted', message: prepResult.errorMessage || 'Generación cancelada.', at: new Date().toISOString() };
+          state.updatedAt = new Date().toISOString();
+          await db.put('generationState', state, scope);
+          onProgress?.({ phase: 'error', state, error: prepResult });
+          return state;
+        }
         const parsed = prepResult.ok ? parseAuthorBrief(prepResult.text) : null;
         if (parsed) {
           state.authorBrief = parsed;
           state.updatedAt = new Date().toISOString();
-          await db.put('generationState',state);
+          await db.put('generationState', state, scope);
         }
       } catch {
         // Pre-flight is an optional quality layer; never block the actual chapter.
@@ -282,6 +344,7 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
 
     onProgress?.({ phase: 'requesting', state });
 
+    const modelOutputLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
     const result = await provider.generate({
       systemPrompt,
       stableSystemPrompt: promptParts.stablePrompt,
@@ -289,8 +352,9 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
       cacheStrategy: 'reuse',
       cacheKey: 'inky-paws:' + String(state.chapterId || '').slice(0, 50),
       userPrompt,
-      maxOutputTokens: Math.min(120000, Math.round(thisBlockTarget * 3.6) + (fullChapterMode ? 1800 : 700)),
+      maxOutputTokens: Math.min(modelOutputLimit, Math.round(thisBlockTarget * 3.6) + (fullChapterMode ? 1800 : 700)),
       temperature: 1.0,
+      signal,
     });
 
     if (!result.ok) {
@@ -301,45 +365,48 @@ export async function runGenerationLoop(state, onProgress, shouldStop) {
         state.status = 'paused_network';
       } else if (result.errorType === 'busy') {
         state.status = 'paused_busy';
+      } else if (result.errorType === 'aborted') {
+        state.status = 'paused_manual';
       } else {
         state.status = 'paused_error';
       }
       state.updatedAt = new Date().toISOString();
-      await db.put('generationState', state);
+      await db.put('generationState', state, scope);
       onProgress?.({ phase: 'error', state, error: result });
       return state;
     }
 
-    // Rechazar de forma verificable nombres que el autor haya prohibido.
-    const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
-    const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const leaks = forbidden.filter((name) => new RegExp('\\b'+escaped(name)+'\\b','i').test(result.text));
-    if (leaks.length) {
-      state.status = 'paused_error';
-      state.lastError = {type:'cast',message:'El bloque incluyó personajes prohibidos: '+leaks.join(', ')+'. No se añadió al capítulo; cambia las instrucciones y vuelve a intentarlo.',at:new Date().toISOString()};
-      state.updatedAt = new Date().toISOString();
-      await db.put('generationState',state);
-      onProgress?.({phase:'error',state});
-      return state;
-    }
-
     // Guardar el bloque candidato por separado, para leer y EDITAR antes de
-    // que se incorpore a la historia. Solo entonces podrá continuar el modelo.
-    state.pendingText = result.text.trim();
+    // que se incorpore a la historia. Si contiene personajes prohibidos o se
+    // cortó por límite de tokens, se guarda en cuarentena (nunca se descarta
+    // contenido ya pagado ni se auto-incorpora al capítulo).
+    const candidate = String(result.text || '').trim();
+    const warnings = collectPendingWarnings({
+      text: candidate,
+      forbiddenCast: state.forbiddenCast,
+      truncated: result.truncated === true,
+      finishReason: result.finishReason || null,
+    });
+    state.pendingText = candidate;
+    state.previousPendingText = '';
+    state.pendingWarnings = warnings;
     state.status = 'awaiting_review';
     state.lastError = null;
     state.updatedAt = new Date().toISOString();
-    await db.put('generationState',state);
+    await db.put('generationState', state, scope);
     onProgress?.({ phase:'block_ready',state });
     return state;
   }
 
   return state;
+  });
 }
 
 
-export async function extendPendingBlockWithEnding(chapterId, editedText, endingStyle = 'natural') {
-  const state = await db.get('generationState',chapterId);
+export async function extendPendingBlockWithEnding(chapterId, editedText, endingStyle = 'natural', { projectId = '', signal } = {}) {
+  return trackInFlight(async () => {
+  const scope = { projectId: projectId || db.getActiveProjectId() };
+  const state = await db.get('generationState', chapterId, scope);
   if (!state || state.status !== 'awaiting_review') throw new Error('No hay un bloque pendiente para completar.');
   const pending = String(editedText || state.pendingText || '').trim();
   if (wordCount(pending) < 15) throw new Error('El bloque es demasiado corto para añadirle un final.');
@@ -348,18 +415,18 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   const blockWords = settings.blockWordSize || DEFAULT_BLOCK_WORDS;
   const provider = getProvider(settings);
   const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks, allChapters] = await Promise.all([
-    db.getAll('lockedFacts'),
-    db.getAll('characters'),
-    db.getAll('memoryEntries'),
-    db.getAll('canonNotes'),
-    db.getAll('documents'),
-    db.getAll('docChunks'),
-    db.getAll('chapters'),
+    db.getAll('lockedFacts', scope),
+    db.getAll('characters', scope),
+    db.getAll('memoryEntries', scope),
+    db.getAll('canonNotes', scope),
+    db.getAll('documents', scope),
+    db.getAll('docChunks', scope),
+    db.getAll('chapters', scope),
   ]);
 
   const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
   const priorChapters = chaptersBefore(allChapters,state.chapterId);
-    const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries,priorChapters);
+  const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries,priorChapters);
   const smartQuery = buildSmartContextQuery({
     instructions:state.instructions,
     allowedCast:state.allowedCast,
@@ -423,6 +490,7 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
   });
   const systemPrompt = [endingPromptParts.stablePrompt, endingPromptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
 
+  const modelOutputLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
   const result = await provider.generate({
     systemPrompt,
     // "Add an ending" is normally a one-off request: never pay to cache-write
@@ -435,30 +503,37 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
       '</TEXT_ALREADY_WRITTEN>',
       'Return ONLY the new ending prose to append. No heading, preface, recap, commentary or duplicated sentences.'
     ].join('\n\n'),
-    maxOutputTokens:Math.round(endingWords * 3.6) + 500,
+    maxOutputTokens: Math.min(modelOutputLimit, Math.round(endingWords * 3.6) + 500),
     temperature:0.95,
+    signal,
   });
 
   if (!result.ok) throw new Error(result.errorMessage || 'No se pudo generar el final.');
 
-  const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
-  const lowerResult = String(result.text || '').toLowerCase();
-  const leaks = forbidden.filter((name) => lowerResult.includes(name.toLowerCase()));
-  if (leaks.length) throw new Error('El final incluyó personajes prohibidos: '+leaks.join(', ')+'. No se añadió.');
-
   const addition = String(result.text || '').trim();
   if (wordCount(addition) < 8) throw new Error('La IA devolvió un final demasiado corto. No se modificó el bloque.');
-  state.pendingText = pending + '\n\n' + addition;
+  const combined = pending + '\n\n' + addition;
+  state.previousPendingText = pending;
+  state.pendingText = combined;
+  state.pendingWarnings = collectPendingWarnings({
+    text: combined,
+    forbiddenCast: state.forbiddenCast,
+    truncated: result.truncated === true,
+    finishReason: result.finishReason || null,
+  });
   state.status = 'awaiting_review';
   state.lastError = null;
   state.updatedAt = new Date().toISOString();
-  await db.put('generationState',state);
+  await db.put('generationState', state, scope);
   return state;
+  });
 }
 
 
-export async function polishPendingBlock(chapterId, editedText) {
-  const state = await db.get('generationState',chapterId);
+export async function polishPendingBlock(chapterId, editedText, { projectId = '', signal } = {}) {
+  return trackInFlight(async () => {
+  const scope = { projectId: projectId || db.getActiveProjectId() };
+  const state = await db.get('generationState', chapterId, scope);
   if (!state || state.status !== 'awaiting_review') throw new Error('No hay un borrador pendiente para editar.');
   const draft = String(editedText || state.pendingText || '').trim();
   if (wordCount(draft) < 80) throw new Error('El borrador es demasiado corto para un Editor Pass.');
@@ -466,18 +541,18 @@ export async function polishPendingBlock(chapterId, editedText) {
   const settings = (await db.get('settings','main')) || {};
   const provider = getProvider(settings);
   const [lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks, allChapters] = await Promise.all([
-    db.getAll('lockedFacts'),
-    db.getAll('characters'),
-    db.getAll('memoryEntries'),
-    db.getAll('canonNotes'),
-    db.getAll('documents'),
-    db.getAll('docChunks'),
-    db.getAll('chapters'),
+    db.getAll('lockedFacts', scope),
+    db.getAll('characters', scope),
+    db.getAll('memoryEntries', scope),
+    db.getAll('canonNotes', scope),
+    db.getAll('documents', scope),
+    db.getAll('docChunks', scope),
+    db.getAll('chapters', scope),
   ]);
 
   const characters = filterCharactersByAllowedCast(allCharacters,state.allowedCast);
   const priorChapters = chaptersBefore(allChapters,state.chapterId);
-    const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries,priorChapters);
+  const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries,priorChapters);
   const smartQuery = buildSmartContextQuery({
     instructions:state.instructions,
     allowedCast:state.allowedCast,
@@ -513,7 +588,7 @@ export async function polishPendingBlock(chapterId, editedText) {
     });
   }
 
-  const authorBrain = await getAuthorBrain();
+  const authorBrain = await getAuthorBrain(scope.projectId);
   const authorGuidance = buildAuthorGuidance({
     brain:authorBrain,
     characters,
@@ -546,6 +621,7 @@ export async function polishPendingBlock(chapterId, editedText) {
     ].filter(Boolean).join('\n\n')
   });
 
+  const modelOutputLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
   const result = await provider.generate({
     systemPrompt:[promptParts.stablePrompt,promptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n'),
     cacheStrategy:'off',
@@ -556,67 +632,88 @@ export async function polishPendingBlock(chapterId, editedText) {
       '</DRAFT>',
       'Return only the complete edited prose. No notes, headings, explanations, change log or preface.'
     ].join('\n\n'),
-    maxOutputTokens:Math.min(120000,Math.round(wordCount(draft) * 4.0) + 1600),
+    maxOutputTokens: Math.min(modelOutputLimit, Math.round(wordCount(draft) * 4.0) + 1600),
     temperature:0.85,
+    signal,
   });
   if (!result.ok) throw new Error(result.errorMessage || 'No se pudo completar el Editor Pass.');
 
-  const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x)=>x.trim()).filter(Boolean);
-  const lower = String(result.text || '').toLowerCase();
-  const leaks = forbidden.filter((name)=>lower.includes(name.toLowerCase()));
-  if (leaks.length) throw new Error('El Editor Pass incluyó personajes prohibidos: '+leaks.join(', ')+'. No se aplicó.');
-
   const revised = String(result.text || '').trim();
   if (wordCount(revised) < 60) throw new Error('El Editor Pass devolvió un texto demasiado corto. No se modificó el borrador.');
+  state.previousPendingText = draft;
   state.pendingText = revised;
+  state.pendingWarnings = collectPendingWarnings({
+    text: revised,
+    forbiddenCast: state.forbiddenCast,
+    truncated: result.truncated === true,
+    finishReason: result.finishReason || null,
+  });
   state.updatedAt = new Date().toISOString();
-  await db.put('generationState',state);
+  await db.put('generationState', state, scope);
   return state;
+  });
 }
 
-export async function approvePendingBlock(chapterId, editedText) {
-  const state = await db.get('generationState',chapterId);
+export async function approvePendingBlock(chapterId, editedText, opts) {
+  const scope = { projectId: opts?.projectId || db.getActiveProjectId() };
+  const state = await db.get('generationState', chapterId, scope);
   if (!state || state.status !== 'awaiting_review') throw new Error('No hay un bloque pendiente de aprobación.');
   const content = String(editedText || '').trim();
   if (wordCount(content) < 15) throw new Error('El bloque es demasiado corto; revísalo antes de guardarlo.');
+  const remainingLeaks = findForbiddenCastLeaks(content, state.forbiddenCast);
+  if (remainingLeaks.length) {
+    throw new Error('El borrador todavía incluye personajes prohibidos (' + remainingLeaks.join(', ') + '). Edítalos o elimínalos antes de aprobar.');
+  }
   state.accumulatedText += (state.accumulatedText ? '\n\n' : '') + content;
   state.wordsSoFar = wordCount(state.accumulatedText);
   state.blocksDone += 1;
   state.pendingText = '';
+  state.previousPendingText = '';
+  state.pendingWarnings = [];
   state.status = state.wordsSoFar >= state.targetWords ? 'review_target_reached' : 'paused_review';
   state.updatedAt = new Date().toISOString();
-  await db.put('generationState',state);
-  const chapter = await db.get('chapters',chapterId);
+  await db.put('generationState', state, scope);
+  const chapter = await db.get('chapters', chapterId, scope);
   if (chapter) {
     chapter.content = state.accumulatedText;
     chapter.wordCount = state.wordsSoFar;
     chapter.updatedAt = state.updatedAt;
-    await db.put('chapters',chapter);
+    await db.put('chapters', chapter, scope);
+    await markChapterMemoriesStale(chapterId, {
+      projectId: scope.projectId,
+      reason: 'block_approved',
+      chapterRevision: contentFingerprint(chapter.content),
+    });
   }
   return state;
 }
 
-export async function rejectPendingBlock(chapterId) {
-  const state = await db.get('generationState',chapterId);
+export async function rejectPendingBlock(chapterId, opts) {
+  const scope = { projectId: opts?.projectId || db.getActiveProjectId() };
+  const state = await db.get('generationState', chapterId, scope);
   if (!state || state.status !== 'awaiting_review') return null;
   state.pendingText = '';
+  state.previousPendingText = '';
+  state.pendingWarnings = [];
   state.status = 'paused_review';
   state.updatedAt = new Date().toISOString();
-  await db.put('generationState',state);
+  await db.put('generationState', state, scope);
   return state;
 }
 
-export async function finishReviewedChapter(chapterId) {
-  const state = await db.get('generationState',chapterId);
+export async function finishReviewedChapter(chapterId, opts) {
+  const scope = { projectId: opts?.projectId || db.getActiveProjectId() };
+  const state = await db.get('generationState', chapterId, scope);
   if (!state || !state.wordsSoFar || state.pendingText) throw new Error('Primero aprueba el bloque pendiente.');
   state.status = 'completed';
   state.updatedAt = new Date().toISOString();
-  await db.put('generationState',state);
-  const chapter = await db.get('chapters',chapterId);
-  if (chapter) { chapter.status='finished'; chapter.updatedAt=state.updatedAt; await db.put('chapters',chapter); }
+  await db.put('generationState', state, scope);
+  const chapter = await db.get('chapters', chapterId, scope);
+  if (chapter) { chapter.status='finished'; chapter.updatedAt=state.updatedAt; await db.put('chapters', chapter, scope); }
   return state;
 }
 
-export async function discardGeneration(chapterId) {
-  await db.del('generationState', chapterId);
+export async function discardGeneration(chapterId, opts) {
+  const scope = { projectId: opts?.projectId || db.getActiveProjectId() };
+  await db.del('generationState', chapterId, scope);
 }

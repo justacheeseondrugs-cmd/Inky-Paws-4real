@@ -2,14 +2,13 @@
 // The conversation is stored per workspace in the existing settings store.
 // It never writes to chapters, character profiles or continuity memory.
 import { db } from '../db.js';
-import { getProvider } from '../providers/index.js?v=20260928-economy-mini-v1';
+import { getProvider, getModelOutputLimit } from '../providers/index.js';
 import { getRelevantChunks } from '../retrieval.js';
-import { getActiveGenerationState } from '../generation.js?v=20260928-long-memory-v1';
-import { escapeHtml, toast, bus } from '../utils.js';
-import { isMainTimelineChapter, memoriesForChapters } from '../timeline.js?v=20260928-chapter-variants-v1';
-
-import { getRelevantStoryExcerpts } from '../storyRecall.js?v=20261125-inky-brain-v2';
-import { selectSmartMemories } from '../smartContext.js?v=20261125-inky-brain-v2';
+import { getActiveGenerationState } from '../generation.js';
+import { escapeHtml, toast, bus, copyTextToClipboard } from '../utils.js';
+import { isMainTimelineChapter, memoriesForChapters } from '../timeline.js';
+import { getRelevantStoryExcerpts } from '../storyRecall.js';
+import { selectSmartMemories } from '../smartContext.js';
 
 const HISTORY_LIMIT = 50;
 const CONTEXT_TURNS = 4;
@@ -21,23 +20,27 @@ function formatMemory(entries) {
   return entries.map((m) => [
     m.chapterTitle ? 'CHAPTER: ' + m.chapterTitle : '',
     m.events ? 'Events: ' + short(m.events, 950) : '',
+    m.relationshipChanges ? 'Relationship changes: ' + short(m.relationshipChanges, 600) : '',
+    m.newFacts ? 'New facts: ' + short(m.newFacts, 550) : '',
     m.whoKnowsWhat ? 'Who knows what: ' + short(m.whoKnowsWhat, 750) : '',
-    m.currentLocationTime ? 'Current scene: ' + short(m.currentLocationTime, 350) : '',
+    m.physicalState ? 'Physical state / injuries: ' + short(m.physicalState, 400) : '',
+    m.currentLocationTime ? 'Current scene / location & time: ' + short(m.currentLocationTime, 350) : '',
     m.openThreads ? 'Open threads: ' + short(m.openThreads, 500) : '',
   ].filter(Boolean).join('\n')).join('\n\n');
 }
 
-async function collectContext(question) {
+async function collectContext(question, recentMessages = [], projectId = db.getActiveProjectId()) {
+  const scope = { projectId };
   const [lockedFacts, canonNotes, characters, memories, chapters, documents, chunks] = await Promise.all([
-    db.getAll('lockedFacts'), db.getAll('canonNotes'), db.getAll('characters'),
-    db.getAll('memoryEntries'), db.getAll('chapters'),
-    db.getAll('documents'), db.getAll('docChunks'),
+    db.getAll('lockedFacts', scope), db.getAll('canonNotes', scope), db.getAll('characters', scope),
+    db.getAll('memoryEntries', scope), db.getAll('chapters', scope),
+    db.getAll('documents', scope), db.getAll('docChunks', scope),
   ]);
   const sortedChapters = chapters.filter((ch) => isMainTimelineChapter(ch) && ch.content?.trim())
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const activeMemories = memoriesForChapters(memories, sortedChapters);
   const recent = sortedChapters.slice(-1);
-  const chapterContext = recent.map((ch, i) => {
+  const chapterContext = recent.map((ch) => {
     const tail = 6200;
     return 'CHAPTER "' + ch.title + '" [' + (ch.status || 'draft') + '] — actual saved text, final excerpt:\n…' + ch.content.slice(-tail);
   }).join('\n\n');
@@ -48,30 +51,36 @@ async function collectContext(question) {
     'hard rules: ' + short(ch.hardRules, 280),
     'current knowledge: ' + short(ch.currentKnowledge, 350),
     'relationships: ' + short(ch.relationships, 180),
+    ch.chemistry ? 'chemistry: ' + short(ch.chemistry, 220) : '',
     'never do: ' + short(ch.neverDoRules, 200),
-  ].join(' | ')).join('\n');
+  ].filter(Boolean).join(' | ')).join('\n');
   // Only the CURRENT AU's factual references. STYLE_ONLY and unrelated plot
   // documents may never introduce story facts during planning.
   const factualDocs = documents.filter((d) => ['CANON','CHARACTER','CONTINUITY'].includes(d.type) && d.active !== false);
-  const query = [question, ...recent.map((c) => c.title + ' ' + c.content.slice(-1800))].join('\n');
-  const selectedMemories = selectSmartMemories(activeMemories,question,{maxSelected:5,foundationCount:1,recentCount:2}).selected;
-  const historical = getRelevantStoryExcerpts(sortedChapters,question,{maxExcerpts:3,maxPerChapter:2,chunkSize:240});
-  const historicalContext = historical.map(x=>'CHAPTER "'+x.chapterTitle+'" — actual manuscript excerpt:\n'+x.text).join('\n\n');
-  const matches = getRelevantChunks(factualDocs, chunks, query, { context:'planner' }).slice(0, 2);
+  const recentChatContext = (recentMessages || []).slice(-2).map((m) => short(m.text, 600)).join('\n');
+  const retrievalQuery = [question, recentChatContext].filter(Boolean).join('\n');
+  const query = [retrievalQuery, ...recent.map((c) => c.title + ' ' + c.content.slice(-1800))].join('\n');
+  const selectedMemories = selectSmartMemories(activeMemories, retrievalQuery, { maxSelected: 6, foundationCount: 1, recentCount: 2 }).selected;
+  const historical = getRelevantStoryExcerpts(sortedChapters, retrievalQuery, { maxExcerpts: 3, maxPerChapter: 2, chunkSize: 240 });
+  const historicalContext = historical.map((x) => 'CHAPTER "' + x.chapterTitle + '" — actual manuscript excerpt:\n' + x.text).join('\n\n');
+  const matches = getRelevantChunks(factualDocs, chunks, query, { context: 'planner' }).slice(0, 2);
   const docContext = matches.map((c) => 'REFERENCE "' + c.document.filename + '" (' + c.document.type + '): ' + short(c.text, 750)).join('\n\n');
+  const revealedCanon = canonNotes.filter((n) => n?.visibility === 'revealed');
+  const privateCanon = canonNotes.filter((n) => n?.visibility !== 'revealed');
   return [
     'LOCKED FACTS:\n' + lockedFacts.map((f) => '- ' + f.text).join('\n').slice(0, 9000),
-    'PERMANENT AU CANON:\n' + canonNotes.map((n) => '- ' + n.text).join('\n').slice(0, 6000),
-    'CHARACTER PROFILES:\n' + characterContext.slice(0, 10500),
+    revealedCanon.length ? 'REVEALED / ESTABLISHED AU CANON:\n' + revealedCanon.map((n) => '- ' + n.text).join('\n').slice(0, 4000) : '',
+    privateCanon.length ? 'PRIVATE AUTHOR CANON (underlying AU truth — NOT automatic character knowledge):\n' + privateCanon.map((n) => '- ' + n.text).join('\n').slice(0, 4000) : '',
+    'CHARACTER PROFILES:\n' + characterContext.slice(0, 12000),
     'SELECTED CONTINUITY MEMORIES (chronological):\n' + formatMemory(selectedMemories),
-    historicalContext ? 'RELEVANT HISTORICAL MANUSCRIPT EXCERPTS:\n'+historicalContext : '',
+    historicalContext ? 'RELEVANT HISTORICAL MANUSCRIPT EXCERPTS:\n' + historicalContext : '',
     'ACTUAL MOST RECENT SAVED CHAPTER ENDINGS (source of truth for immediate next scene):\n' + chapterContext,
     docContext ? 'SELECTED CURRENT-AU REFERENCE EXCERPTS (background only, not events that automatically occurred):\n' + docContext : '',
   ].filter(Boolean).join('\n\n---\n\n');
 }
 
 const SYSTEM = [
-  'You are the author’s friendly collaborative story-planning partner for Power to Strive Studio, NOT a chapter-writing engine.',
+  'You are the author’s friendly collaborative story-planning partner for Inky Paws, NOT a chapter-writing engine.',
   'Talk WITH the author: brainstorm, ask a useful question when genuinely needed, offer distinct directions, work through character consequences, or build a scene outline if requested.',
   'Respond conversationally in the language the author uses. If asked for copy-ready prompts or chapter scenes, write those in English unless the author requests otherwise.',
   'Ground proposals in the current project’s locked facts, character profiles and actual saved chapters. Actual approved events outrank old references or speculative ideas.',
@@ -104,6 +113,7 @@ export async function renderPlanner(root) {
   const saved = await db.get('settings', projectHistoryId(projectId));
   let messages = (saved?.messages || []).filter((m) => ['user','assistant'].includes(m.role) && typeof m.text === 'string');
   let busy = false;
+  let activeController = null;
   root.innerHTML = [
     '<h2 class="section-title">🆘 SOS de ideas</h2>',
     '<p class="section-hint">Úsalo solo cuando te quedes atascada: ideas, escenas, reacciones o caminos posibles. No cambia tu canon ni escribe capítulos sin tu aprobación.</p>',
@@ -111,6 +121,7 @@ export async function renderPlanner(root) {
     '<label class="field-label" for="planner-input">¿Qué te gustaría planear?</label>',
     '<textarea id="planner-input" rows="4" maxlength="6000" placeholder="Mi capítulo termina con Joseph revelando la red… ¿Qué podría pasar después?"></textarea>',
     '<div class="btn-row"><button type="button" class="btn btn-primary" id="planner-send">💬 Enviar</button>',
+    '<button type="button" class="btn btn-danger" id="planner-abort" style="display:none;">⏹ Cancelar</button>',
     '<button type="button" class="btn btn-ghost" id="planner-clear">Nueva conversación</button></div>',
     '<p id="planner-status" class="muted" role="status">SOS opcional: solo usa la API cuando pulsas Enviar. Mantuvimos el contexto compacto para no gastar tokens de más.</p>',
     '</div>',
@@ -122,9 +133,16 @@ export async function renderPlanner(root) {
   ].join('');
   const input = root.querySelector('#planner-input');
   const send = root.querySelector('#planner-send');
+  const abortBtn = root.querySelector('#planner-abort');
   const clear = root.querySelector('#planner-clear');
   const status = root.querySelector('#planner-status');
   renderMessages(root, messages);
+
+  abortBtn.addEventListener('click', () => {
+    activeController?.abort();
+    abortBtn.disabled = true;
+    status.textContent = 'Cancelando solicitud…';
+  });
 
   root.querySelectorAll('.planner-example').forEach((btn) => btn.addEventListener('click', () => {
     input.value = btn.dataset.prompt;
@@ -138,7 +156,7 @@ export async function renderPlanner(root) {
     const message = messages[index];
     if (!message || message.role !== 'assistant') return;
     if (copy) {
-      try { await navigator.clipboard.writeText(message.text); toast('Idea copiada.'); }
+      try { await copyTextToClipboard(message.text); toast('Idea copiada.'); }
       catch { toast('No se pudo copiar; selecciona el texto manualmente.', {error:true}); }
       return;
     }
@@ -168,9 +186,12 @@ export async function renderPlanner(root) {
       return toast('Primero configura tu clave API en Ajustes.',{error:true,ms:6500});
     }
     busy = true; send.disabled = true; clear.disabled = true;
+    activeController = new AbortController();
+    abortBtn.style.display = '';
+    abortBtn.disabled = false;
     status.textContent = '💭 Pensando contigo…';
     try {
-      const context = await collectContext(question);
+      const context = await collectContext(question, messages, projectId);
       const conversation = messages.slice(-CONTEXT_TURNS).map((m) =>
         (m.role === 'user' ? 'AUTHOR' : 'PLANNING ASSISTANT') + ':\n' + short(m.text, 4100)
       ).join('\n\n');
@@ -179,11 +200,15 @@ export async function renderPlanner(root) {
         conversation ? 'PREVIOUS PLANNING DISCUSSION:\n' + conversation : '',
         'LATEST AUTHOR MESSAGE — answer this directly:\n' + question,
       ].filter(Boolean).join('\n\n====\n\n');
-      const result = await getProvider(settings).generate({
-        systemPrompt:SYSTEM,
+      const provider = getProvider(settings);
+      const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
+      const modelLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
+      const result = await provider.generate({
+        systemPrompt: SYSTEM,
         userPrompt,
-        maxOutputTokens:1400,
-        temperature:1,
+        maxOutputTokens: Math.min(modelLimit, reasoningModel ? 4200 : 1800),
+        temperature: 1,
+        signal: activeController.signal,
       });
       if (!result.ok) throw new Error(result.errorMessage || 'La IA no pudo responder.');
       messages = [...messages,{role:'user',text:question},{role:'assistant',text:result.text}].slice(-HISTORY_LIMIT);
@@ -191,13 +216,16 @@ export async function renderPlanner(root) {
       if (db.getActiveProjectId() === projectId && root.isConnected) {
         input.value = '';
         renderMessages(root,messages);
-        status.textContent = 'Idea lista. Puedes continuar la conversación, copiarla o pasarla a Escribir.';
+        status.textContent = result.truncated
+          ? '⚠️ La respuesta alcanzó el límite de tokens y pudo quedar cortada. Puedes pedirle que continúe.'
+          : 'Idea lista. Puedes continuar la conversación, copiarla o pasarla a Escribir.';
       }
     } catch(err) {
       if (db.getActiveProjectId() === projectId && root.isConnected) status.textContent = '⚠️ ' + (err?.message || 'No se pudo responder.') + ' Tu mensaje sigue aquí para reintentar.';
     } finally {
       busy = false;
-      if (root.isConnected) { send.disabled = false; clear.disabled = false; }
+      activeController = null;
+      if (root.isConnected) { send.disabled = false; clear.disabled = false; abortBtn.style.display = 'none'; }
     }
   });
 }

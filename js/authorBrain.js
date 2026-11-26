@@ -73,20 +73,21 @@ const FEEDBACK_RULES = {
 const BOMB_WORDS = /\b(reveal|reveals|revealed|discover|discovers|discovered|confess|confesses|secret|truth|mama|papa|mother|father|wife|husband|married|kiss|betray|betrayal|death|dies|dead|identity|pregnan|return|returns|arrive|arrives|appears|recognize|recognises|realizes|realises|calls? him|calls? her)\b/i;
 const TEXTURE_WORDS = /\b(brief|small|quick|little|texture|domestic|quiet moment|aside|joke|tease|teasing|transition|walk|walking|move|moving)\b/i;
 
-export async function getAuthorBrain() {
-  const id = 'author-brain:' + db.getActiveProjectId();
+export async function getAuthorBrain(projectId) {
+  const id = 'author-brain:' + (projectId || db.getActiveProjectId());
   const stored = await db.get('settings', id);
   return {
     id,
     writingDna: stored?.writingDna || DEFAULT_WRITING_DNA,
+    customGuidance: String(stored?.customGuidance || '').trim(),
     prepEnabled: stored?.prepEnabled !== false,
     feedbackCounts: stored?.feedbackCounts || {},
     editSignals: stored?.editSignals || { approvals:0, substantialEdits:0, totalReduction:0 },
   };
 }
 
-export async function saveAuthorBrain(next) {
-  const current = await getAuthorBrain();
+export async function saveAuthorBrain(next, projectId) {
+  const current = await getAuthorBrain(projectId);
   return db.put('settings', {
     ...current,
     ...next,
@@ -198,6 +199,7 @@ export function compactAuthorBrief(brief) {
 export function buildAuthorGuidance({ brain, characters, scenePlan, requiredEnding, authorBrief }) {
   return [
     brain?.writingDna ? 'AUTHOR WRITING DNA — persistent house taste:\n'+brain.writingDna.trim() : '',
+    brain?.customGuidance ? 'STORY-SPECIFIC WRITING GUIDANCE:\n'+brain.customGuidance.trim() : '',
     chemistryGuidance(characters),
     feedbackGuidance(brain),
     buildPressureMap(scenePlan, requiredEnding),

@@ -1,14 +1,14 @@
 import { db } from './db.js';
-import { assembleSystemPromptParts } from './canonGuard.js?v=20261003-canon-scope-v1';
+import { assembleSystemPromptParts } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
-import { activeChapterIds } from './timeline.js?v=20260928-chapter-variants-v1';
-import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js?v=20260928-reaction-chaos-v1';
-import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js?v=20260928-long-memory-v1';
-import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js?v=20260928-ownership-guard-v1';
-import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js?v=20261003-smart-context-v1';
-import { analyzeContextGuard } from './contextGuard.js?v=20261003-onscreen-warning-v1';
-import { filterCharactersByAllowedCast } from './characterMatch.js?v=20261003-name-match-v2';
-import { combineCast, formatCast } from './storyCast.js?v=20261003-room-cast-v2';
+import { chaptersBefore, memoriesForChapters } from './timeline.js';
+import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js';
+import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
+import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js';
+import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js';
+import { analyzeContextGuard } from './contextGuard.js';
+import { filterCharactersByAllowedCast } from './characterMatch.js';
+import { combineCast, formatCast } from './storyCast.js';
 
 function safeName(value) {
   return String(value || 'chapter')
@@ -61,6 +61,7 @@ function firstRequestGuidance({
 }
 
 export async function buildModelTestPack({
+  chapterId = '',
   chapterTitle,
   instructions,
   targetWords,
@@ -85,38 +86,33 @@ export async function buildModelTestPack({
     db.getAll('chapters'),
   ]);
 
-  const effectiveAllowedCast = allowedCast || formatCast(combineCast(roomCast,onscreenCast));
-  const characters = filterCharactersByAllowedCast(allCharacters,effectiveAllowedCast);
+  const effectiveAllowedCast = allowedCast || formatCast(combineCast(roomCast, onscreenCast));
+  const characters = filterCharactersByAllowedCast(allCharacters, effectiveAllowedCast);
 
-  const activeIds = activeChapterIds(allChapters);
-  const allActiveMemoryEntries = allMemoryEntries
-    .slice()
-    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
-    .filter((m) => m.chapterId && activeIds.has(m.chapterId));
+  const priorChapters = chaptersBefore(allChapters, chapterId);
+  const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries, priorChapters);
   const smartQuery = buildSmartContextQuery({
     instructions,
-    allowedCast:effectiveAllowedCast,
+    allowedCast: effectiveAllowedCast,
     requiredEnding,
     scenePlan,
   });
-  const memorySelection = selectSmartMemories(allActiveMemoryEntries,smartQuery);
+  const memorySelection = selectSmartMemories(allActiveMemoryEntries, smartQuery);
   const memoryEntries = memorySelection.selected;
-  const canonRanking = rankCanonNotes(canonNotes,smartQuery);
+  const canonRanking = rankCanonNotes(canonNotes, smartQuery);
 
-  const mainChapters = allChapters
-    .filter((chapter) => activeIds.has(chapter.id) && String(chapter.content || '').trim())
-    .slice()
-    .sort((a,b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const mainChapters = priorChapters;
   const continuityQuery = [
     smartQuery,
-    canonQueryBoost(canonNotes,smartQuery),
-    memoryEntries.slice(-2).map((m) => [m.events,m.openThreads,m.whoKnowsWhat].filter(Boolean).join(' ')).join(' ')
+    canonQueryBoost(canonNotes, smartQuery),
+    memoryEntries.slice(-2).map((m) => [m.events, m.openThreads, m.whoKnowsWhat].filter(Boolean).join(' ')).join(' ')
   ].filter(Boolean).join(' ');
   const storyExcerpts = getRelevantStoryExcerpts(mainChapters, continuityQuery, {
-    maxExcerpts:5,
-    maxPerChapter:2,
+    excludeChapterId: chapterId,
+    maxExcerpts: 5,
+    maxPerChapter: 2,
   });
-  const previousEnding = getPreviousChapterEnding(mainChapters, '', 4200);
+  const previousEnding = getPreviousChapterEnding(mainChapters, chapterId, 4200);
 
   const documents = allDocuments.filter((d) => Array.isArray(documentIds) ? documentIds.includes(d.id) : true);
   const queryText = continuityQuery;
@@ -134,11 +130,11 @@ export async function buildModelTestPack({
 
   const authorBrain = await getAuthorBrain();
   const authorGuidance = buildAuthorGuidance({
-    brain:authorBrain,
+    brain: authorBrain,
     characters,
     scenePlan,
     requiredEnding,
-    authorBrief:null,
+    authorBrief: null,
   });
   const extraGuidance = [
     firstRequestGuidance({
@@ -146,7 +142,7 @@ export async function buildModelTestPack({
       targetWords,
       requiredEnding,
       scenePlan,
-      allowedCast:effectiveAllowedCast,
+      allowedCast: effectiveAllowedCast,
       roomCast,
       onscreenCast,
       forbiddenCast,
@@ -180,12 +176,12 @@ export async function buildModelTestPack({
     lockedFacts,
     canonNotes,
     allCharacters,
-    allowedCast,
+    allowedCast: effectiveAllowedCast,
     onscreenCast,
     instructions,
     scenePlan,
     reactionMode,
-    selectedDocuments:documents,
+    selectedDocuments: documents,
   });
 
   const inspector = {

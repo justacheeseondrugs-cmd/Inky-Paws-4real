@@ -1,19 +1,19 @@
 import { db } from './db.js';
-import { renderWrite } from './ui/write.js?v=20261022-violet-v1';
-import { renderChapters } from './ui/chapters.js?v=20260928-economy-mini-v1';
-import { renderCharacters } from './ui/characters.js?v=20260928-author-brain-v1';
-import { renderDocuments } from './ui/documents.js?v=20260926-spanish-ui-v1';
-import { renderMemory } from './ui/memory.js?v=20261003-canon-scope-v1';
-import { renderSettings } from './ui/settings.js?v=20261003-backup-key-guard-v1';
-import { renderPlanner } from './ui/planner.js?v=20260928-long-memory-v1';
+import { renderWrite } from './ui/write.js';
+import { renderChapters } from './ui/chapters.js';
+import { renderCharacters } from './ui/characters.js';
+import { renderDocuments } from './ui/documents.js';
+import { renderMemory } from './ui/memory.js';
+import { renderSettings } from './ui/settings.js';
+import { renderPlanner } from './ui/planner.js';
 import { bus, toast } from './utils.js';
-import { getActiveGenerationState } from './generation.js?v=20261003-room-cast-canon-v1';
+import { getActiveGenerationState, hasInFlightGeneration } from './generation.js';
 import { initAppearance } from './ui/appearance.js';
-import { isPowerToStriveStory } from './storyCast.js?v=20261007-kael-au-v1';
-import { ensureKaelAuWorkspace, KAEL_AU_PROJECT } from './kaelAu.js?v=20261007-kael-au-v1';
-import { ensureVioletWorkspace } from './violet.js?v=20261022-violet-v1';
-import { ensureADayOffWorkspace } from './adayoff.js?v=20261026-a-day-off-v1';
-import { ensureYourNameWorkspace } from './yourName.js?v=20261030-your-name-v1';
+import { isPowerToStriveStory } from './storyCast.js';
+import { ensureKaelAuWorkspace, KAEL_AU_PROJECT } from './kaelAu.js';
+import { ensureVioletWorkspace } from './violet.js';
+import { ensureADayOffWorkspace } from './adayoff.js';
+import { ensureYourNameWorkspace } from './yourName.js';
 
 const VIEWS = { write: renderWrite, planner: renderPlanner, chapters: renderChapters, characters: renderCharacters, documents: renderDocuments, memory: renderMemory, settings: renderSettings };
 
@@ -248,9 +248,9 @@ async function initWorkspaces() {
   select.addEventListener('change', async () => {
     const old = db.getActiveProjectId();
     const active = await getActiveGenerationState();
-    if (active?.status === 'in_progress') {
+    if (active?.status === 'in_progress' || hasInFlightGeneration()) {
       select.value = old;
-      toast('Termina, detén o descarta primero el bloque que se está generando.', { error:true, ms:6500 });
+      toast('Espera a que termine o cancela la generación en curso antes de cambiar de historia.', { error:true, ms:6500 });
       return;
     }
     db.setActiveProjectId(select.value);
@@ -261,7 +261,7 @@ async function initWorkspaces() {
   });
   document.getElementById('workspace-create').addEventListener('click', async () => {
     const active = await getActiveGenerationState();
-    if (active?.status === 'in_progress') return toast('Detén primero la generación en curso.', {error:true});
+    if (active?.status === 'in_progress' || hasInFlightGeneration()) return toast('Espera o cancela primero la generación en curso.', {error:true});
     const name = window.prompt('Nombre de la nueva historia (no se copiarán capítulos ni documentos):');
     if (!name?.trim()) return;
     const saved = await db.get('settings','workspaces') || {id:'workspaces',items:[]};
@@ -279,7 +279,7 @@ async function initWorkspaces() {
   const packInput = document.getElementById('workspace-pack-input');
   packButton?.addEventListener('click', async () => {
     const active = await getActiveGenerationState();
-    if (active?.status === 'in_progress') return toast('Detén primero la generación en curso.', {error:true});
+    if (active?.status === 'in_progress' || hasInFlightGeneration()) return toast('Espera o cancela primero la generación en curso.', {error:true});
     if (db.getActiveProjectId() === 'original') return toast('Crea o selecciona una historia nueva antes de importar un pack. La historia original está protegida.', {error:true, ms:6500});
     packInput?.click();
   });
@@ -299,9 +299,9 @@ async function initWorkspaces() {
   });
 }
 
-function switchView(name) { document.querySelectorAll('.view').forEach((v) => v.classList.remove('active')); document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === name)); const el = document.getElementById('view-' + name); el.classList.add('active'); localStorage.setItem('pts_last_view', name); VIEWS[name](el); }
+function switchView(name) { bus.emit('view-changing', name); document.querySelectorAll('.view').forEach((v) => v.classList.remove('active')); document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === name)); const el = document.getElementById('view-' + name); el.classList.add('active'); localStorage.setItem('pts_last_view', name); VIEWS[name](el); }
 function initNav() { document.getElementById('tabbar').addEventListener('click', (e) => { const btn = e.target.closest('.tab-btn'); if (!btn) return; switchView(btn.dataset.view); }); bus.on('navigate', (name) => switchView(name)); }
-async function initServiceWorker() { if ('serviceWorker' in navigator) { try { await navigator.serviceWorker.register('sw.js'); } catch { } } }
+async function initServiceWorker() { if ('serviceWorker' in navigator) { try { await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }); } catch { } } }
 async function boot() {
   await db.openDb();
   const kaelCreated = await ensureKaelAuWorkspace(db);
