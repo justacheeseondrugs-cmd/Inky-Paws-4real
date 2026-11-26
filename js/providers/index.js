@@ -54,5 +54,30 @@ export function getProvider(settings) {
   const entry = REGISTRY[id] || REGISTRY.gemini;
   const apiKey = settings?.apiKeys?.[id] || '';
   const model = settings?.models?.[id] || '';
-  return entry.build({ apiKey, model });
+  const reasoningEffort = settings?.reasoningEffort || '';
+  return entry.build({ apiKey, model, reasoningEffort });
+}
+
+/**
+ * Construye el proveedor configurado para el rol `primary` (escritura literaria)
+ * o `auxiliary` (chat creativo, revisión semántica opcional, extracción de continuidad).
+ * Nunca hace fallback silencioso a otro proveedor ni a otro modelo.
+ */
+export function getProviderForRole(settings, walletConfig = null, role = 'primary') {
+  if (!walletConfig) return getProvider(settings);
+  const useAux = role === 'auxiliary';
+  const id = String(
+    useAux
+      ? (walletConfig.auxiliaryProvider || walletConfig.primaryProvider || settings?.provider || 'openai')
+      : (walletConfig.primaryProvider || settings?.provider || 'openai')
+  ).trim().toLowerCase();
+  const entry = REGISTRY[id] || REGISTRY.openai;
+  const apiKey = settings?.apiKeys?.[id] || '';
+  const model = String(
+    useAux
+      ? (walletConfig.auxiliaryModel || walletConfig.primaryModel || settings?.models?.[id] || DEFAULT_MODELS[id] || '')
+      : (walletConfig.primaryModel || settings?.models?.[id] || DEFAULT_MODELS[id] || '')
+  ).trim();
+  const reasoningEffort = walletConfig.reasoningEffort || '';
+  return entry.build({ apiKey, model, reasoningEffort });
 }

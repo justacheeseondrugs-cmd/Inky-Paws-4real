@@ -10,6 +10,27 @@ function apiError(res, data) {
   return { ok: false, text: null, errorType: 'http', errorMessage: 'OpenAI devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), truncated: false, finishReason: null, raw: data };
 }
 
+function extractOpenAIUsage(data) {
+  const u = data?.usage;
+  if (!u || typeof u !== 'object') {
+    return { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, reasoningTokens: 0, reportedByProvider: false };
+  }
+  const promptTokens = Number(u.input_tokens ?? u.prompt_tokens ?? 0) || 0;
+  const completionTokens = Number(u.output_tokens ?? u.completion_tokens ?? 0) || 0;
+  const totalTokens = Number(u.total_tokens ?? (promptTokens + completionTokens)) || 0;
+  const cachedTokens = Number(
+    u.input_tokens_details?.cached_tokens ??
+    u.prompt_tokens_details?.cached_tokens ??
+    0
+  ) || 0;
+  const reasoningTokens = Number(
+    u.output_tokens_details?.reasoning_tokens ??
+    u.completion_tokens_details?.reasoning_tokens ??
+    0
+  ) || 0;
+  return { promptTokens, completionTokens, totalTokens, cachedTokens, reasoningTokens, reportedByProvider: true };
+}
+
 function extractResponsesText(data) {
   const pieces = [];
   for (const item of data?.output || []) {
@@ -54,12 +75,14 @@ export class OpenAIProvider extends AIProvider {
     cacheKey = '',
     maxOutputTokens = 2048,
     temperature = 1.0,
+    reasoningEffort = '',
     signal,
   }) {
     const apiKey = String(this.config.apiKey || '').trim();
     const model = String(this.config.model || 'gpt-5.4-mini').trim();
+    const effectiveEffort = String(reasoningEffort || this.config.reasoningEffort || '').trim().toLowerCase();
     if (!apiKey) {
-      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de OpenAI en Ajustes.', truncated: false, finishReason: null, raw: null };
+      return { ok: false, text: null, errorType: 'auth', errorMessage: 'Falta la clave API de OpenAI en Ajustes.', truncated: false, finishReason: null, usage: null, raw: null };
     }
 
     // GPT-5.6+ introduced paid cache writes and explicit cache breakpoints.
@@ -99,7 +122,7 @@ export class OpenAIProvider extends AIProvider {
         model,
         input,
         max_output_tokens: maxOutputTokens,
-        reasoning: { effort: this.config.reasoningEffort || 'medium' },
+        reasoning: { effort: ['none', 'low', 'medium', 'high'].includes(effectiveEffort) ? effectiveEffort : 'medium' },
         // Force Standard processing so a project-level Fast setting cannot
         // silently double the per-token price for fanfic generation.
         service_tier: 'default',
@@ -113,13 +136,14 @@ export class OpenAIProvider extends AIProvider {
 
       const req = await postJson('https://api.openai.com/v1/responses', apiKey, body, signal);
       if (req.aborted) {
-        return { ok: false, text: null, errorType: 'aborted', errorMessage: 'Solicitud a OpenAI cancelada por la autora.', truncated: false, finishReason: null, raw: null };
+        return { ok: false, text: null, errorType: 'aborted', errorMessage: 'Solicitud a OpenAI cancelada por la autora.', truncated: false, finishReason: null, usage: null, raw: null };
       }
       if (req.networkError) {
-        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, truncated: false, finishReason: null, raw: req.networkError };
+        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, truncated: false, finishReason: null, usage: null, raw: req.networkError };
       }
       const { res, data } = req;
-      if (!res.ok) return apiError(res, data);
+      const usage = extractOpenAIUsage(data);
+      if (!res.ok) return { ...apiError(res, data), usage };
 
       const incompleteReason = String(data?.incomplete_details?.reason || '');
       const truncated = data?.status === 'incomplete' || incompleteReason === 'max_output_tokens';
@@ -129,21 +153,22 @@ export class OpenAIProvider extends AIProvider {
       if (!text || isLikelyInvalidProse(text)) {
         const refusal = (data?.output || []).flatMap((item) => item?.content || []).find((part) => part?.type === 'refusal');
         if (refusal) {
-          return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', truncated: false, finishReason: 'refusal', raw: data };
+          return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', truncated: false, finishReason: 'refusal', usage, raw: data };
         }
         const msg = truncated
           ? 'OpenAI alcanzó el límite de tokens de salida antes de devolver texto utilizable.'
           : 'OpenAI devolvió una respuesta vacía o inválida.';
-        return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, raw: data };
+        return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, usage, raw: data };
       }
 
-      return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, raw: data };
+      return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, usage, raw: data };
     }
 
-    // Compatibility path for older GPT / o-series models.
+    // Compatibility path for GPT-4.x, GPT-5.4, and o-series models.
     const url = 'https://api.openai.com/v1/chat/completions';
     const isReasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/i.test(model);
     const isGpt54 = /^gpt-5\.4(?:[.-]|$)/i.test(model);
+    const isOSeries = /^o[134](?:[.-]|$)/i.test(model);
     const body = {
       model,
       messages: [
@@ -151,24 +176,35 @@ export class OpenAIProvider extends AIProvider {
         { role: 'user', content: userPrompt || '' },
       ],
       [isReasoningModel ? 'max_completion_tokens' : 'max_tokens']: maxOutputTokens,
-      // Economy mode: GPT-5.4 Mini supports "none" and it avoids paying for
-      // extra reasoning tokens on prose generation. Temperature remains
-      // supported at reasoning_effort=none, which keeps creative variation.
-      ...(isGpt54 ? { reasoning_effort: 'none', temperature } : isReasoningModel ? {} : { temperature }),
       store: false,
     };
 
-    // Fallback por si el ID del modelo no sigue la convención esperada.
-    // Solo se reintenta ante un HTTP 400 que indique un parámetro no compatible.
-    // No se vuelve a enviar una generación que haya tenido éxito.
+    if (isGpt54) {
+      const effort = ['none', 'low', 'medium', 'high'].includes(effectiveEffort) ? effectiveEffort : 'none';
+      body.reasoning_effort = effort;
+      if (effort === 'none') body.temperature = temperature;
+    } else if (isOSeries) {
+      if (['low', 'medium', 'high'].includes(effectiveEffort)) {
+        body.reasoning_effort = effectiveEffort;
+      }
+    } else if (isReasoningModel) {
+      if (['none', 'low', 'medium', 'high'].includes(effectiveEffort)) {
+        body.reasoning_effort = effectiveEffort;
+      }
+    } else {
+      body.temperature = temperature;
+    }
+
+    // Fallback mínimo solo ante HTTP 400 de parámetro incompatible en IDs personalizados
+    // (sin ejecutar nunca una segunda generación pagada).
     let res, data;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       const req = await postJson(url, apiKey, body, signal);
       if (req.aborted) {
-        return { ok: false, text: null, errorType: 'aborted', errorMessage: 'Solicitud a OpenAI cancelada por la autora.', truncated: false, finishReason: null, raw: null };
+        return { ok: false, text: null, errorType: 'aborted', errorMessage: 'Solicitud a OpenAI cancelada por la autora.', truncated: false, finishReason: null, usage: null, raw: null };
       }
       if (req.networkError) {
-        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, truncated: false, finishReason: null, raw: req.networkError };
+        return { ok: false, text: null, errorType: 'network', errorMessage: 'Error de red al contactar OpenAI: ' + req.networkError.message, truncated: false, finishReason: null, usage: null, raw: req.networkError };
       }
       res = req.res;
       data = req.data;
@@ -182,6 +218,8 @@ export class OpenAIProvider extends AIProvider {
       } else if ((parameter === 'max_completion_tokens' || /['"]max_completion_tokens['"]/i.test(message)) && Object.hasOwn(body, 'max_completion_tokens')) {
         body.max_tokens = body.max_completion_tokens;
         delete body.max_completion_tokens;
+      } else if ((parameter === 'reasoning_effort' || /['"]reasoning_effort['"]/i.test(message)) && Object.hasOwn(body, 'reasoning_effort')) {
+        delete body.reasoning_effort;
       } else if ((parameter === 'temperature' || /['"]temperature['"]/i.test(message)) && Object.hasOwn(body, 'temperature')) {
         delete body.temperature;
       } else {
@@ -189,12 +227,13 @@ export class OpenAIProvider extends AIProvider {
       }
     }
 
-    if (!res.ok) return apiError(res, data);
+    const usage = extractOpenAIUsage(data);
+    if (!res.ok) return { ...apiError(res, data), usage };
 
     const choice = data?.choices?.[0];
     const finishReason = choice?.finish_reason || null;
     if (finishReason === 'content_filter') {
-      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', truncated: false, finishReason, raw: data };
+      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'OpenAI bloqueó la respuesta por el filtro de contenido.', truncated: false, finishReason, usage, raw: data };
     }
 
     const truncated = finishReason === 'length';
@@ -203,9 +242,9 @@ export class OpenAIProvider extends AIProvider {
       const msg = truncated
         ? 'OpenAI alcanzó el límite de tokens de salida antes de devolver texto utilizable.'
         : 'OpenAI devolvió una respuesta vacía o inválida.';
-      return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, raw: data };
+      return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, usage, raw: data };
     }
 
-    return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, raw: data };
+    return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, usage, raw: data };
   }
 }
