@@ -189,19 +189,45 @@ function makeSyntheticBible(contentVersion = '1.1') {
 
   const mapped = mapMasterCharacterBibleV1(makeSyntheticBible());
   assert.equal(mapped.universalCharacters.length, 4);
-  const levi = mapped.universalCharacters.find((c) => c.id === 'levi');
-  const joseph = mapped.universalCharacters.find((c) => c.id === 'joseph');
-  const anya = mapped.universalCharacters.find((c) => c.id === 'anya');
+  const levi = mapped.universalCharacters.find((c) => c.logicalId === 'levi');
+  const joseph = mapped.universalCharacters.find((c) => c.logicalId === 'joseph');
+  const anya = mapped.universalCharacters.find((c) => c.logicalId === 'anya');
+  assert.equal(levi.id, 'power_to_strive::levi');
+  assert.equal(levi.logicalId, 'levi');
   assert.equal(levi.category, 'core');
+  assert.equal(joseph.id, 'power_to_strive::joseph');
   assert.equal(joseph.category, 'optional');
   assert.equal(joseph.defaultEnabled, false);
+  assert.equal(anya.id, 'power_to_strive::anya');
   assert.equal(anya.category, 'optional');
   assert.equal(anya.defaultEnabled, false);
   assert.equal(levi.sourceAttribution.schema, 'inky.master_character_bible');
   assert.equal(levi.sourceAttribution.contentVersion, '1.1');
 
-  const violetOverlay = mapped.characterOverlays.find((o) => o.id === 'levi_violet_traits');
+  // Unrelated fandom with same logical IDs gets distinct namespaced storage IDs!
+  const otherFandomMapped = mapMasterCharacterBibleV1(makeSyntheticBible(), { fandom: 'starlight_saga' });
+  const otherLevi = otherFandomMapped.universalCharacters.find((c) => c.logicalId === 'levi');
+  assert.equal(otherLevi.id, 'starlight_saga::levi');
+  assert.notEqual(otherLevi.id, levi.id);
+  assert.equal(otherFandomMapped.characterOverlays[0].id, 'starlight_saga::levi_violet_traits');
+  assert.equal(otherFandomMapped.storyPresets[0].id, 'starlight_saga::pts_eruri_default');
+
+  // Invalid cross-references in Bible must be rejected before any write
+  const badOverlayRef = makeSyntheticBible();
+  badOverlayRef.optional_character_overlays[0].character_id = 'nonexistent_char';
+  assert.throws(() => validateMasterCharacterBible(badOverlayRef), 'Overlay referencing missing character must fail');
+
+  const badPresetOpt = makeSyntheticBible();
+  badPresetOpt.story_presets[0].enabled_optional = ['ghost_char'];
+  assert.throws(() => validateMasterCharacterBible(badPresetOpt), 'Preset referencing missing optional char must fail');
+
+  const badAnyaGuest = makeSyntheticBible();
+  badAnyaGuest.story_presets[0].room_guest_ids = ['anya'];
+  assert.throws(() => validateMasterCharacterBible(badAnyaGuest), 'Preset putting Anya in room_guest_ids must fail');
+
+  const violetOverlay = mapped.characterOverlays.find((o) => o.logicalId === 'levi_violet_traits');
   assert.ok(violetOverlay, 'levi_violet_traits overlay template must be mapped');
+  assert.equal(violetOverlay.id, 'power_to_strive::levi_violet_traits');
   assert.equal(violetOverlay.defaultEnabled, false, 'Violet overlay must be disabled by default');
   assert.deepEqual(violetOverlay.characterizationChanges, [], 'Must NEVER invent Violet traits');
   assert.equal(isOverlayConfigured(violetOverlay), false);
@@ -211,7 +237,7 @@ function makeSyntheticBible(contentVersion = '1.1') {
 {
   const mapped = mapMasterCharacterBibleV1(makeSyntheticBible());
   const universalChars = mapped.universalCharacters.map((c) => normalizeUniversalCharacter(c));
-  const leviBase = universalChars.find((c) => c.id === 'levi');
+  const leviBase = universalChars.find((c) => c.logicalId === 'levi');
   const emptyVioletOverlay = normalizeCharacterOverlay(mapped.characterOverlays[0]);
 
   // 3a. Normal Eruri story -> standard Levi, optional chars inactive
@@ -234,7 +260,7 @@ function makeSyntheticBible(contentVersion = '1.1') {
     universalProfile: leviBase,
     overlays: [emptyVioletOverlay],
     activations: [{ overlayId: 'levi_violet_traits', scope: 'story', characterVersion: 'all', enabled: true }],
-    context: { characterVersion: 'room' },
+    context: { characterVersion: 'room', fandom: 'power_to_strive' },
   });
   assert.equal(violetEmptyRes.isStandardDefault, true);
   assert.equal(violetEmptyRes.unconfiguredOverlays.length, 1);
@@ -257,13 +283,13 @@ function makeSyntheticBible(contentVersion = '1.1') {
     universalProfile: leviBase,
     overlays: [customViolet],
     activations: screenActivation,
-    context: { characterVersion: 'screen' },
+    context: { characterVersion: 'screen', fandom: 'power_to_strive' },
   });
   const roomLevi = resolveCharacterProfile({
     universalProfile: leviBase,
     overlays: [customViolet],
     activations: screenActivation,
-    context: { characterVersion: 'room' },
+    context: { characterVersion: 'room', fandom: 'power_to_strive' },
   });
   assert.equal(screenLevi.isStandardDefault, false);
   assert.deepEqual(screenLevi.effectiveProfile.overlayTraits, ['Author-defined trait alpha', 'Author-defined trait beta']);
@@ -277,19 +303,19 @@ function makeSyntheticBible(contentVersion = '1.1') {
     universalProfile: leviBase,
     overlays: [customViolet],
     activations: sceneActivation,
-    context: { characterVersion: 'room', sceneId: 'ch3-s2' },
+    context: { characterVersion: 'room', sceneId: 'ch3-s2', fandom: 'power_to_strive' },
   });
   const nextScene = resolveCharacterProfile({
     universalProfile: leviBase,
     overlays: [customViolet],
     activations: sceneActivation,
-    context: { characterVersion: 'room', sceneId: 'ch3-s3' },
+    context: { characterVersion: 'room', sceneId: 'ch3-s3', fandom: 'power_to_strive' },
   });
   assert.equal(inScene.appliedOverlays.length, 1);
   assert.equal(nextScene.appliedOverlays.length, 0, 'Scene overlay must expire outside authorized scene');
 
   // 3f. General-purpose custom overlay for another character + conflict detection (no silent blending!)
-  const erwinBase = universalChars.find((c) => c.id === 'erwin');
+  const erwinBase = universalChars.find((c) => c.logicalId === 'erwin');
   const erwinOvA = normalizeCharacterOverlay({
     id: 'erwin_retired_scholar',
     name: 'Retired Scholar Erwin',
@@ -316,7 +342,7 @@ function makeSyntheticBible(contentVersion = '1.1') {
       { overlayId: 'erwin_retired_scholar', scope: 'story', enabled: true },
       { overlayId: 'erwin_hardened_fugitive', scope: 'story', enabled: true },
     ],
-    context: { characterVersion: 'default' },
+    context: { characterVersion: 'default', fandom: 'power_to_strive' },
   });
   assert.equal(conflicted.conflicts.length, 1, 'Conflicting overlays must be reported');
   assert.equal(conflicted.conflicts[0].requiresAuthorDecision, true);
@@ -331,11 +357,12 @@ function makeSyntheticBible(contentVersion = '1.1') {
     ],
     context: {
       characterVersion: 'default',
+      fandom: 'power_to_strive',
       approvedConflictWinners: { [conflicted.conflicts[0].pairKey]: 'erwin_retired_scholar' },
     },
   });
   assert.equal(resolvedConflict.conflicts.length, 0);
-  assert.deepEqual(resolvedConflict.appliedOverlays.map((a) => a.overlayId), ['erwin_retired_scholar']);
+  assert.deepEqual(resolvedConflict.appliedOverlays.map((a) => a.overlayLogicalId), ['erwin_retired_scholar']);
 
   // 3g. Two stories using different overlays without cross-contamination
   const storyA = resolveStoryCharacterRoster({
@@ -352,44 +379,44 @@ function makeSyntheticBible(contentVersion = '1.1') {
   assert.equal(storyB.resolvedCharacters.find((c) => c.id === 'levi').appliedOverlays.length, 0);
   assert.equal(storyB.resolvedCharacters.find((c) => c.id === 'erwin').appliedOverlays.length, 1);
 
-  // 3h. Unrelated fandom does NOT inherit Power to Strive characters or rules
+  // 3h. Unrelated fandom does NOT inherit Power to Strive characters or rules (even if logicalId collides!)
   const originalHero = normalizeUniversalCharacter({
-    id: 'aria',
-    name: 'Aria Solis',
+    id: 'levi',
+    name: 'Levi Starlight (Sci-Fi)',
     fandom: 'starlight_original',
     category: 'core',
     corePersonality: 'Curious astronomer.',
   });
+  assert.equal(originalHero.id, 'starlight_original::levi');
   const unrelatedRoster = resolveStoryCharacterRoster({
     universalCharacters: [...universalChars, originalHero],
     storyCharacters: [],
     overlays: [customViolet],
     storyConfig: createDefaultStoryConfig('orig-novel', { fandom: 'starlight_original' }),
   });
-  assert.deepEqual(unrelatedRoster.resolvedCharacters.map((c) => c.id), ['aria']);
+  assert.deepEqual(unrelatedRoster.resolvedCharacters.map((c) => c.storageId), ['starlight_original::levi']);
+  assert.equal(unrelatedRoster.resolvedCharacters[0].name, 'Levi Starlight (Sci-Fi)');
   assert.deepEqual(unrelatedRoster.inactiveOptionalCharacters, []);
 }
 
-// 4. Conversational config proposal schema validation
+// 4. Conversational config proposal schema (omitted vs empty, enable/disable, overlay removal, relationship removal)
 {
   const proposal = validateConfigProposal({
     id: 'prop-1',
-    sourceMessage: 'OKAAAAY SOOOO what if Erwin and Levi were former lovers, Joseph knows something about their past, and nobody else knows?',
-    fandom: 'power_to_strive',
-    universe: 'Former Lovers AU',
-    relationshipStates: { eruri: 'former_lovers_continuing_attachment' },
-    enabledOptionalCharacters: ['joseph'],
-    casts: { room: ['erwin', 'levi'], screen: [], outside: ['joseph'] },
-    characterOverlays: [],
-    privateAuthorCanon: ['Erwin and Levi were former lovers.'],
-    individualKnowledge: [{ characterId: 'joseph', fact: 'Erwin and Levi past relationship', state: 'suspects', evidence: 'observed shorthand' }],
-    proposedEvents: ['Quiet confrontation after viewing'],
-    unresolvedAmbiguities: ['Did Joseph learn this before or after meeting Levi?'],
+    sourceMessage: 'OKAAAAY SOOOO actually remove Joseph, clear screen cast, remove Violet overlay, and clear eruri!',
+    optionalCharacterOps: { disable: ['joseph'] },
+    overlayOps: { remove: ['levi_violet_traits'] },
+    casts: { screen: [] }, // explicitly empty -> clears screen cast, while room/outside omitted!
+    relationshipOps: { set: { eruri: 'former_lovers' }, remove: ['joseph_marriage'] },
+    unresolvedAmbiguities: ['Confirm timeline checkpoint'],
   });
   assert.equal(proposal.status, 'proposed');
-  assert.equal(proposal.individualKnowledge.length, 1);
-  assert.equal(proposal.unresolvedAmbiguities.length, 1);
+  assert.deepEqual(proposal.optionalCharacterOps.disable, ['joseph']);
+  assert.deepEqual(proposal.overlayOps.remove, ['levi_violet_traits']);
+  assert.deepEqual(proposal.castOps.screen.set, []);
+  assert.equal(proposal.castOps.room, undefined, 'Omitted cast layer must remain undefined');
+  assert.deepEqual(proposal.relationshipOps.remove, ['joseph_marriage']);
   assert.throws(() => validateConfigProposal({ status: 'auto_canon' }));
 }
 
-console.log('PASS: all Milestone 1 offline unit tests passed (v2 backup, Bible v1.1 mapper, general overlays, scopes, conflicts, cross-story & unrelated-fandom isolation, proposal schema).');
+console.log('PASS: all Milestone 1 offline unit tests passed (v2 backup, namespaced IDs, Bible v1.1 cross-ref validation, general overlays, scopes, conflicts, cross-story & unrelated-fandom isolation, proposal correction ops).');

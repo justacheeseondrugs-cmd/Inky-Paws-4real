@@ -322,6 +322,9 @@ def main():
               const ovIndexes = Array.from(rawDb.transaction('characterOverlays').objectStore('characterOverlays').indexNames);
 
               const ch1 = await db.get('chapters', 'v1-ch-1', { projectId: 'original' });
+              const ch1ByProject = await db.getByProjectIndex('chapters', 'by_project', { projectId: 'original' });
+              const ch1ByProjectOrder = await db.getByProjectIndex('chapters', 'by_project_order', { projectId: 'original' });
+              const ch1ByProjectUpdated = await db.getByProjectIndex('chapters', 'by_project_updated', { projectId: 'original' });
               const chAlt = await db.get('chapters', 'v1-ch-1-alt', { projectId: 'original' });
               const chB = await db.get('chapters', 'v1-story-b-ch1', { projectId: 'story-b' });
               const charLevi = await db.get('characters', 'v1-char-levi', { projectId: 'original' });
@@ -342,7 +345,8 @@ def main():
                 chIndexes,
                 memIndexes,
                 ovIndexes,
-                ch1Ok: ch1?.content === 'Original legacy prose preserved across v1->v2.' && ch1?.versions?.length === 1,
+                ch1Ok: ch1?.content === 'Original legacy prose preserved across v1->v2.' && ch1?.versions?.length === 1 && ch1?.projectId === 'original',
+                legacyIndexedOk: ch1ByProject.some(c => c.id === 'v1-ch-1') && ch1ByProjectOrder.some(c => c.id === 'v1-ch-1') && ch1ByProjectUpdated.some(c => c.id === 'v1-ch-1'),
                 chAltOk: chAlt?.branchRole === 'alternative' && chAlt?.variantLabel === 'A',
                 chBOk: chB?.content === 'Unrelated workspace prose.',
                 charLeviOk: charLevi?.personality === 'Author custom legacy Levi sheet.',
@@ -360,10 +364,11 @@ def main():
             assert migration_check['version'] == 2
             for s in ['universalCharacters', 'characterOverlays', 'storyConfigs', 'storyPresets', 'knowledgeFacts', 'usageLog']:
                 assert s in migration_check['stores'], f'Missing v2 store: {s}'
+            assert 'by_project' in migration_check['chIndexes']
             assert 'by_project_order' in migration_check['chIndexes']
             assert 'by_project_chapter' in migration_check['memIndexes']
             assert 'by_base_character' in migration_check['ovIndexes']
-            for k in ['ch1Ok', 'chAltOk', 'chBOk', 'charLeviOk', 'docOk', 'memOk', 'factOk', 'canonOk', 'genOk', 'keysOk', 'rewriteDraftOk', 'noSilentAuConfig']:
+            for k in ['ch1Ok', 'legacyIndexedOk', 'chAltOk', 'chBOk', 'charLeviOk', 'docOk', 'memOk', 'factOk', 'canonOk', 'genOk', 'keysOk', 'rewriteDraftOk', 'noSilentAuConfig']:
                 assert migration_check[k], f'Migration preservation failed for {k}: {migration_check}'
 
             # Repeated reload (re-opening v2) is completely safe
@@ -381,11 +386,11 @@ def main():
               const hasV2Stores = ['universalCharacters','characterOverlays','storyConfigs','storyPresets','knowledgeFacts','usageLog'].every(s => Array.isArray(dump[s]));
               const metaOk = dump.__meta.version === 2 && dump.__meta.schemaVersion === 2;
 
-              // Import a legacy v1 full backup (only 9 stores, version 1) -> must succeed & keep local keys!
+              // Import a legacy v1 full backup (only 9 stores, version 1, chapter WITHOUT projectId!) -> must succeed, backfill projectId, & keep local keys!
               const v1LegacyBackup = {
                 __meta: { app: 'pts-studio', version: 1 },
                 chapters: [
-                  { id: 'v1-restored', projectId: 'original', title: 'Restored V1', content: 'Hello from v1 backup.', wordCount: 4, order: 0, versions: [] },
+                  { id: 'v1-restored', title: 'Restored V1', content: 'Hello from v1 backup.', wordCount: 4, order: 0, versions: [] },
                 ],
                 characters: [
                   { id: 'v1-char-levi', projectId: 'original', name: 'Levi Ackerman', pronouns: 'he/him', personality: 'Restored story-specific Levi.', active: true },
@@ -404,18 +409,20 @@ def main():
               await db.importAll(v1LegacyBackup, { merge: false });
               const mainAfter = await db.get('settings', 'main');
               const restored = await db.get('chapters', 'v1-restored', { projectId: 'original' });
+              const restoredByOrder = await db.getByProjectIndex('chapters', 'by_project_order', { projectId: 'original' });
               return {
                 keysExcluded,
                 hasV2Stores,
                 metaOk,
-                restoredOk: restored?.content === 'Hello from v1 backup.',
+                restoredOk: restored?.content === 'Hello from v1 backup.' && restoredByOrder.some(c => c.id === 'v1-restored'),
                 localKeysPreserved: mainAfter?.apiKeys?.openai === 'LOCAL-V1-OPENAI-KEY' && mainAfter?.apiKeys?.gemini === 'LOCAL-V1-GEMINI-KEY',
               };
             }''')
             assert all(backup_compat.values()), f'Backup compatibility check failed: {backup_compat}'
 
             # ------------------------------------------------------------------
-            # TEST 3: Master Bible v1.1 UI import, idempotency, author-edit protection & custom Violet overlay
+            # TEST 3: Master Bible v1.1 UI import, namespaced non-collision, transactional guard,
+            #         idempotency, author-edit protection & custom Violet overlay
             # ------------------------------------------------------------------
             page.select_option('#workspace-select', 'original')
             page.click('[data-view="characters"]')
@@ -427,18 +434,20 @@ def main():
                 'mimeType': 'application/json',
                 'buffer': bible_v11,
             })
-            page.wait_for_selector('#univ-char-list .list-item[data-univ-id="levi"]')
-            page.wait_for_selector('#overlay-list .list-item[data-overlay-id="levi_violet_traits"]')
+            page.wait_for_selector('#univ-char-list .list-item[data-logical-id="levi"]')
+            page.wait_for_selector('#overlay-list .list-item[data-logical-id="levi_violet_traits"]')
 
-            # Verify optional characters did NOT auto-join the active story roster & Violet overlay is empty/disabled
+            # Verify optional characters did NOT auto-join the active story roster & namespaced storage IDs are used
             after_import = page.evaluate('''async () => {
               const { db } = await import('/js/db.js');
               const storyChars = await db.getAll('characters', { projectId: 'original' });
               const univChars = await db.getAll('universalCharacters');
-              const violet = await db.get('characterOverlays', 'levi_violet_traits');
+              const levi = await db.get('universalCharacters', 'power_to_strive::levi');
+              const violet = await db.get('characterOverlays', 'power_to_strive::levi_violet_traits');
               return {
                 storyCharNames: storyChars.map(c => c.name),
                 univCount: univChars.length,
+                leviNamespaced: levi?.id === 'power_to_strive::levi' && levi?.logicalId === 'levi',
                 violetDisabled: violet?.defaultEnabled === false,
                 violetEmpty: Array.isArray(violet?.characterizationChanges) && violet.characterizationChanges.length === 0,
                 violetConfigured: violet?.configured === false,
@@ -446,46 +455,66 @@ def main():
             }''')
             assert 'Joseph Alcott' not in after_import['storyCharNames']
             assert 'Anya' not in after_import['storyCharNames']
-            assert after_import['univCount'] == 4
+            assert after_import['univCount'] == 4 and after_import['leviNamespaced']
             assert after_import['violetDisabled'] and after_import['violetEmpty'] and after_import['violetConfigured']
 
             # Edit universal Levi and configure custom Violet traits directly in the UI (no code change!)
-            page.click('#univ-char-list .list-item[data-univ-id="levi"] .act-univ-edit')
+            page.click('#univ-char-list .list-item[data-logical-id="levi"] .act-univ-edit')
             page.wait_for_selector('#u-core')
             page.fill('#u-core', 'Author customized universal Levi core.')
             page.click('#u-save-btn')
             page.wait_for_selector('#active-modal', state='detached')
 
-            page.click('#overlay-list .list-item[data-overlay-id="levi_violet_traits"] .act-ov-edit')
+            page.click('#overlay-list .list-item[data-logical-id="levi_violet_traits"] .act-ov-edit')
             page.wait_for_selector('#ov-changes')
             page.fill('#ov-changes', 'Author custom Violet trait 1\nAuthor custom Violet trait 2')
             page.click('#ov-save-btn')
             page.wait_for_selector('#active-modal', state='detached')
-            page.wait_for_function("() => (document.querySelector('#overlay-list .list-item[data-overlay-id=\"levi_violet_traits\"]')?.innerText || '').includes('2 rasgo(s)')")
+            page.wait_for_function("() => (document.querySelector('#overlay-list .list-item[data-logical-id=\"levi_violet_traits\"]')?.innerText || '').includes('2 rasgo(s)')")
 
-            # Re-import synthetic Bible v1.2 -> author-edited Levi & Violet overlay MUST be protected; unmodified Erwin updates!
-            reimport_res = page.evaluate('''async (bibleObj) => {
+            # Re-import synthetic Bible v1.2, import another fandom with colliding logicalId "levi", AND test atomic invalid import rollback
+            other_bible = synthetic_bible('1.0', erwin_core='Other Fandom Commander.')
+            other_bible['fandom'] = 'starlight_saga'
+            other_bible['core_characters'][1]['core'] = 'Other Fandom Levi must never touch Power to Strive Levi.'
+            bad_bible = synthetic_bible('1.3')
+            bad_bible['optional_character_overlays'][0]['character_id'] = 'missing_character_id'
+
+            reimport_res = page.evaluate('''async ({ bibleV12, otherBible, badBible }) => {
               const { importMasterCharacterBible } = await import('/js/characterLibrary.js');
               const { db } = await import('/js/db.js');
-              const summary1 = await importMasterCharacterBible(bibleObj);
-              const summary2 = await importMasterCharacterBible(bibleObj);
-              const levi = await db.get('universalCharacters', 'levi');
-              const erwin = await db.get('universalCharacters', 'erwin');
-              const violet = await db.get('characterOverlays', 'levi_violet_traits');
+              const summary1 = await importMasterCharacterBible(bibleV12);
+              const summary2 = await importMasterCharacterBible(bibleV12);
+              // Import another fandom with same logical IDs -> zero overwrite of power_to_strive!
+              await importMasterCharacterBible(otherBible, { fandom: 'starlight_saga' });
+              // Invalid Bible import must reject atomically before mutating anything!
+              let invalidRejected = false;
+              try { await importMasterCharacterBible(badBible); } catch { invalidRejected = true; }
+
+              const ptsLevi = await db.get('universalCharacters', 'power_to_strive::levi');
+              const otherLevi = await db.get('universalCharacters', 'starlight_saga::levi');
+              const erwin = await db.get('universalCharacters', 'power_to_strive::erwin');
+              const violet = await db.get('characterOverlays', 'power_to_strive::levi_violet_traits');
               return {
-                protectedIds: summary1.protectedAuthorEdited.map(x => x.id).sort(),
+                protectedLogicalIds: summary1.protectedAuthorEdited.map(x => x.logicalId).sort(),
                 erwinUpdated: summary1.characters.updated === 3 && erwin.corePersonality === 'Updated Erwin core v1.2.',
                 idempotentSecondRun: summary2.characters.created === 0 && summary2.characters.updated === 0,
-                leviPreserved: levi.corePersonality === 'Author customized universal Levi core.',
+                ptsLeviPreserved: ptsLevi.corePersonality === 'Author customized universal Levi core.',
+                otherLeviIsolated: otherLevi?.corePersonality === 'Other Fandom Levi must never touch Power to Strive Levi.',
                 violetPreserved: violet.characterizationChanges.length === 2 && violet.defaultEnabled === false,
+                invalidRejected,
               };
-            }''', synthetic_bible('1.2', erwin_core='Updated Erwin core v1.2.'))
-            assert reimport_res['protectedIds'] == ['levi', 'levi_violet_traits'], f'Author edits not protected: {reimport_res}'
+            }''', {
+                'bibleV12': synthetic_bible('1.2', erwin_core='Updated Erwin core v1.2.'),
+                'otherBible': other_bible,
+                'badBible': bad_bible,
+            })
+            assert reimport_res['protectedLogicalIds'] == ['levi', 'levi_violet_traits'], f'Author edits not protected: {reimport_res}'
             assert reimport_res['erwinUpdated'] and reimport_res['idempotentSecondRun']
-            assert reimport_res['leviPreserved'] and reimport_res['violetPreserved']
+            assert reimport_res['ptsLeviPreserved'] and reimport_res['otherLeviIsolated']
+            assert reimport_res['violetPreserved'] and reimport_res['invalidRejected']
 
             # Zero-cost resolved profile preview modal opens and switches scopes cleanly
-            page.click('#univ-char-list .list-item[data-univ-id="levi"] .act-univ-preview')
+            page.click('#univ-char-list .list-item[data-logical-id="levi"] .act-univ-preview')
             page.wait_for_selector('#prev-version')
             page.select_option('#prev-version', 'screen')
             assert 'Perfil estándar' in page.locator('#prev-body').inner_text()
@@ -493,26 +522,43 @@ def main():
             page.wait_for_selector('#active-modal', state='detached')
 
             # ------------------------------------------------------------------
-            # TEST 4: Conversational config proposal stays inactive until approved
+            # TEST 4: Conversational config proposals (additions + explicit corrections/removals/clears)
             # ------------------------------------------------------------------
             proposal_res = page.evaluate('''async () => {
               const { stageConfigProposal, approveConfigProposal, getStoryConfig } = await import('/js/storyConfigSchema.js');
-              const { proposal } = await stageConfigProposal('story-b', {
-                sourceMessage: 'OKAAAAY SOOOO what if Erwin and Levi were former lovers and Joseph knows?',
+              // Proposal 1: enable Joseph, invite Joseph, add overlay, set room & screen casts, set eruri
+              const p1 = await stageConfigProposal('story-b', {
+                sourceMessage: 'OKAAAAY SOOOO what if Erwin and Levi were former lovers and Joseph joins?',
                 fandom: 'power_to_strive',
                 universe: 'Former Lovers AU',
-                relationshipStates: { eruri: 'former_lovers_continuing_attachment' },
-                enabledOptionalCharacters: ['joseph'],
-                unresolvedAmbiguities: ['Confirm whether Joseph is invited to the room.'],
+                relationshipStates: { eruri: 'former_lovers_continuing_attachment', joseph_marriage: true },
+                optionalCharacterOps: { enable: ['joseph'] },
+                guestInvitationOps: { invite: ['joseph'] },
+                casts: { room: ['erwin', 'levi', 'joseph'], screen: ['anya'] },
+                overlayOps: { add: [{ overlayId: 'levi_violet_traits', scope: 'story', enabled: true }] },
               });
               const beforeApprove = await getStoryConfig('story-b');
               const inactiveWhileProposed = Object.keys(beforeApprove.relationshipStates || {}).length === 0 && (beforeApprove.enabledOptionalCharacters || []).length === 0;
-              await approveConfigProposal('story-b', proposal.id);
-              const afterApprove = await getStoryConfig('story-b');
+              await approveConfigProposal('story-b', p1.proposal.id);
+
+              // Proposal 2: disable Joseph (also revokes invitation), remove overlay, clear screen cast with [], omit room cast, update eruri & remove joseph_marriage
+              const p2 = await stageConfigProposal('story-b', {
+                sourceMessage: 'Wait actually disable Joseph, remove Violet overlay, clear screen cast, switch eruri to secret_relationship and drop joseph_marriage!',
+                optionalCharacterOps: { disable: ['joseph'] },
+                overlayOps: { remove: ['levi_violet_traits'] },
+                casts: { screen: [] }, // omitted room must stay untouched!
+                relationshipOps: { set: { eruri: 'secret_relationship' }, remove: ['joseph_marriage'] },
+              });
+              await approveConfigProposal('story-b', p2.proposal.id);
+              const afterCorrection = await getStoryConfig('story-b');
               const origUnaffected = await getStoryConfig('original');
               return {
                 inactiveWhileProposed,
-                activeAfterApprove: afterApprove.relationshipStates?.eruri === 'former_lovers_continuing_attachment' && afterApprove.enabledOptionalCharacters.includes('joseph'),
+                josephDisabled: !(afterCorrection.enabledOptionalCharacters || []).includes('joseph') && !(afterCorrection.roomGuestInvitations || []).includes('joseph'),
+                overlayRemoved: (afterCorrection.overlayActivations || []).length === 0,
+                screenCleared: (afterCorrection.casts?.screen || []).length === 0,
+                roomKept: (afterCorrection.casts?.room || []).includes('erwin'),
+                eruriUpdated: afterCorrection.relationshipStates?.eruri === 'secret_relationship' && !('joseph_marriage' in (afterCorrection.relationshipStates || {})),
                 origUnaffected: !origUnaffected,
               };
             }''')
@@ -523,7 +569,59 @@ def main():
             ctx.close()
 
             # ------------------------------------------------------------------
-            # TEST 5: Service Worker v45 upgrade compatibility with IndexedDB v2
+            # TEST 5: Multi-tab blocked IndexedDB v1 -> v2 upgrade UX
+            # ------------------------------------------------------------------
+            ctx_tabs = browser.new_context(service_workers='block')
+            page_old = ctx_tabs.new_page()
+            page_new = ctx_tabs.new_page()
+            for p in (page_old, page_new):
+                p.route('https://fonts.googleapis.com/**', lambda r: r.fulfill(status=200, content_type='text/css', body=''))
+                p.route('https://fonts.gstatic.com/**', lambda r: r.fulfill(status=200, content_type='font/woff2', body=b''))
+
+            # Old tab creates and HOLDS an open raw v1 connection (without closing on versionchange)
+            page_old.goto(f'{base_url}/manifest.webmanifest')
+            page_old.evaluate('''async () => {
+              await new Promise((resolve, reject) => {
+                const delReq = indexedDB.deleteDatabase('pts-studio');
+                delReq.onsuccess = resolve;
+                delReq.onerror = () => reject(delReq.error);
+              });
+              window.__oldV1Db = await new Promise((resolve, reject) => {
+                const req = indexedDB.open('pts-studio', 1);
+                req.onupgradeneeded = (e) => {
+                  const d = e.target.result;
+                  for (const name of ['chapters','characters','documents','docChunks','memoryEntries','lockedFacts','canonNotes','settings','generationState']) {
+                    d.createObjectStore(name, { keyPath: 'id' });
+                  }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+              });
+              await new Promise((resolve, reject) => {
+                const tx = window.__oldV1Db.transaction('chapters', 'readwrite');
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error);
+                tx.objectStore('chapters').put({ id: 'hold-ch', title: 'Multi-tab Chapter', content: 'Must survive blocked upgrade.', wordCount: 4, order: 0 });
+              });
+            }''')
+
+            # New tab loads app -> upgrade is blocked -> must display calm Spanish banner (no silent hang, no erase instruction)
+            page_new.goto(f'{base_url}/index.html')
+            page_new.wait_for_selector('#db-blocked-banner', state='visible')
+            banner_text = page_new.locator('#db-blocked-banner').inner_text().lower()
+            assert 'otra pestaña' in banner_text and 'sin perder' in banner_text, f'Unexpected blocked banner text: {banner_text}'
+            assert 'borrar' not in banner_text, 'Blocked banner must NEVER tell author to erase browser data!'
+
+            # Close old tab's DB connection -> new tab automatically unblocks, hides banner, and preserves chapter!
+            page_old.evaluate('() => { window.__oldV1Db.close(); }')
+            page_new.wait_for_selector('#db-blocked-banner', state='detached')
+            page_new.wait_for_function("() => (document.querySelector('#workspace-select')?.options.length || 0) >= 2")
+            survived_ch = page_new.evaluate("async () => { const {db} = await import('/js/db.js'); return await db.get('chapters', 'hold-ch', { projectId: 'original' }); }")
+            assert survived_ch and survived_ch['content'] == 'Must survive blocked upgrade.', f'Chapter lost after blocked upgrade recovery: {survived_ch}'
+            ctx_tabs.close()
+
+            # ------------------------------------------------------------------
+            # TEST 6: Service Worker v45 upgrade compatibility with IndexedDB v2
             # ------------------------------------------------------------------
             ctx_sw = browser.new_context(service_workers='allow')
             page_sw = ctx_sw.new_page()
@@ -563,7 +661,7 @@ def main():
             ctx_sw.close()
 
             browser.close()
-            print('PASS: all Milestone 1 browser integration tests passed (v1->v2 migration, v1/v2 backup, Bible v1.1 UI import, author-edit protection, custom Violet overlay, proposals, SW v45 offline).')
+            print('PASS: all Milestone 1 + follow-up browser integration tests passed (v1->v2 legacy index backfill, v1/v2 backup, namespaced atomic Bible import, author-edit protection, proposal corrections, multi-tab blocked upgrade UX, SW v45 offline).')
     finally:
         server.shutdown()
 

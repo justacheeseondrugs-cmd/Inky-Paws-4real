@@ -1,12 +1,13 @@
 // characterLibrary.js — Biblioteca universal de personajes, overlays reutilizables,
-// importador validado de la Master Character Bible v1.1 y resolvedor determinista.
+// importador transaccional validado de la Master Character Bible v1.1 y resolvedor determinista.
 //
 // Reglas clave:
-// - Los perfiles universales están separados del estado propio de cada historia.
-// - Guardar una plantilla de personaje opcional u overlay en la biblioteca NUNCA
-//   la activa en una historia ni muta el perfil universal base.
-// - Los rasgos de Violet para Levi son un overlay genérico vacío y desactivado
-//   por defecto: jamás se inventan rasgos no aprobados por la autora.
+// - Las identidades de almacenamiento están namespaced por fandom (`${fandom}::${logicalId}`)
+//   conservando el `logicalId` estable (`levi`, `levi_violet_traits`, `violet_au`) para
+//   evitar colisiones entre fandoms sin perder legibilidad.
+// - Importar una Biblia Maestra es atómico (una sola transacción IndexedDB) y protege
+//   perfiles/overlays marcados como editados por la autora.
+// - Los rasgos de Violet para Levi son un overlay genérico vacío y desactivado por defecto.
 
 import { db } from './db.js';
 import { contentFingerprint } from './utils.js';
@@ -58,6 +59,27 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+export function normalizeFandomNamespace(fandom) {
+  const raw = cleanString(fandom).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return raw || 'neutral';
+}
+
+export function extractLogicalId(id) {
+  const raw = cleanString(id);
+  const idx = raw.indexOf('::');
+  return idx >= 0 ? raw.slice(idx + 2) : raw;
+}
+
+export function makeNamespacedId(fandom, logicalId) {
+  const ns = normalizeFandomNamespace(fandom);
+  const logical = extractLogicalId(logicalId);
+  if (!logical) return '';
+  return `${ns}::${logical}`;
+}
+
 export function isOverlayConfigured(overlay) {
   if (!isPlainObject(overlay)) return false;
   if (cleanStringArray(overlay.characterizationChanges).length > 0) return true;
@@ -69,11 +91,13 @@ export function isOverlayConfigured(overlay) {
 
 export function normalizeUniversalCharacter(input, { existing = null, markAuthorEdited = false, revisionNote = '' } = {}) {
   if (!isPlainObject(input)) throw new Error('El perfil de personaje universal debe ser un objeto.');
-  const id = cleanString(input.id || existing?.id);
+  const fandom = normalizeFandomNamespace(input.fandom !== undefined ? input.fandom : (existing?.fandom || 'neutral'));
+  const rawLogical = cleanString(input.logicalId || extractLogicalId(input.id) || existing?.logicalId || extractLogicalId(existing?.id));
   const name = cleanString(input.name || existing?.name);
-  if (!id) throw new Error('El personaje universal requiere un identificador estable (id).');
-  if (!name) throw new Error(`El personaje universal "${id}" requiere un nombre.`);
+  if (!rawLogical) throw new Error('El personaje universal requiere un identificador lógico estable (id/logicalId).');
+  if (!name) throw new Error(`El personaje universal "${rawLogical}" requiere un nombre.`);
 
+  const storageId = existing?.id || (cleanString(input.id).includes('::') ? cleanString(input.id) : makeNamespacedId(fandom, rawLogical));
   const category = ['core', 'optional', 'facilitator', 'custom'].includes(input.category)
     ? input.category
     : (existing?.category || 'custom');
@@ -85,13 +109,14 @@ export function normalizeUniversalCharacter(input, { existing = null, markAuthor
   const prevHistory = Array.isArray(existing?.revisionHistory) ? existing.revisionHistory : [];
   const nextRevision = (Number.isInteger(existing?.revision) ? existing.revision : 0) + 1;
 
-  const normalized = {
-    id,
+  return {
+    id: storageId,
+    logicalId: rawLogical,
     name,
     aliases: cleanStringArray(input.aliases !== undefined ? input.aliases : existing?.aliases),
     pronouns: cleanString(input.pronouns !== undefined ? input.pronouns : existing?.pronouns),
     role: cleanString(input.role !== undefined ? input.role : existing?.role),
-    fandom: cleanString(input.fandom !== undefined ? input.fandom : (existing?.fandom || 'neutral')) || 'neutral',
+    fandom,
     category,
     defaultEnabled,
     corePersonality: cleanString(input.corePersonality !== undefined ? input.corePersonality : existing?.corePersonality),
@@ -125,17 +150,21 @@ export function normalizeUniversalCharacter(input, { existing = null, markAuthor
     createdAt: existing?.createdAt || input.createdAt || now,
     updatedAt: now,
   };
-  return normalized;
 }
 
 export function normalizeCharacterOverlay(input, { existing = null, markAuthorEdited = false, revisionNote = '' } = {}) {
   if (!isPlainObject(input)) throw new Error('El overlay de personaje debe ser un objeto.');
-  const id = cleanString(input.id || existing?.id);
+  const fandom = normalizeFandomNamespace(input.fandom !== undefined ? input.fandom : (existing?.fandom || 'neutral'));
+  const rawLogical = cleanString(input.logicalId || extractLogicalId(input.id) || existing?.logicalId || extractLogicalId(existing?.id));
   const name = cleanString(input.name || existing?.name);
-  const baseCharacterId = cleanString(input.baseCharacterId || existing?.baseCharacterId);
-  if (!id) throw new Error('El overlay requiere un identificador estable (id).');
-  if (!name) throw new Error(`El overlay "${id}" requiere un nombre.`);
-  if (!baseCharacterId) throw new Error(`El overlay "${id}" requiere un baseCharacterId.`);
+  const rawBase = cleanString(input.baseCharacterId || existing?.baseCharacterId);
+  if (!rawLogical) throw new Error('El overlay requiere un identificador estable (id/logicalId).');
+  if (!name) throw new Error(`El overlay "${rawLogical}" requiere un nombre.`);
+  if (!rawBase) throw new Error(`El overlay "${rawLogical}" requiere un baseCharacterId.`);
+
+  const storageId = existing?.id || (cleanString(input.id).includes('::') ? cleanString(input.id) : makeNamespacedId(fandom, rawLogical));
+  const baseCharacterId = extractLogicalId(rawBase);
+  const baseCharacterStorageId = rawBase.includes('::') ? rawBase : makeNamespacedId(fandom, baseCharacterId);
 
   const rawScopes = Array.isArray(input.allowedScopes)
     ? input.allowedScopes
@@ -164,11 +193,13 @@ export function normalizeCharacterOverlay(input, { existing = null, markAuthorEd
     : (existing?.relationshipChanges !== undefined ? existing.relationshipChanges : {});
 
   const overlay = {
-    id,
+    id: storageId,
+    logicalId: rawLogical,
     name,
     description: cleanString(input.description !== undefined ? input.description : existing?.description),
     baseCharacterId,
-    fandom: cleanString(input.fandom !== undefined ? input.fandom : (existing?.fandom || 'neutral')) || 'neutral',
+    baseCharacterStorageId,
+    fandom,
     characterizationChanges: cleanStringArray(
       input.characterizationChanges !== undefined ? input.characterizationChanges : existing?.characterizationChanges
     ),
@@ -238,16 +269,18 @@ export function validateMasterCharacterBible(bible) {
   }
 
   const seenCharIds = new Set();
+  const optionalCharIds = new Set();
   for (const groupName of ['core_characters', 'optional_characters']) {
     const list = bible[groupName] || [];
     for (let i = 0; i < list.length; i++) {
       const ch = list[i];
       if (!isPlainObject(ch)) throw new Error(`Entrada inválida en "${groupName}" (posición ${i + 1}).`);
-      const id = cleanString(ch.id);
+      const id = extractLogicalId(ch.id);
       const name = cleanString(ch.name);
       if (!id || !name) throw new Error(`Falta "id" o "name" en "${groupName}" (posición ${i + 1}).`);
       if (seenCharIds.has(id)) throw new Error(`Identificador de personaje duplicado "${id}" en la Biblia Maestra.`);
       seenCharIds.add(id);
+      if (groupName === 'optional_characters') optionalCharIds.add(id);
     }
   }
 
@@ -255,10 +288,13 @@ export function validateMasterCharacterBible(bible) {
   for (let i = 0; i < (bible.optional_character_overlays || []).length; i++) {
     const ov = bible.optional_character_overlays[i];
     if (!isPlainObject(ov)) throw new Error(`Overlay inválido en posición ${i + 1}.`);
-    const id = cleanString(ov.id);
-    const baseId = cleanString(ov.character_id || ov.baseCharacterId);
+    const id = extractLogicalId(ov.id);
+    const baseId = extractLogicalId(ov.character_id || ov.baseCharacterId);
     if (!id || !baseId) throw new Error(`Overlay sin "id" o "character_id" en posición ${i + 1}.`);
     if (seenOverlayIds.has(id)) throw new Error(`Identificador de overlay duplicado "${id}".`);
+    if (!seenCharIds.has(baseId)) {
+      throw new Error(`El overlay "${id}" referencia un personaje inexistente ("${baseId}").`);
+    }
     seenOverlayIds.add(id);
   }
 
@@ -266,10 +302,29 @@ export function validateMasterCharacterBible(bible) {
   for (let i = 0; i < (bible.story_presets || []).length; i++) {
     const preset = bible.story_presets[i];
     if (!isPlainObject(preset)) throw new Error(`Preset inválido en posición ${i + 1}.`);
-    const id = cleanString(preset.id);
+    const id = extractLogicalId(preset.id);
     const name = cleanString(preset.name);
     if (!id || !name) throw new Error(`Preset sin "id" o "name" en posición ${i + 1}.`);
     if (seenPresetIds.has(id)) throw new Error(`Identificador de preset duplicado "${id}".`);
+    for (const optId of cleanStringArray(preset.enabled_optional || [])) {
+      if (!optionalCharIds.has(extractLogicalId(optId))) {
+        throw new Error(`El preset "${id}" referencia un personaje opcional inexistente ("${optId}").`);
+      }
+    }
+    for (const guestId of cleanStringArray(preset.room_guest_ids || [])) {
+      const gid = extractLogicalId(guestId);
+      if (gid === 'anya' && bible.rules?.hard_constraints?.anya_room_entry === 'never') {
+        throw new Error(`El preset "${id}" viola la regla no negociable: Anya nunca puede estar en room_guest_ids.`);
+      }
+      if (!seenCharIds.has(gid)) {
+        throw new Error(`El preset "${id}" referencia un invitado de sala inexistente ("${guestId}").`);
+      }
+    }
+    for (const ovId of cleanStringArray(preset.enabled_character_overlays || [])) {
+      if (!seenOverlayIds.has(extractLogicalId(ovId))) {
+        throw new Error(`El preset "${id}" referencia un overlay inexistente ("${ovId}").`);
+      }
+    }
     seenPresetIds.add(id);
   }
 
@@ -278,6 +333,7 @@ export function validateMasterCharacterBible(bible) {
     schemaVersion: Number(bible.schema_version),
     contentVersion: cleanString(bible.content_version || '1.0'),
     title: cleanString(bible.title || 'Master Character Bible'),
+    fandom: normalizeFandomNamespace(bible.fandom || 'power_to_strive'),
     coreCount: bible.core_characters.length,
     optionalCount: (bible.optional_characters || []).length,
     overlayCount: (bible.optional_character_overlays || []).length,
@@ -286,7 +342,7 @@ export function validateMasterCharacterBible(bible) {
 }
 
 function inferPronouns(ch) {
-  const id = cleanString(ch.id).toLowerCase();
+  const id = extractLogicalId(ch.id).toLowerCase();
   const core = cleanString(ch.core).toLowerCase();
   if (ch.pronouns) return cleanString(ch.pronouns);
   if (id === 'hange' || core.includes('they/them')) return 'they/them';
@@ -295,21 +351,24 @@ function inferPronouns(ch) {
   return '';
 }
 
-function mapBibleCharacter(ch, category, bibleMeta, fandom = 'power_to_strive') {
+function mapBibleCharacter(ch, category, bibleMeta, fandom) {
+  const ns = normalizeFandomNamespace(fandom);
+  const logicalId = extractLogicalId(ch.id);
   const aliases = [];
-  if (cleanString(ch.id) === 'historia') aliases.push('Christa Lenz', 'Krista Lenz', 'Christa', 'Historia');
-  if (cleanString(ch.id) === 'hange') aliases.push('Hanji Zoë', 'Hange', 'Hanji');
-  if (cleanString(ch.id) === 'levi') aliases.push('Levi', 'Captain Levi');
-  if (cleanString(ch.id) === 'erwin') aliases.push('Erwin', 'Commander Erwin');
-  if (cleanString(ch.id) === 'joseph') aliases.push('Joseph');
+  if (logicalId === 'historia') aliases.push('Christa Lenz', 'Krista Lenz', 'Christa', 'Historia');
+  if (logicalId === 'hange') aliases.push('Hanji Zoë', 'Hange', 'Hanji');
+  if (logicalId === 'levi') aliases.push('Levi', 'Captain Levi');
+  if (logicalId === 'erwin') aliases.push('Erwin', 'Commander Erwin');
+  if (logicalId === 'joseph') aliases.push('Joseph');
 
   const payload = {
-    id: cleanString(ch.id),
+    id: makeNamespacedId(ns, logicalId),
+    logicalId,
     name: cleanString(ch.name),
     aliases,
     pronouns: inferPronouns(ch),
     role: cleanString(ch.role),
-    fandom,
+    fandom: ns,
     category,
     defaultEnabled: category !== 'optional',
     corePersonality: cleanString(ch.core),
@@ -336,18 +395,21 @@ function mapBibleCharacter(ch, category, bibleMeta, fandom = 'power_to_strive') 
   return payload;
 }
 
-function mapBibleOverlay(ov, bibleMeta, fandom = 'power_to_strive') {
-  const id = cleanString(ov.id);
-  const baseCharacterId = cleanString(ov.character_id || ov.baseCharacterId);
-  const friendlyName = cleanString(ov.name) || (id === 'levi_violet_traits' ? 'Violet Traits (Levi · Opt-in)' : id);
+function mapBibleOverlay(ov, bibleMeta, fandom) {
+  const ns = normalizeFandomNamespace(fandom);
+  const logicalId = extractLogicalId(ov.id);
+  const baseLogicalId = extractLogicalId(ov.character_id || ov.baseCharacterId);
+  const friendlyName = cleanString(ov.name) || (logicalId === 'levi_violet_traits' ? 'Violet Traits (Levi · Opt-in)' : logicalId);
   // IMPORTANTE: Nunca inventar rasgos de Violet. Si la Biblia no trae rasgos explícitos,
   // characterizationChanges queda vacío ([]) para que la autora los configure en Inky Paws.
   const payload = {
-    id,
+    id: makeNamespacedId(ns, logicalId),
+    logicalId,
     name: friendlyName,
     description: cleanString(ov.description || ov.traits_source || 'Overlay opcional configurable por la autora.'),
-    baseCharacterId,
-    fandom,
+    baseCharacterId: baseLogicalId,
+    baseCharacterStorageId: makeNamespacedId(ns, baseLogicalId),
+    fandom: ns,
     characterizationChanges: cleanStringArray(ov.characterization_changes || ov.characterizationChanges || []),
     preserveCoreTraits: cleanStringArray(ov.preserve_core_traits || ov.preserveCoreTraits || []),
     backstoryChanges: cleanString(ov.backstory_changes || ov.backstoryChanges || ''),
@@ -375,20 +437,24 @@ function mapBibleOverlay(ov, bibleMeta, fandom = 'power_to_strive') {
   return payload;
 }
 
-function mapBiblePreset(preset, bibleMeta, fandom = 'power_to_strive') {
+function mapBiblePreset(preset, bibleMeta, fandom) {
+  const ns = normalizeFandomNamespace(fandom);
+  const logicalId = extractLogicalId(preset.id);
   const payload = {
-    id: cleanString(preset.id),
+    id: makeNamespacedId(ns, logicalId),
+    logicalId,
     name: cleanString(preset.name),
-    fandom,
+    fandom: ns,
     isTemplate: true,
-    enabledOptionalCharacters: cleanStringArray(preset.enabled_optional || []),
-    roomGuestIds: cleanStringArray(preset.room_guest_ids || []),
+    enabledOptionalCharacters: cleanStringArray(preset.enabled_optional || []).map(extractLogicalId),
+    roomGuestIds: cleanStringArray(preset.room_guest_ids || []).map(extractLogicalId),
     eruriState: cleanString(preset.eruri_state || 'mutual_attachment_unspoken'),
     josephMarriage: preset.joseph_marriage === true,
     josephMarriagePolicy: typeof preset.joseph_marriage === 'string' ? cleanString(preset.joseph_marriage) : '',
-    anyaRoomEntry: false, // Invariante no negociable
+    anyaRoomEntry: false,
     authorizedOverlays: cleanStringArray(preset.enabled_character_overlays || []).map((overlayId) => ({
-      overlayId,
+      overlayId: makeNamespacedId(ns, overlayId),
+      overlayLogicalId: extractLogicalId(overlayId),
       scope: 'story',
       characterVersion: 'default',
       sceneId: null,
@@ -406,22 +472,25 @@ function mapBiblePreset(preset, bibleMeta, fandom = 'power_to_strive') {
   return payload;
 }
 
-export function mapMasterCharacterBibleV1(bible, { fandom = 'power_to_strive' } = {}) {
+export function mapMasterCharacterBibleV1(bible, { fandom = '' } = {}) {
   const meta = validateMasterCharacterBible(bible);
+  const ns = normalizeFandomNamespace(fandom || bible.fandom || meta.fandom || 'power_to_strive');
   const universalCharacters = [
-    ...bible.core_characters.map((ch) => mapBibleCharacter(ch, 'core', meta, fandom)),
-    ...(bible.optional_characters || []).map((ch) => mapBibleCharacter(ch, 'optional', meta, fandom)),
+    ...bible.core_characters.map((ch) => mapBibleCharacter(ch, 'core', meta, ns)),
+    ...(bible.optional_characters || []).map((ch) => mapBibleCharacter(ch, 'optional', meta, ns)),
   ];
-  const characterOverlays = (bible.optional_character_overlays || []).map((ov) => mapBibleOverlay(ov, meta, fandom));
-  const storyPresets = (bible.story_presets || []).map((preset) => mapBiblePreset(preset, meta, fandom));
+  const characterOverlays = (bible.optional_character_overlays || []).map((ov) => mapBibleOverlay(ov, meta, ns));
+  const storyPresets = (bible.story_presets || []).map((preset) => mapBiblePreset(preset, meta, ns));
   return {
     metadata: {
       ...meta,
-      fandom,
+      fandom: ns,
       hardConstraints: { ...bible.rules.hard_constraints },
       checkpoints: Array.isArray(bible.checkpoints) ? bible.checkpoints.map((cp) => ({ ...cp })) : [],
       craftGuidelines: Array.isArray(bible.craft_guidelines) ? bible.craft_guidelines.map((g) => ({ ...g })) : [],
       sceneVoiceRouting: isPlainObject(bible.scene_voice_routing) ? { ...bible.scene_voice_routing } : {},
+      knowledgeSchema: isPlainObject(bible.knowledge_schema) ? structuredClone(bible.knowledge_schema) : null,
+      acceptanceTests: Array.isArray(bible.acceptance_tests) ? bible.acceptance_tests.map((t) => ({ ...t })) : [],
     },
     universalCharacters,
     characterOverlays,
@@ -429,25 +498,44 @@ export function mapMasterCharacterBibleV1(bible, { fandom = 'power_to_strive' } 
   };
 }
 
+function stampAtomicSync(record, existing) {
+  const now = new Date().toISOString();
+  const prevRev = Number.isInteger(existing?.revision) ? existing.revision : 0;
+  return {
+    ...record,
+    revision: prevRev + 1,
+    syncUpdatedAt: now,
+    deletedAt: record.deletedAt ?? null,
+    dirty: true,
+  };
+}
+
+function findMatchingExisting(mapById, list, incoming) {
+  if (mapById.has(incoming.id)) return mapById.get(incoming.id);
+  // Compatibilidad con registros pre-namespace del mismo fandom
+  return list.find((item) =>
+    normalizeFandomNamespace(item.fandom) === incoming.fandom &&
+    extractLogicalId(item.logicalId || item.id) === incoming.logicalId
+  ) || null;
+}
+
 export async function importMasterCharacterBible(bible, {
-  fandom = 'power_to_strive',
+  fandom = '',
   overwriteAuthorEdited = false,
   selectedOverwriteIds = [],
 } = {}) {
+  // Validar y mapear TODO antes de abrir la transacción IndexedDB.
   const mapped = mapMasterCharacterBibleV1(bible, { fandom });
   const overwriteSet = new Set(cleanStringArray(selectedOverwriteIds));
-
-  const [existingChars, existingOverlays, existingPresets] = await Promise.all([
-    db.getAll('universalCharacters'),
-    db.getAll('characterOverlays'),
-    db.getAll('storyPresets'),
-  ]);
-  const charById = new Map((existingChars || []).map((c) => [c.id, c]));
-  const overlayById = new Map((existingOverlays || []).map((o) => [o.id, o]));
-  const presetById = new Map((existingPresets || []).map((p) => [p.id, p]));
+  const shouldOverwrite = (incoming, existing) =>
+    overwriteAuthorEdited ||
+    overwriteSet.has(incoming.id) ||
+    overwriteSet.has(incoming.logicalId) ||
+    (existing && overwriteSet.has(existing.id));
 
   const summary = {
     ok: true,
+    fandom: mapped.metadata.fandom,
     schema: mapped.metadata.schema,
     schemaVersion: mapped.metadata.schemaVersion,
     contentVersion: mapped.metadata.contentVersion,
@@ -457,102 +545,147 @@ export async function importMasterCharacterBible(bible, {
     protectedAuthorEdited: [],
   };
 
-  for (const incoming of mapped.universalCharacters) {
-    const existing = charById.get(incoming.id) || null;
-    if (!existing) {
-      const record = normalizeUniversalCharacter(incoming, {
-        markAuthorEdited: false,
-        revisionNote: `Importado de ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
-      });
-      await db.put('universalCharacters', record);
-      summary.characters.created += 1;
-      continue;
-    }
-    if (existing.authorEdited && !overwriteAuthorEdited && !overwriteSet.has(incoming.id)) {
-      const entry = { store: 'universalCharacters', id: incoming.id, name: existing.name, reason: 'author_edited' };
-      summary.characters.protectedAuthorEdited.push(entry);
-      summary.protectedAuthorEdited.push(entry);
-      continue;
-    }
-    if (existing.importedHash === incoming.importedHash && !existing.authorEdited) {
-      summary.characters.unchanged += 1;
-      continue;
-    }
-    const updated = normalizeUniversalCharacter(incoming, {
-      existing,
-      markAuthorEdited: false,
-      revisionNote: `Actualizado desde ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
-    });
-    updated.authorEdited = false;
-    await db.put('universalCharacters', updated);
-    summary.characters.updated += 1;
-  }
+  const database = await db.openDb();
+  const storeNames = ['universalCharacters', 'characterOverlays', 'storyPresets', 'settings'];
 
-  for (const incoming of mapped.characterOverlays) {
-    const existing = overlayById.get(incoming.id) || null;
-    if (!existing) {
-      const record = normalizeCharacterOverlay(incoming, {
-        markAuthorEdited: false,
-        revisionNote: `Plantilla importada de ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
-      });
-      await db.put('characterOverlays', record);
-      summary.overlays.created += 1;
-      continue;
-    }
-    if (existing.authorEdited && !overwriteAuthorEdited && !overwriteSet.has(incoming.id)) {
-      const entry = { store: 'characterOverlays', id: incoming.id, name: existing.name, reason: 'author_edited' };
-      summary.overlays.protectedAuthorEdited.push(entry);
-      summary.protectedAuthorEdited.push(entry);
-      continue;
-    }
-    if (existing.importedHash === incoming.importedHash && !existing.authorEdited) {
-      summary.overlays.unchanged += 1;
-      continue;
-    }
-    const updated = normalizeCharacterOverlay(incoming, {
-      existing,
-      markAuthorEdited: false,
-      revisionNote: `Plantilla actualizada desde ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
-    });
-    updated.authorEdited = false;
-    await db.put('characterOverlays', updated);
-    summary.overlays.updated += 1;
-  }
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(storeNames, 'readwrite');
+    let customError = null;
+    transaction.oncomplete = () => resolve(true);
+    transaction.onerror = () => reject(customError || transaction.error || new Error('No se pudo importar la Biblia Maestra.'));
+    transaction.onabort = () => reject(customError || transaction.error || new Error('Importación de Biblia Maestra abortada; la biblioteca anterior permanece intacta.'));
 
-  for (const incoming of mapped.storyPresets) {
-    const existing = presetById.get(incoming.id) || null;
-    const now = new Date().toISOString();
-    if (!existing) {
-      await db.put('storyPresets', { ...incoming, authorEdited: false, createdAt: now, updatedAt: now });
-      summary.presets.created += 1;
-      continue;
-    }
-    if (existing.authorEdited && !overwriteAuthorEdited && !overwriteSet.has(incoming.id)) {
-      const entry = { store: 'storyPresets', id: incoming.id, name: existing.name, reason: 'author_edited' };
-      summary.presets.protectedAuthorEdited.push(entry);
-      summary.protectedAuthorEdited.push(entry);
-      continue;
-    }
-    if (existing.importedHash === incoming.importedHash && !existing.authorEdited) {
-      summary.presets.unchanged += 1;
-      continue;
-    }
-    await db.put('storyPresets', {
-      ...existing,
-      ...incoming,
-      authorEdited: false,
-      createdAt: existing.createdAt || now,
-      updatedAt: now,
-    });
-    summary.presets.updated += 1;
-  }
+    const existingData = { universalCharacters: null, characterOverlays: null, storyPresets: null };
+    let pendingReads = 3;
 
-  // Persistir metadatos de la biblioteca sin modificar historias existentes.
-  await db.put('settings', {
-    id: `master-bible-meta:${fandom}`,
-    fandom,
-    ...mapped.metadata,
-    lastImportedAt: new Date().toISOString(),
+    const applyAllWrites = () => {
+      try {
+        const charStore = transaction.objectStore('universalCharacters');
+        const ovStore = transaction.objectStore('characterOverlays');
+        const presetStore = transaction.objectStore('storyPresets');
+        const settingsStore = transaction.objectStore('settings');
+
+        const charList = existingData.universalCharacters || [];
+        const ovList = existingData.characterOverlays || [];
+        const presetList = existingData.storyPresets || [];
+        const charById = new Map(charList.map((c) => [c.id, c]));
+        const ovById = new Map(ovList.map((o) => [o.id, o]));
+        const presetById = new Map(presetList.map((p) => [p.id, p]));
+
+        for (const incoming of mapped.universalCharacters) {
+          const existing = findMatchingExisting(charById, charList, incoming);
+          if (!existing) {
+            const record = normalizeUniversalCharacter(incoming, {
+              markAuthorEdited: false,
+              revisionNote: `Importado de ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
+            });
+            charStore.put(stampAtomicSync(record, null));
+            summary.characters.created += 1;
+            continue;
+          }
+          if (existing.authorEdited && !shouldOverwrite(incoming, existing)) {
+            const entry = { store: 'universalCharacters', id: existing.id, logicalId: incoming.logicalId, name: existing.name, reason: 'author_edited' };
+            summary.characters.protectedAuthorEdited.push(entry);
+            summary.protectedAuthorEdited.push(entry);
+            continue;
+          }
+          if (existing.importedHash === incoming.importedHash && !existing.authorEdited) {
+            summary.characters.unchanged += 1;
+            continue;
+          }
+          const updated = normalizeUniversalCharacter(incoming, {
+            existing,
+            markAuthorEdited: false,
+            revisionNote: `Actualizado desde ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
+          });
+          updated.authorEdited = false;
+          charStore.put(stampAtomicSync(updated, existing));
+          summary.characters.updated += 1;
+        }
+
+        for (const incoming of mapped.characterOverlays) {
+          const existing = findMatchingExisting(ovById, ovList, incoming);
+          if (!existing) {
+            const record = normalizeCharacterOverlay(incoming, {
+              markAuthorEdited: false,
+              revisionNote: `Plantilla importada de ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
+            });
+            ovStore.put(stampAtomicSync(record, null));
+            summary.overlays.created += 1;
+            continue;
+          }
+          if (existing.authorEdited && !shouldOverwrite(incoming, existing)) {
+            const entry = { store: 'characterOverlays', id: existing.id, logicalId: incoming.logicalId, name: existing.name, reason: 'author_edited' };
+            summary.overlays.protectedAuthorEdited.push(entry);
+            summary.protectedAuthorEdited.push(entry);
+            continue;
+          }
+          if (existing.importedHash === incoming.importedHash && !existing.authorEdited) {
+            summary.overlays.unchanged += 1;
+            continue;
+          }
+          const updated = normalizeCharacterOverlay(incoming, {
+            existing,
+            markAuthorEdited: false,
+            revisionNote: `Plantilla actualizada desde ${mapped.metadata.title} v${mapped.metadata.contentVersion}`,
+          });
+          updated.authorEdited = false;
+          ovStore.put(stampAtomicSync(updated, existing));
+          summary.overlays.updated += 1;
+        }
+
+        const now = new Date().toISOString();
+        for (const incoming of mapped.storyPresets) {
+          const existing = findMatchingExisting(presetById, presetList, incoming);
+          if (!existing) {
+            presetStore.put(stampAtomicSync({ ...incoming, authorEdited: false, createdAt: now, updatedAt: now }, null));
+            summary.presets.created += 1;
+            continue;
+          }
+          if (existing.authorEdited && !shouldOverwrite(incoming, existing)) {
+            const entry = { store: 'storyPresets', id: existing.id, logicalId: incoming.logicalId, name: existing.name, reason: 'author_edited' };
+            summary.presets.protectedAuthorEdited.push(entry);
+            summary.protectedAuthorEdited.push(entry);
+            continue;
+          }
+          if (existing.importedHash === incoming.importedHash && !existing.authorEdited) {
+            summary.presets.unchanged += 1;
+            continue;
+          }
+          presetStore.put(stampAtomicSync({
+            ...existing,
+            ...incoming,
+            id: existing.id,
+            authorEdited: false,
+            createdAt: existing.createdAt || now,
+            updatedAt: now,
+          }, existing));
+          summary.presets.updated += 1;
+        }
+
+        settingsStore.put({
+          id: `master-bible-meta:${mapped.metadata.fandom}`,
+          ...mapped.metadata,
+          lastImportedAt: now,
+        });
+      } catch (err) {
+        customError = err;
+        try { transaction.abort(); } catch { }
+      }
+    };
+
+    for (const name of ['universalCharacters', 'characterOverlays', 'storyPresets']) {
+      const req = transaction.objectStore(name).getAll();
+      req.onsuccess = () => {
+        existingData[name] = req.result || [];
+        pendingReads -= 1;
+        if (pendingReads === 0) applyAllWrites();
+      };
+      req.onerror = () => {
+        customError = req.error;
+        try { transaction.abort(); } catch { }
+      };
+    }
   });
 
   return summary;
@@ -561,39 +694,50 @@ export async function importMasterCharacterBible(bible, {
 // ---- CRUD de Biblioteca Universal y Overlays ----
 
 export async function listUniversalCharacters({ fandom = '', category = '' } = {}) {
+  const ns = fandom ? normalizeFandomNamespace(fandom) : '';
   const all = await db.getAll('universalCharacters');
   return (all || [])
     .filter((c) => !c.deletedAt)
-    .filter((c) => !fandom || c.fandom === fandom)
+    .filter((c) => !ns || normalizeFandomNamespace(c.fandom) === ns)
     .filter((c) => !category || c.category === category)
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function saveUniversalCharacter(data, { authorEdited = true, revisionNote = '' } = {}) {
-  const id = cleanString(data?.id) || db.uid();
-  const existing = await db.get('universalCharacters', id);
+  const fandom = normalizeFandomNamespace(data?.fandom || 'neutral');
+  const rawId = cleanString(data?.id);
+  const existing = rawId ? await db.get('universalCharacters', rawId) : null;
+  const logicalId = cleanString(data?.logicalId || extractLogicalId(rawId) || existing?.logicalId || db.uid());
+  const storageId = existing?.id || (rawId.includes('::') ? rawId : makeNamespacedId(fandom, logicalId));
+  const existingByNs = existing || await db.get('universalCharacters', storageId);
   const normalized = normalizeUniversalCharacter(
-    { ...data, id },
-    { existing, markAuthorEdited: authorEdited, revisionNote }
+    { ...data, id: storageId, logicalId, fandom },
+    { existing: existingByNs, markAuthorEdited: authorEdited, revisionNote }
   );
   return db.put('universalCharacters', normalized);
 }
 
 export async function listCharacterOverlays({ baseCharacterId = '', fandom = '' } = {}) {
+  const ns = fandom ? normalizeFandomNamespace(fandom) : '';
+  const baseLogical = baseCharacterId ? extractLogicalId(baseCharacterId) : '';
   const all = await db.getAll('characterOverlays');
   return (all || [])
     .filter((o) => !o.deletedAt)
-    .filter((o) => !baseCharacterId || o.baseCharacterId === baseCharacterId)
-    .filter((o) => !fandom || o.fandom === fandom)
+    .filter((o) => !baseLogical || extractLogicalId(o.baseCharacterId) === baseLogical || o.baseCharacterStorageId === baseCharacterId)
+    .filter((o) => !ns || normalizeFandomNamespace(o.fandom) === ns)
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function saveCharacterOverlay(data, { authorEdited = true, revisionNote = '' } = {}) {
-  const id = cleanString(data?.id) || db.uid();
-  const existing = await db.get('characterOverlays', id);
+  const fandom = normalizeFandomNamespace(data?.fandom || 'neutral');
+  const rawId = cleanString(data?.id);
+  const existing = rawId ? await db.get('characterOverlays', rawId) : null;
+  const logicalId = cleanString(data?.logicalId || extractLogicalId(rawId) || existing?.logicalId || db.uid());
+  const storageId = existing?.id || (rawId.includes('::') ? rawId : makeNamespacedId(fandom, logicalId));
+  const existingByNs = existing || await db.get('characterOverlays', storageId);
   const normalized = normalizeCharacterOverlay(
-    { ...data, id },
-    { existing, markAuthorEdited: authorEdited, revisionNote }
+    { ...data, id: storageId, logicalId, fandom },
+    { existing: existingByNs, markAuthorEdited: authorEdited, revisionNote }
   );
   return db.put('characterOverlays', normalized);
 }
@@ -605,9 +749,11 @@ export async function deleteCharacterOverlay(id) {
 export async function cloneCharacterOverlay(id, newName = '') {
   const source = await db.get('characterOverlays', id);
   if (!source) throw new Error('No se encontró el overlay a duplicar.');
+  const newLogical = db.uid();
   const copy = {
     ...source,
-    id: db.uid(),
+    id: makeNamespacedId(source.fandom || 'neutral', newLogical),
+    logicalId: newLogical,
     name: cleanString(newName) || `${source.name} (copia)`,
     defaultEnabled: false,
     authorEdited: true,
@@ -618,6 +764,33 @@ export async function cloneCharacterOverlay(id, newName = '') {
 }
 
 // ---- Resolvedor Determinista de Personajes y Overlays (0 tokens) ----
+
+function overlayMatchesCharacter(overlay, baseStorageId, baseLogicalId, fandom) {
+  if (!overlay) return false;
+  const ovFandom = normalizeFandomNamespace(overlay.fandom || 'neutral');
+  const targetFandom = normalizeFandomNamespace(fandom || 'neutral');
+  if (ovFandom !== 'neutral' && targetFandom !== 'neutral' && ovFandom !== targetFandom) return false;
+  if (targetFandom === 'neutral' && ovFandom !== 'neutral') return false;
+  return (
+    overlay.baseCharacterStorageId === baseStorageId ||
+    extractLogicalId(overlay.baseCharacterId) === baseLogicalId ||
+    overlay.baseCharacterId === baseStorageId
+  );
+}
+
+function findOverlayForActivation(activation, overlays, fandom) {
+  const wantedId = cleanString(activation?.overlayId || activation?.overlayLogicalId);
+  if (!wantedId) return null;
+  const exact = (overlays || []).find((o) => o.id === wantedId);
+  if (exact) return exact;
+  const targetFandom = normalizeFandomNamespace(fandom || 'neutral');
+  const wantedLogical = extractLogicalId(wantedId);
+  return (overlays || []).find((o) => {
+    const ovFandom = normalizeFandomNamespace(o.fandom || 'neutral');
+    const fandomCompatible = ovFandom === targetFandom || ovFandom === 'neutral';
+    return fandomCompatible && extractLogicalId(o.logicalId || o.id) === wantedLogical;
+  }) || null;
+}
 
 function activationMatchesContext(activation, overlay, context) {
   if (!activation || activation.enabled !== true) return false;
@@ -653,14 +826,17 @@ function activationMatchesContext(activation, overlay, context) {
 
 function overlaysConflict(a, b) {
   if (a.id === b.id) return false;
-  if ((a.conflictsWith || []).includes(b.id) || (b.conflictsWith || []).includes(a.id)) {
+  const aLogical = extractLogicalId(a.logicalId || a.id);
+  const bLogical = extractLogicalId(b.logicalId || b.id);
+  if (
+    (a.conflictsWith || []).some((x) => x === b.id || extractLogicalId(x) === bLogical) ||
+    (b.conflictsWith || []).some((x) => x === a.id || extractLogicalId(x) === aLogical)
+  ) {
     return 'explicit_conflicts_with';
   }
   if (a.conflictGroup && b.conflictGroup && a.conflictGroup === b.conflictGroup) {
     return `conflict_group:${a.conflictGroup}`;
   }
-  // Si ambos definen cambios explícitos de caracterización y alguno pide decisión de autora,
-  // evitar mezclarlos silenciosamente.
   const bothChangeTraits = (a.characterizationChanges?.length > 0) && (b.characterizationChanges?.length > 0);
   const asksAuthor = a.conflictResolution !== 'priority' || b.conflictResolution !== 'priority';
   if (bothChangeTraits && asksAuthor) {
@@ -680,11 +856,11 @@ export function resolveCharacterProfile({
   activations = [],
   context = {},
 } = {}) {
-  const baseId = cleanString(universalProfile?.id || storyCharacter?.universalCharacterId || storyCharacter?.id);
-  const name = cleanString(storyCharacter?.name || universalProfile?.name || baseId);
-  const overlayById = new Map((overlays || []).map((o) => [o.id, o]));
+  const fandom = normalizeFandomNamespace(context?.fandom || universalProfile?.fandom || 'neutral');
+  const baseStorageId = cleanString(universalProfile?.id || storyCharacter?.universalCharacterId || storyCharacter?.id);
+  const baseLogicalId = extractLogicalId(universalProfile?.logicalId || baseStorageId);
+  const name = cleanString(storyCharacter?.name || universalProfile?.name || baseLogicalId);
 
-  // Clonar inmutablemente las bases para garantizar cero mutación
   const baseProfile = universalProfile ? structuredClone(universalProfile) : null;
   const storyState = storyCharacter ? structuredClone(storyCharacter) : null;
 
@@ -692,15 +868,17 @@ export function resolveCharacterProfile({
   const conflicts = [];
   const unconfiguredOverlays = [];
   const candidateConfigured = [];
+  const seenCandidateIds = new Set();
 
   for (const activation of (activations || [])) {
-    const overlay = overlayById.get(activation?.overlayId);
-    if (!overlay || overlay.baseCharacterId !== baseId) continue;
+    const overlay = findOverlayForActivation(activation, overlays, fandom);
+    if (!overlay || !overlayMatchesCharacter(overlay, baseStorageId, baseLogicalId, fandom)) continue;
     if (!activationMatchesContext(activation, overlay, context)) continue;
 
     if (!isOverlayConfigured(overlay)) {
       const info = {
         overlayId: overlay.id,
+        overlayLogicalId: overlay.logicalId || extractLogicalId(overlay.id),
         overlayName: overlay.name,
         scope: activation.scope || overlay.defaultScope,
         characterVersion: activation.characterVersion || context?.characterVersion || 'default',
@@ -710,15 +888,18 @@ export function resolveCharacterProfile({
       warnings.push({
         type: 'overlay_unconfigured',
         overlayId: overlay.id,
-        characterId: baseId,
+        overlayLogicalId: info.overlayLogicalId,
+        characterId: baseLogicalId,
+        characterStorageId: baseStorageId,
         message: `El overlay «${overlay.name}» está autorizado para ${name}, pero todavía no tiene rasgos definidos. Se conserva la caracterización estándar sin inventar rasgos.`,
       });
       continue;
     }
+    if (seenCandidateIds.has(overlay.id)) continue;
+    seenCandidateIds.add(overlay.id);
     candidateConfigured.push({ overlay: structuredClone(overlay), activation: structuredClone(activation) });
   }
 
-  // Detección de conflictos entre overlays activos configurados
   const blockedIds = new Set();
   const approvedWinners = isPlainObject(context?.approvedConflictWinners) ? context.approvedConflictWinners : {};
   for (let i = 0; i < candidateConfigured.length; i++) {
@@ -728,24 +909,34 @@ export function resolveCharacterProfile({
       const reason = overlaysConflict(a, b);
       if (!reason) continue;
       const pairKey = [a.id, b.id].sort().join('::');
-      const winnerId = cleanString(approvedWinners[pairKey] || approvedWinners[baseId]);
-      if (winnerId === a.id) {
+      const logicalPairKey = [extractLogicalId(a.logicalId || a.id), extractLogicalId(b.logicalId || b.id)].sort().join('::');
+      const winnerId = cleanString(
+        approvedWinners[pairKey] ||
+        approvedWinners[logicalPairKey] ||
+        approvedWinners[baseStorageId] ||
+        approvedWinners[baseLogicalId]
+      );
+      const aMatchesWinner = winnerId && (winnerId === a.id || extractLogicalId(winnerId) === extractLogicalId(a.logicalId || a.id));
+      const bMatchesWinner = winnerId && (winnerId === b.id || extractLogicalId(winnerId) === extractLogicalId(b.logicalId || b.id));
+      if (aMatchesWinner) {
         blockedIds.add(b.id);
         continue;
       }
-      if (winnerId === b.id) {
+      if (bMatchesWinner) {
         blockedIds.add(a.id);
         continue;
       }
-      // Conflicto sin decisión explícita de la autora: no mezclar silenciosamente.
       blockedIds.add(a.id);
       blockedIds.add(b.id);
       conflicts.push({
         type: 'overlay_conflict',
         pairKey,
-        characterId: baseId,
+        logicalPairKey,
+        characterId: baseLogicalId,
+        characterStorageId: baseStorageId,
         characterName: name,
         overlayIds: [a.id, b.id],
+        overlayLogicalIds: [a.logicalId || extractLogicalId(a.id), b.logicalId || extractLogicalId(b.id)],
         overlayNames: [a.name, b.name],
         reason,
         requiresAuthorDecision: true,
@@ -777,11 +968,12 @@ export function resolveCharacterProfile({
   }
 
   const effectiveProfile = {
-    id: baseId,
+    id: baseLogicalId,
+    storageId: baseStorageId,
     name,
     pronouns: cleanString(storyState?.pronouns || baseProfile?.pronouns),
     role: cleanString(storyState?.role || baseProfile?.role),
-    fandom: cleanString(baseProfile?.fandom || context?.fandom || 'neutral'),
+    fandom,
     category: baseProfile?.category || 'custom',
     characterVersion: cleanString(context?.characterVersion || 'default'),
     sceneId: cleanString(context?.sceneId || '') || null,
@@ -807,11 +999,13 @@ export function resolveCharacterProfile({
   };
 
   return {
-    id: baseId,
+    id: baseLogicalId,
+    storageId: baseStorageId,
     name,
     isStandardDefault: appliedEntries.length === 0,
     appliedOverlays: appliedEntries.map(({ overlay, activation }) => ({
       overlayId: overlay.id,
+      overlayLogicalId: overlay.logicalId || extractLogicalId(overlay.id),
       name: overlay.name,
       scope: activation.scope || overlay.defaultScope,
       characterVersion: activation.characterVersion || context?.characterVersion || 'default',
@@ -834,33 +1028,33 @@ export function resolveStoryCharacterRoster({
   storyConfig = null,
   context = {},
 } = {}) {
-  const fandom = cleanString(storyConfig?.fandom || context?.fandom || 'neutral');
-  const enabledOptional = new Set(cleanStringArray(storyConfig?.enabledOptionalCharacters || []));
+  const fandom = normalizeFandomNamespace(storyConfig?.fandom || context?.fandom || 'neutral');
+  const enabledOptional = new Set(cleanStringArray(storyConfig?.enabledOptionalCharacters || []).map(extractLogicalId));
   const activations = Array.isArray(storyConfig?.overlayActivations) ? storyConfig.overlayActivations : [];
-  const activeUniversalById = new Map();
+  const activeUniversalByLogical = new Map();
   const inactiveOptionalCharacters = [];
 
   for (const u of (universalCharacters || [])) {
     if (u.deletedAt) continue;
-    // No contaminar historias de otros fandoms con personajes universales de Power to Strive.
-    if (fandom !== 'neutral' && u.fandom && u.fandom !== 'neutral' && u.fandom !== fandom) continue;
-    if (fandom === 'neutral' && u.fandom && u.fandom !== 'neutral') continue;
+    const uFandom = normalizeFandomNamespace(u.fandom || 'neutral');
+    if (fandom !== 'neutral' && uFandom !== 'neutral' && uFandom !== fandom) continue;
+    if (fandom === 'neutral' && uFandom !== 'neutral') continue;
 
-    if (u.category === 'optional' && !enabledOptional.has(u.id)) {
-      inactiveOptionalCharacters.push({ id: u.id, name: u.name, role: u.role, fandom: u.fandom });
+    const logical = extractLogicalId(u.logicalId || u.id);
+    if (u.category === 'optional' && !enabledOptional.has(logical)) {
+      inactiveOptionalCharacters.push({ id: logical, storageId: u.id, name: u.name, role: u.role, fandom: uFandom });
       continue;
     }
-    activeUniversalById.set(u.id, u);
+    activeUniversalByLogical.set(logical, u);
   }
 
-  const storyByUniversalId = new Map();
+  const storyByLogical = new Map();
   const standaloneStoryChars = [];
   for (const sc of (storyCharacters || [])) {
     if (sc.active === false) continue;
-    if (sc.universalCharacterId && activeUniversalById.has(sc.universalCharacterId)) {
-      storyByUniversalId.set(sc.universalCharacterId, sc);
-    } else if (activeUniversalById.has(sc.id)) {
-      storyByUniversalId.set(sc.id, sc);
+    const linkLogical = extractLogicalId(sc.universalCharacterId || sc.id);
+    if (activeUniversalByLogical.has(linkLogical)) {
+      storyByLogical.set(linkLogical, sc);
     } else {
       standaloneStoryChars.push(sc);
     }
@@ -872,19 +1066,19 @@ export function resolveStoryCharacterRoster({
   const activeOverlays = [];
   const unconfiguredOverlays = [];
 
-  for (const [uid, uProfile] of activeUniversalById.entries()) {
+  for (const [logical, uProfile] of activeUniversalByLogical.entries()) {
     const resolved = resolveCharacterProfile({
       universalProfile: uProfile,
-      storyCharacter: storyByUniversalId.get(uid) || null,
+      storyCharacter: storyByLogical.get(logical) || null,
       overlays,
       activations,
-      context: { ...context, fandom },
+      context: { ...context, fandom, approvedConflictWinners: storyConfig?.approvedConflictWinners || context?.approvedConflictWinners || {} },
     });
     resolvedCharacters.push(resolved);
     allConflicts.push(...resolved.conflicts);
     allWarnings.push(...resolved.warnings);
-    activeOverlays.push(...resolved.appliedOverlays.map((a) => ({ ...a, characterId: uid, characterName: resolved.name })));
-    unconfiguredOverlays.push(...resolved.unconfiguredOverlays.map((u) => ({ ...u, characterId: uid, characterName: resolved.name })));
+    activeOverlays.push(...resolved.appliedOverlays.map((a) => ({ ...a, characterId: logical, characterName: resolved.name })));
+    unconfiguredOverlays.push(...resolved.unconfiguredOverlays.map((u) => ({ ...u, characterId: logical, characterName: resolved.name })));
   }
 
   for (const sc of standaloneStoryChars) {
@@ -893,7 +1087,7 @@ export function resolveStoryCharacterRoster({
       storyCharacter: sc,
       overlays,
       activations,
-      context: { ...context, fandom },
+      context: { ...context, fandom, approvedConflictWinners: storyConfig?.approvedConflictWinners || context?.approvedConflictWinners || {} },
     });
     resolvedCharacters.push(resolved);
     allConflicts.push(...resolved.conflicts);

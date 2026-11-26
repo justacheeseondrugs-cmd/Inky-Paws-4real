@@ -125,7 +125,8 @@ export async function renderCharacters(root) {
       el.querySelector('.act-edit').addEventListener('click', () => openCharacterModal(id, root, universalCharacters));
       el.querySelector('.act-preview').addEventListener('click', async () => {
         const sc = await db.get('characters', id);
-        const u = universalCharacters.find((item) => item.id === (sc?.universalCharacterId || sc?.id)) || null;
+        const link = sc?.universalCharacterId || sc?.id;
+        const u = universalCharacters.find((item) => item.id === link || item.logicalId === link) || null;
         openResolvedPreviewModal(u, sc, overlays, storyConfig);
       });
       el.querySelector('.act-toggle').addEventListener('click', async () => {
@@ -148,10 +149,10 @@ export async function renderCharacters(root) {
     univList.innerHTML = `<p class="muted">Aún no hay perfiles en la biblioteca universal. Importa la Biblia Maestra JSON o crea un perfil base.</p>`;
   } else {
     univList.innerHTML = universalCharacters.map((u) => `
-      <div class="list-item" data-univ-id="${escapeHtml(u.id)}">
+      <div class="list-item" data-univ-id="${escapeHtml(u.id)}" data-logical-id="${escapeHtml(u.logicalId || u.id)}">
         <div class="title-row">
           <b>${escapeHtml(u.name)}</b>
-          <span class="muted">${escapeHtml(u.id)}</span>
+          <span class="muted" title="${escapeHtml(u.id)}">${escapeHtml(u.logicalId || u.id)}</span>
         </div>
         <div class="chip-row" style="margin:4px 0;">
           <span class="pill ${u.category === 'optional' ? 'pill-inactive' : 'pill-active'}">${u.category === 'optional' ? 'Opcional · desactivado por defecto' : escapeHtml(u.category)}</span>
@@ -169,7 +170,9 @@ export async function renderCharacters(root) {
       const u = universalCharacters.find((item) => item.id === uid);
       el.querySelector('.act-univ-edit')?.addEventListener('click', () => openUniversalCharacterModal(uid, root));
       el.querySelector('.act-univ-preview')?.addEventListener('click', () => {
-        const sc = sortedStoryChars.find((item) => item.universalCharacterId === uid || item.id === uid) || null;
+        const sc = sortedStoryChars.find((item) =>
+          item.universalCharacterId === uid || item.universalCharacterId === u?.logicalId || item.id === uid || item.id === u?.logicalId
+        ) || null;
         openResolvedPreviewModal(u, sc, overlays, storyConfig);
       });
     });
@@ -183,8 +186,8 @@ export async function renderCharacters(root) {
     overlayList.innerHTML = overlays.map((ov) => {
       const configured = isOverlayConfigured(ov);
       return `
-      <div class="list-item" data-overlay-id="${escapeHtml(ov.id)}">
-        <div class="title-row"><b>${escapeHtml(ov.name)}</b><span class="muted">base: ${escapeHtml(ov.baseCharacterId)}</span></div>
+      <div class="list-item" data-overlay-id="${escapeHtml(ov.id)}" data-logical-id="${escapeHtml(ov.logicalId || ov.id)}">
+        <div class="title-row"><b>${escapeHtml(ov.name)}</b><span class="muted">base: ${escapeHtml(ov.baseCharacterId)} · ${escapeHtml(ov.fandom || 'neutral')}</span></div>
         <div class="chip-row" style="margin:4px 0;">
           <span class="pill pill-inactive">Plantilla · desactivada por defecto</span>
           <span class="pill ${configured ? 'pill-active' : 'pill-canon'}">${configured ? `${ov.characterizationChanges.length} rasgo(s) definido(s)` : '⚠️ Sin rasgos configurados'}</span>
