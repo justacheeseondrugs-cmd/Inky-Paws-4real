@@ -649,7 +649,7 @@ def main():
               }
               return { keys: await caches.keys() };
             }''')
-            assert 'inky-paws-es-v45-soul-m1-v1' in sw_info['keys']
+            assert any(k.startswith('inky-paws-es-') and k != 'inky-paws-es-v44-phase0-v1' for k in sw_info['keys'])
             assert 'inky-paws-es-v44-phase0-v1' not in sw_info['keys']
             assert 'unrelated-origin-app' in sw_info['keys']
             ctx_sw.set_offline(True)

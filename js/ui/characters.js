@@ -12,6 +12,7 @@ import {
   resolveCharacterProfile,
 } from '../characterLibrary.js';
 import { getStoryConfig } from '../storyConfigSchema.js';
+import { renderUniverseSection } from './universe.js';
 
 function linesToArray(text) {
   return String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -45,8 +46,9 @@ export async function renderCharacters(root) {
   const sortedStoryChars = (characters || []).sort((a, b) => a.name.localeCompare(b.name));
 
   root.innerHTML = `
-    <h2 class="section-title">Personajes</h2>
-    <p class="section-hint">Fichas activas de esta historia separadas de tu biblioteca universal reutilizable y tus overlays de caracterización.</p>
+    <h2 class="section-title">Personajes &amp; Universo</h2>
+    <p class="section-hint">Configura el universo, los presets, tus fichas locales, la biblioteca universal y Character Lab (overlays) con total aislamiento entre historias.</p>
+    <div id="universe-section-slot"></div>
     <div class="btn-row" style="margin-bottom:14px;">
       <button class="btn btn-primary" id="char-new-btn">+ Nuevo personaje en esta historia</button>
     </div>
@@ -71,7 +73,7 @@ export async function renderCharacters(root) {
     <div class="card" id="overlay-library-card" style="margin-top:16px;">
       <div class="card-row">
         <div>
-          <h3>🎭 Biblioteca de overlays de caracterización</h3>
+          <h3>🎭 Character Lab · Biblioteca de overlays de caracterización</h3>
           <p class="muted">Plantillas opcionales reutilizables (como rasgos Violet para Levi o cualquier variación personalizada). Siempre desactivadas por defecto: guardar una plantilla NO la convierte en canon activo ni altera el perfil base.</p>
         </div>
         <div class="btn-row">
@@ -80,6 +82,16 @@ export async function renderCharacters(root) {
       </div>
       <div id="overlay-list"></div>
     </div>`;
+
+  const universeSlot = document.getElementById('universe-section-slot');
+  if (universeSlot) {
+    await renderUniverseSection(universeSlot, {
+      universalCharacters,
+      storyCharacters: sortedStoryChars,
+      overlays,
+      onRefresh: () => renderCharacters(root),
+    });
+  }
 
   document.getElementById('char-new-btn').addEventListener('click', () => openCharacterModal(null, root, universalCharacters));
   document.getElementById('univ-char-new-btn').addEventListener('click', () => openUniversalCharacterModal(null, root));
