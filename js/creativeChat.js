@@ -246,12 +246,20 @@ export async function extractConversationalProposal(rawMessage, {
   const safetyBlocks = [];
   const low = text.toLowerCase();
 
-  // 1. Detectar intento prohibido de meter a Anya en la sala (siempre bloqueado en PtS)
-  if (resolvedFandom === 'power_to_strive' && /\banya\b/i.test(text) && /\b(room|sala|enter|entra|join|invite|invita|portal|dream)\b/i.test(text) && !/\b(no\s+anya|sin\s+anya|never\s+in\s+the\s+room|nunca\s+en\s+la\s+sala)\b/i.test(text)) {
-    safetyBlocks.push({
-      code: 'anya_room_entry_blocked',
-      message: 'Bloqueado automáticamente: Anya NUNCA puede entrar ni participar en vivo en la sala de reacciones en Power to Strive.',
-    });
+  // 1. Detectar intento prohibido de meter a Anya en la sala (evaluado frase por frase)
+  if (resolvedFandom === 'power_to_strive') {
+    const sentences = text.split(/[\n.!?]+/).map((s) => s.trim()).filter(Boolean);
+    const hasAnyaRoomAttempt = sentences.some((s) =>
+      /\banya\b/i.test(s) &&
+      /\b(room|sala|enter(?:s|ed|ing)?|entra(?:r|ndo)?|join(?:s|ed|ing)?|invite|invita|portal|dream)\b/i.test(s) &&
+      !/\b(no\s+anya|sin\s+anya|never\s+in\s+the\s+room|nunca\s+en\s+la\s+sala|not\s+in\s+the\s+room)\b/i.test(s)
+    );
+    if (hasAnyaRoomAttempt) {
+      safetyBlocks.push({
+        code: 'anya_room_entry_blocked',
+        message: 'Bloqueado automáticamente: Anya NUNCA puede entrar ni participar en vivo en la sala de reacciones en Power to Strive.',
+      });
+    }
   }
 
   // 2. Negaciones / desactivaciones explícitas de overlays (p.ej. "no Violet traits this time!")
