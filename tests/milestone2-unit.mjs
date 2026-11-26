@@ -18,6 +18,8 @@ import {
 } from '../js/storyPresets.js';
 import {
   PTS_DEFAULT_TWELVE,
+  VALIDATION_SCOPE_PREFLIGHT,
+  resolvePtsCharacterId,
   resolveUniverseConfiguration,
   validateLayerSafety,
 } from '../js/universeResolver.js';
@@ -242,15 +244,58 @@ const { chars, emptyVioletOverlay } = makeSyntheticUniversalLibrary();
   assert.ok(badAnyaRes.contradictions.some((c) => c.id === 'anya_room_entry_violation'));
 }
 
-// 6. Combining compatible presets + multiple independent stories from same preset
+// 6. Combining compatible presets vs conflicting presets + stripping private history/invitations
 {
-  const combined = combinePresetTemplates([
-    presetByLogical.get('violet_au'),
+  const combinedResult = combinePresetTemplates([
+    {
+      ...presetByLogical.get('violet_au'),
+      roomGuestInvitations: ['joseph'],
+      relationshipStates: {
+        eruri: {
+          state: 'mutual_pining',
+          publiclyKnown: false,
+          knownBy: ['erwin'],
+          suspectedBy: [],
+          historyNote: 'Private story-only secret note that must never transfer',
+        },
+      },
+    },
     presetByLogical.get('joseph_au'),
   ], { name: 'Violet + Joseph Combined' });
+  assert.equal(combinedResult.ok, true);
+  assert.equal(combinedResult.requiresAuthorResolution, false);
+  const combined = combinedResult.preset;
   assert.ok(combined.enabledOptionalCharacters.includes('joseph'));
   assert.ok(!combined.enabledOptionalCharacters.includes('anya'));
   assert.equal(combined.authorizedOverlays.length, 1);
+  assert.deepEqual(combined.roomGuestInvitations, [], 'Combining templates must NEVER transfer room invitations');
+  assert.equal(combined.relationshipStates.eruri.historyNote, '', 'Combining templates must NEVER transfer private story historyNote');
+
+  // Conflicting presets (mutual_pining vs former_lovers, different checkpoint) must NOT silently overwrite!
+  const conflictedCombo = combinePresetTemplates([
+    presetByLogical.get('classic_eruri'),
+    { ...presetByLogical.get('joseph_anya_family_au'), checkpointId: 'after_s2' },
+  ], { name: 'Conflicted Combo' });
+  assert.equal(conflictedCombo.ok, false);
+  assert.equal(conflictedCombo.requiresAuthorResolution, true);
+  assert.equal(conflictedCombo.preset, null);
+  assert.ok(conflictedCombo.conflicts.some((c) => c.key === 'relationship:eruri'));
+  assert.ok(conflictedCombo.conflicts.some((c) => c.key === 'checkpointId'));
+
+  // Explicit author resolution resolves cleanly
+  const resolvedCombo = combinePresetTemplates([
+    presetByLogical.get('classic_eruri'),
+    { ...presetByLogical.get('joseph_anya_family_au'), checkpointId: 'after_s2' },
+  ], {
+    name: 'Resolved Combo',
+    resolutions: {
+      checkpointId: 'after_s2',
+      'relationship:eruri': { state: 'former_lovers', publiclyKnown: false, knownBy: ['erwin', 'levi'], suspectedBy: [] },
+    },
+  });
+  assert.equal(resolvedCombo.ok, true);
+  assert.equal(resolvedCombo.preset.checkpointId, 'after_s2');
+  assert.equal(resolvedCombo.preset.relationshipStates.eruri.state, 'former_lovers');
 
   const story1 = buildStoryConfigFromPreset('story-copy-1', combined, { universeName: 'Timeline 1' });
   const story2 = buildStoryConfigFromPreset('story-copy-2', combined, { universeName: 'Timeline 2' });
@@ -263,7 +308,7 @@ const { chars, emptyVioletOverlay } = makeSyntheticUniversalLibrary();
   const neutralCfg = buildStoryConfigFromPreset('orig-scifi', presetByLogical.get('original_neutral'), {
     fandom: 'starlight_original',
     universeName: 'Starlight Station',
-    casts: { room: ['Aria Solis'] },
+    casts: { room: ['Aria Solis', 'Dr. Levine', 'Serena'] },
   });
   const neutralRes = resolveUniverseConfiguration({
     storyConfig: neutralCfg,
@@ -273,7 +318,7 @@ const { chars, emptyVioletOverlay } = makeSyntheticUniversalLibrary();
   assert.equal(neutralRes.ok, true);
   assert.equal(neutralRes.isPowerToStrive, false);
   assert.equal(neutralRes.facilitator, null);
-  assert.deepEqual(neutralRes.allowedRoomCast, ['Aria Solis']);
+  assert.deepEqual(neutralRes.allowedRoomCast, ['Aria Solis', 'Dr. Levine', 'Serena']);
   assert.equal(neutralRes.resolvedCharacters.length, 1);
   assert.equal(neutralRes.resolvedCharacters[0].id, 'aria');
   assert.equal(neutralRes.josephStatus, 'not_applicable');
@@ -324,4 +369,110 @@ const { chars, emptyVioletOverlay } = makeSyntheticUniversalLibrary();
   assert.deepEqual(resolved.activeOverlays.map((a) => a.overlayLogicalId), ['levi_variant_a']);
 }
 
-console.log('PASS: all Milestone 2 offline unit tests passed (presets, PtS invariants, Eruri, Joseph/Anya layer safety, Room vs Screen & scene overlays, conflicts, neutral fandom isolation).');
+// 9. Strict PtS room-cast enforcement: unknown/unauthorized spectators & crossover bypass attempts -> CRITICAL
+{
+  const badRoomCfg = buildStoryConfigFromPreset('story-bad-room', presetByLogical.get('classic_eruri'), {
+    fandom: 'power_to_strive_crossover',
+    casts: { room: [...PTS_DEFAULT_TWELVE, 'Kael Vance', 'Candy'] },
+    roomGuestInvitations: ['Kael Vance'],
+  });
+  const badRoomRes = resolveUniverseConfiguration({ storyConfig: badRoomCfg, universalCharacters: chars });
+  assert.equal(badRoomRes.ok, false);
+  assert.ok(badRoomRes.contradictions.some((c) => c.id === 'unauthorized_room_spectator' && c.level === 'critical'));
+  assert.ok(badRoomRes.contradictions.some((c) => c.id === 'unauthorized_room_guest_invitation' && c.level === 'critical'));
+  assert.ok(badRoomRes.contradictions.some((c) => c.id === 'candy_facilitator_not_spectator' && c.level === 'critical'));
+  assert.equal(badRoomRes.allowedRoomCast.length, 12, 'Unauthorized spectators and Candy must be excluded from allowedRoomCast');
+  assert.ok(!badRoomRes.allowedRoomCast.includes('kael vance'));
+  assert.ok(!badRoomRes.allowedRoomCast.includes('candy'));
+}
+
+// 10. Exact normalized character identity (no substring false positives + cross-fandom namespace preservation)
+{
+  assert.equal(resolvePtsCharacterId('Levi Ackerman'), 'levi');
+  assert.equal(resolvePtsCharacterId('Captain Levi'), 'levi');
+  assert.equal(resolvePtsCharacterId('Hange Zoë'), 'hange');
+  assert.equal(resolvePtsCharacterId('Christa Lenz'), 'historia');
+  assert.equal(resolvePtsCharacterId('power_to_strive::levi'), 'levi');
+  assert.notEqual(resolvePtsCharacterId('Levine'), 'levi', '"Levine" must NEVER match Levi');
+  assert.notEqual(resolvePtsCharacterId('Serena'), 'eren', '"Serena" must NEVER match Eren');
+  assert.notEqual(resolvePtsCharacterId('Erenwald'), 'eren', '"Erenwald" must NEVER match Eren');
+  assert.notEqual(resolvePtsCharacterId('Tanya'), 'anya', '"Tanya" must NEVER match Anya');
+  assert.equal(resolvePtsCharacterId('other_fandom::levi'), 'other_fandom::levi', 'Other fandom namespace must never collapse into PtS levi');
+
+  // Putting "Levine" in PtS room cast must be treated as an unauthorized spectator, NOT Levi!
+  const levineCfg = buildStoryConfigFromPreset('story-levine', presetByLogical.get('classic_eruri'), {
+    casts: { room: ['Levine'] },
+  });
+  const levineRes = resolveUniverseConfiguration({ storyConfig: levineCfg, universalCharacters: chars });
+  assert.equal(levineRes.ok, false);
+  assert.ok(levineRes.contradictions.some((c) => c.id === 'unauthorized_room_spectator'));
+}
+
+// 11. Temporal Joseph invitation: earlier chapters & rewrites preserve original 12; arrival unlocks 13th seat + barrier
+{
+  const temporalCfg = buildStoryConfigFromPreset('story-joseph-temporal', presetByLogical.get('joseph_au'), {
+    checkpointId: 'after_s1',
+    roomGuestInvitations: [{
+      characterId: 'joseph',
+      effectiveCheckpoint: 'after_s1',
+      effectiveChapterOrder: 10,
+      authorizedBy: 'author',
+    }],
+  });
+
+  // Rewriting Chapter 2 (before Joseph's arrival at Ch 10 / after_s1)
+  const ch2Rewrite = resolveUniverseConfiguration({
+    storyConfig: temporalCfg,
+    universalCharacters: chars,
+    context: { currentCheckpoint: 'before_first_screen', chapterOrder: 2 },
+  });
+  assert.equal(ch2Rewrite.ok, true);
+  assert.equal(ch2Rewrite.josephStatus, 'invited_not_yet_arrived');
+  assert.equal(ch2Rewrite.allowedRoomCast.length, 12, 'Rewriting earlier chapter must keep original 12 spectators');
+  assert.ok(!ch2Rewrite.allowedRoomCast.includes('joseph'));
+
+  // Trying to put Joseph into Chapter 2 room cast triggers critical contradiction
+  const ch2Bad = resolveUniverseConfiguration({
+    storyConfig: { ...temporalCfg, casts: { room: [...PTS_DEFAULT_TWELVE, 'joseph'], screen: [], outside: [] } },
+    universalCharacters: chars,
+    context: { currentCheckpoint: 'before_first_screen', chapterOrder: 2 },
+  });
+  assert.equal(ch2Bad.ok, false);
+  assert.ok(ch2Bad.contradictions.some((c) => c.id === 'joseph_before_arrival_checkpoint'));
+  assert.ok(!ch2Bad.allowedRoomCast.includes('joseph'));
+
+  // At Chapter 10 (after_s1), Joseph enters as 13th spectator with prior-episode barrier
+  const ch10Arrival = resolveUniverseConfiguration({
+    storyConfig: temporalCfg,
+    universalCharacters: chars,
+    context: { currentCheckpoint: 'after_s1', chapterOrder: 10 },
+  });
+  assert.equal(ch10Arrival.ok, true);
+  assert.equal(ch10Arrival.josephStatus, 'invited_room_guest');
+  assert.equal(ch10Arrival.allowedRoomCast.length, 13);
+  assert.ok(ch10Arrival.allowedRoomCast.includes('joseph'));
+  assert.ok(ch10Arrival.knowledgeBarriers.some((b) => b.rule === 'no_automatic_prior_episode_knowledge'));
+}
+
+// 12. Deterministic preflight scope metadata & semantic review payload hook for Milestone 5
+{
+  const preflight = validateLayerSafety({
+    text: 'Anya enters the watching room through a portal.',
+    fandom: PTS_FANDOM,
+    reactionMode: true,
+    enabledOptional: ['anya'],
+  });
+  assert.equal(preflight.ok, false);
+  assert.equal(preflight.validationScope, VALIDATION_SCOPE_PREFLIGHT);
+  assert.equal(preflight.semanticReviewRequired, true);
+  assert.ok(preflight.limitationNote.includes('Hito 5'));
+
+  const cfg = buildStoryConfigFromPreset('story-hook', presetByLogical.get('classic_eruri'));
+  const res = resolveUniverseConfiguration({ storyConfig: cfg, universalCharacters: chars });
+  assert.equal(res.validationScope, VALIDATION_SCOPE_PREFLIGHT);
+  assert.equal(res.semanticReviewRequired, true);
+  assert.ok(res.semanticReviewPayload && res.semanticReviewPayload.schemaVersion === 1);
+  assert.deepEqual(res.semanticReviewPayload.forbiddenLiveRoomCharacters, ['anya', 'joseph']);
+}
+
+console.log('PASS: all Milestone 2 offline unit tests passed (presets, conflict detection, strict PtS room cast, exact character identity, temporal Joseph invitations, Eruri, Anya layer safety, Room vs Screen & scene overlays, preflight scope metadata, neutral fandom isolation).');

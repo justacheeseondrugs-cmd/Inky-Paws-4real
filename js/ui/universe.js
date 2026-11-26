@@ -30,6 +30,7 @@ import {
   ERURI_STATES,
   PTS_CHECKPOINTS,
   normalizeEruriConfig,
+  normalizeRoomGuestInvitations,
   resolveUniverseConfiguration,
 } from '../universeResolver.js';
 
@@ -58,7 +59,8 @@ export async function renderUniverseSection(container, {
   const isPts = fandom === PTS_FANDOM;
   const eruri = normalizeEruriConfig(config.relationshipStates?.eruri);
   const enabledOpt = new Set((config.enabledOptionalCharacters || []).map(extractLogicalId));
-  const invitedGuests = new Set((config.roomGuestInvitations || []).map(extractLogicalId));
+  const normalizedInvites = normalizeRoomGuestInvitations(config.roomGuestInvitations || [], { universalCharacters });
+  const josephInvite = normalizedInvites.find((inv) => inv.characterId === 'joseph') || null;
   const activations = Array.isArray(config.overlayActivations) ? config.overlayActivations : [];
   const pendingProposals = (config.proposals || []).filter((p) => p.status === 'proposed');
 
@@ -84,7 +86,7 @@ export async function renderUniverseSection(container, {
           <h3>🌌 Universo y configuración de historia</h3>
           <p class="muted">Configura fandom, preset, personajes opcionales, relaciones y overlays para esta historia sin afectar otras historias.</p>
         </div>
-        <span class="pill pill-reference" title="Estas configuraciones se guardan y validan ya en IndexedDB v2, y se conectarán al motor de generación en el Hito 5.">🛠️ Config lista · motor en Hito 5</span>
+        <span class="pill pill-reference" title="Estas configuraciones se guardan y validan ya en IndexedDB, y se conectarán al motor de generación en el Hito 5.">🛠️ Config lista · motor en Hito 5</span>
       </div>
 
       <div class="grid-2">
@@ -133,7 +135,22 @@ export async function renderUniverseSection(container, {
           <div>
             <label class="field-label">Personajes opcionales (desactivados por defecto)</label>
             <label style="display:block; margin:4px 0;"><input type="checkbox" id="uc-opt-joseph" ${enabledOpt.has('joseph') ? 'checked' : ''}> Habilitar a Joseph Alcott (fuera de sala por defecto)</label>
-            <label style="display:block; margin:4px 0 4px 18px;"><input type="checkbox" id="uc-invite-joseph" ${invitedGuests.has('joseph') ? 'checked' : ''} ${enabledOpt.has('joseph') ? '' : 'disabled'}> Invitación explícita a la sala (13.º espectador; sin conocimiento previo automático)</label>
+            <label style="display:block; margin:4px 0 4px 18px;"><input type="checkbox" id="uc-invite-joseph" ${josephInvite ? 'checked' : ''} ${enabledOpt.has('joseph') ? '' : 'disabled'}> Invitación explícita a la sala (13.º espectador; sin conocimiento previo automático)</label>
+            <div id="uc-joseph-temporal" style="margin:4px 0 6px 18px; display:${enabledOpt.has('joseph') && josephInvite ? 'block' : 'none'};">
+              <div class="grid-2" style="gap:6px;">
+                <div>
+                  <label class="field-label" for="uc-joseph-arrival-cp">Llegada desde checkpoint</label>
+                  <select id="uc-joseph-arrival-cp">
+                    <option value="">(inmediata)</option>
+                    ${PTS_CHECKPOINTS.map((cp) => `<option value="${escapeHtml(cp.id)}" ${josephInvite?.effectiveCheckpoint === cp.id ? 'selected' : ''}>${escapeHtml(cp.label)}</option>`).join('')}
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="uc-joseph-arrival-order">Desde capítulo n.º (opcional)</label>
+                  <input type="number" min="1" id="uc-joseph-arrival-order" value="${josephInvite?.effectiveChapterOrder ?? ''}" placeholder="ej: 10">
+                </div>
+              </div>
+            </div>
             <label style="display:block; margin:4px 0;"><input type="checkbox" id="uc-opt-anya" ${enabledOpt.has('anya') ? 'checked' : ''}> Habilitar a Anya (SOLO pantalla / flashbacks / exterior · NUNCA sala)</label>
           </div>
           <div>
@@ -251,11 +268,18 @@ export async function renderUniverseSection(container, {
 
   const optJoseph = container.querySelector('#uc-opt-joseph');
   const inviteJoseph = container.querySelector('#uc-invite-joseph');
+  const josephTemporalBox = container.querySelector('#uc-joseph-temporal');
+  const syncJosephTemporalVisibility = () => {
+    if (!josephTemporalBox) return;
+    josephTemporalBox.style.display = optJoseph?.checked && inviteJoseph?.checked ? 'block' : 'none';
+  };
   optJoseph?.addEventListener('change', () => {
     if (!inviteJoseph) return;
     inviteJoseph.disabled = !optJoseph.checked;
     if (!optJoseph.checked) inviteJoseph.checked = false;
+    syncJosephTemporalVisibility();
   });
+  inviteJoseph?.addEventListener('change', syncJosephTemporalVisibility);
 
   const eruriSelect = container.querySelector('#uc-eruri-state');
   const eruriCustom = container.querySelector('#uc-eruri-custom');
@@ -274,7 +298,18 @@ export async function renderUniverseSection(container, {
     if (selectedFandom === PTS_FANDOM) {
       if (container.querySelector('#uc-opt-joseph')?.checked) {
         nextEnabledOptional.push('joseph');
-        if (container.querySelector('#uc-invite-joseph')?.checked) nextInvitations.push('joseph');
+        if (container.querySelector('#uc-invite-joseph')?.checked) {
+          const arrivalCp = container.querySelector('#uc-joseph-arrival-cp')?.value || '';
+          const arrivalOrderRaw = container.querySelector('#uc-joseph-arrival-order')?.value || '';
+          const arrivalOrder = arrivalOrderRaw ? Math.max(1, parseInt(arrivalOrderRaw, 10)) : null;
+          nextInvitations.push({
+            characterId: 'joseph',
+            effectiveCheckpoint: arrivalCp,
+            effectiveChapterOrder: Number.isFinite(arrivalOrder) ? arrivalOrder : null,
+            invitedAt: josephInvite?.invitedAt || new Date().toISOString(),
+            authorizedBy: 'author',
+          });
+        }
       }
       if (container.querySelector('#uc-opt-anya')?.checked) {
         nextEnabledOptional.push('anya');
@@ -339,15 +374,23 @@ export async function renderUniverseSection(container, {
 
   // Inspector gratuito (0 tokens)
   const inspectorSlot = container.querySelector('#uc-inspector-slot');
-  const renderInspector = (viewVersion = config.reactionMode ? 'room' : 'default', viewScene = '') => {
+  const renderInspector = (viewVersion = config.reactionMode ? 'room' : 'default', viewScene = '', viewChapterOrder = '') => {
     const liveCfg = collectFormConfig();
+    const parsedOrder = viewChapterOrder !== '' && Number.isFinite(Number(viewChapterOrder))
+      ? Math.max(1, parseInt(viewChapterOrder, 10))
+      : null;
     const res = resolveUniverseConfiguration({
       storyConfig: liveCfg,
       universalCharacters,
       storyCharacters,
       overlays,
       documents,
-      context: { fandom: liveCfg.fandom, characterVersion: viewVersion, sceneId: viewScene || null },
+      context: {
+        fandom: liveCfg.fandom,
+        characterVersion: viewVersion,
+        sceneId: viewScene || null,
+        chapterOrder: parsedOrder,
+      },
     });
     const conflictsHtml = res.contradictions.map((c) => {
       const resolveButtons = c.type === 'overlay_conflict'
@@ -368,11 +411,12 @@ export async function renderUniverseSection(container, {
           <button type="button" class="btn btn-ghost btn-sm" id="ui-insp-close">Cerrar</button>
         </div>
         <div class="context-guard-item context-guard-warning" style="margin:8px 0;">
-          <b>ℹ️ Estado de integración con el motor literario</b>
+          <b>ℹ️ Estado de integración y alcance de validación</b>
           <div><b>Ya conectado a generación:</b> ${escapeHtml(res.engineIntegrationStatus.connectedToGeneration.join(' · '))}.</div>
           <div><b>Solo configuración por ahora (se conecta en Hito 5):</b> ${escapeHtml(res.engineIntegrationStatus.configuredAwaitingContextEngine.join(' · '))}.</div>
+          <div style="margin-top:4px;"><b>Alcance de prevalidación:</b> ${escapeHtml(res.validationLimitationNote)}</div>
         </div>
-        <div class="grid-2" style="margin:8px 0;">
+        <div class="grid-3" style="margin:8px 0;">
           <div>
             <label class="field-label">Probar ámbito de versión</label>
             <select id="ui-insp-version">
@@ -385,6 +429,10 @@ export async function renderUniverseSection(container, {
           <div>
             <label class="field-label">Probar ID de escena (opcional)</label>
             <input type="text" id="ui-insp-scene" value="${escapeHtml(viewScene)}" placeholder="ej: ch3-s2">
+          </div>
+          <div>
+            <label class="field-label">Probar capítulo n.º (opcional)</label>
+            <input type="number" min="1" id="ui-insp-chapter-order" value="${escapeHtml(String(viewChapterOrder || ''))}" placeholder="ej: 2 o 10">
           </div>
         </div>
         <div class="chip-row" style="margin:6px 0;">
@@ -410,12 +458,16 @@ export async function renderUniverseSection(container, {
       </div>`;
 
     inspectorSlot.querySelector('#ui-insp-close')?.addEventListener('click', () => { inspectorSlot.innerHTML = ''; });
-    inspectorSlot.querySelector('#ui-insp-version')?.addEventListener('change', (e) => {
-      renderInspector(e.target.value, inspectorSlot.querySelector('#ui-insp-scene')?.value.trim() || '');
-    });
-    inspectorSlot.querySelector('#ui-insp-scene')?.addEventListener('change', (e) => {
-      renderInspector(inspectorSlot.querySelector('#ui-insp-version')?.value || 'room', e.target.value.trim());
-    });
+    const reRender = () => {
+      renderInspector(
+        inspectorSlot.querySelector('#ui-insp-version')?.value || 'room',
+        inspectorSlot.querySelector('#ui-insp-scene')?.value.trim() || '',
+        inspectorSlot.querySelector('#ui-insp-chapter-order')?.value.trim() || ''
+      );
+    };
+    inspectorSlot.querySelector('#ui-insp-version')?.addEventListener('change', reRender);
+    inspectorSlot.querySelector('#ui-insp-scene')?.addEventListener('change', reRender);
+    inspectorSlot.querySelector('#ui-insp-chapter-order')?.addEventListener('change', reRender);
     inspectorSlot.querySelectorAll('.act-resolve-conflict').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const pairKey = btn.dataset.pair;

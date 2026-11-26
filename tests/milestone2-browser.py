@@ -157,11 +157,12 @@ def main():
             split_text = page.locator('#universe-inspector-panel').inner_text()
             assert 'sala=estándar' in split_text.lower() and 'screen-only violet cadence' in split_text.lower(), f'Room vs Screen split failed: {split_text}'
 
-            # --- TEST 3: Joseph outside vs explicit invitation + Anya on screen + disabling Joseph ---
+            # --- TEST 3: Joseph outside vs temporal explicit invitation + Anya on screen + disabling Joseph ---
             page.check('#uc-opt-joseph')
             assert not page.locator('#uc-opt-anya').is_checked(), 'Enabling Joseph must NOT auto-enable Anya'
             page.check('#uc-opt-anya')
             page.check('#uc-invite-joseph')
+            page.fill('#uc-joseph-arrival-order', '10')
             page.select_option('#uc-eruri-state', 'secret_relationship')
             page.fill('#uc-eruri-knownby', 'erwin, levi')
             page.fill('#uc-eruri-suspectedby', 'hange')
@@ -179,13 +180,26 @@ def main():
             page.wait_for_selector('#uc-pts-panel')
             assert page.locator('#uc-opt-joseph').is_checked()
             assert page.locator('#uc-invite-joseph').is_checked()
+            assert page.input_value('#uc-joseph-arrival-order') == '10'
             assert page.locator('#uc-opt-anya').is_checked()
             assert page.input_value('#uc-eruri-state') == 'secret_relationship'
 
             page.click('#uc-toggle-inspector-btn')
             page.wait_for_selector('#universe-inspector-panel')
+            # Test Chapter 2 (before Joseph's arrival at Ch 10) -> must remain 12 spectators!
+            page.fill('#ui-insp-chapter-order', '2')
+            page.locator('#ui-insp-chapter-order').dispatch_event('change')
+            page.wait_for_timeout(150)
+            ch2_text = page.locator('#universe-inspector-panel').inner_text()
+            assert '12 en sala permitida' in ch2_text, f'Chapter 2 before Joseph arrival must keep 12 in room: {ch2_text}'
+            assert 'Prevalidación estructural/heurística determinista' in ch2_text
+
+            # Test Chapter 10 (at Joseph's arrival) -> 13 spectators + prior-episode knowledge barrier!
+            page.fill('#ui-insp-chapter-order', '10')
+            page.locator('#ui-insp-chapter-order').dispatch_event('change')
+            page.wait_for_timeout(150)
             invited_text = page.locator('#universe-inspector-panel').inner_text()
-            assert '13 en sala permitida' in invited_text, f'Invited Joseph should make 13 in room: {invited_text}'
+            assert '13 en sala permitida' in invited_text, f'Invited Joseph at Ch 10 should make 13 in room: {invited_text}'
             assert 'Joseph Alcott' in invited_text and 'NO hereda automáticamente' in invited_text
             assert 'Sin contradicciones críticas' in invited_text
 
