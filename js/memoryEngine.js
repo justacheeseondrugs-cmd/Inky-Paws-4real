@@ -78,7 +78,55 @@ export function parseMemoryResponse(text) {
   return out;
 }
 
-export async function generateContinuityMemory(chapter, { signal } = {}) {
+export async function markChapterMemoriesStale(chapterId, { projectId = '', reason = 'edited', chapterRevision = '' } = {}) {
+  if (!chapterId) return 0;
+  const scope = { projectId: projectId || db.getActiveProjectId() };
+  const entries = await db.getByIndex('memoryEntries', 'by_chapter', chapterId, scope);
+  if (!entries.length) return 0;
+  const now = new Date().toISOString();
+  for (const entry of entries) {
+    await db.put('memoryEntries', {
+      ...entry,
+      stale: true,
+      staleReason: reason || 'edited',
+      staleAt: now,
+      latestChapterRevision: chapterRevision || entry.latestChapterRevision || '',
+    }, scope);
+  }
+  return entries.length;
+}
+
+export async function saveContinuityMemoryEntry(chapter, fields, { projectId = '' } = {}) {
+  const targetProjectId = projectId || chapter?.projectId || db.getActiveProjectId();
+  const scope = { projectId: targetProjectId };
+  const normalized = {};
+  for (const [, field] of MEMORY_FIELDS) {
+    normalized[field] = normalizeMemoryValue(fields?.[field]);
+  }
+  if (!Object.values(normalized).some((value) => String(value || '').trim())) {
+    throw new Error('No se puede guardar una memoria de continuidad vacía.');
+  }
+  const previous = await db.getByIndex('memoryEntries', 'by_chapter', chapter.id, scope);
+  const revision = contentFingerprint(chapter.content);
+  const entry = {
+    id: previous[0]?.id || db.uid(),
+    chapterId: chapter.id,
+    chapterTitle: chapter.title,
+    projectId: targetProjectId,
+    ...normalized,
+    stale: false,
+    staleReason: '',
+    staleAt: null,
+    sourceChapterRevision: revision,
+    latestChapterRevision: revision,
+    createdAt: new Date().toISOString(),
+  };
+  const saved = await db.put('memoryEntries', entry, scope);
+  for (const duplicate of previous.slice(1)) await db.del('memoryEntries', duplicate.id, scope);
+  return saved;
+}
+
+export async function generateContinuityMemory(chapter, { signal, stageOnly = false } = {}) {
   const projectId = chapter?.projectId || db.getActiveProjectId();
   const scope = { projectId };
   const settings = (await db.get('settings', 'main')) || {};
@@ -107,22 +155,30 @@ export async function generateContinuityMemory(chapter, { signal } = {}) {
   if (!Object.values(fields).some((value) => String(value || '').trim())) {
     return { ok: false, error: 'La IA no devolvió un resumen de continuidad reconocible. No se ha guardado una memoria vacía.' };
   }
-  // Rehacer una memoria sustituye la anterior del MISMO capítulo, sin duplicarla.
   const previous = await db.getByIndex('memoryEntries', 'by_chapter', chapter.id, scope);
-  const entry = {
-    id: previous[0]?.id || db.uid(),
-    chapterId: chapter.id,
-    chapterTitle: chapter.title,
-    projectId,
-    ...fields,
-    stale: false,
-    staleReason: '',
-    staleAt: null,
-    sourceChapterRevision: contentFingerprint(chapter.content),
-    createdAt: new Date().toISOString(),
-  };
-  const saved = await db.put('memoryEntries', entry, scope);
-  for (const duplicate of previous.slice(1)) await db.del('memoryEntries', duplicate.id, scope);
+  if (stageOnly) {
+    const revision = contentFingerprint(chapter.content);
+    return {
+      ok: true,
+      staged: true,
+      existingEntry: previous[0] || null,
+      proposedEntry: {
+        id: previous[0]?.id || '',
+        chapterId: chapter.id,
+        chapterTitle: chapter.title,
+        projectId,
+        ...fields,
+        stale: false,
+        staleReason: '',
+        staleAt: null,
+        sourceChapterRevision: revision,
+        latestChapterRevision: revision,
+      },
+      fields,
+    };
+  }
+  // Rehacer una memoria sustituye la anterior del MISMO capítulo, sin duplicarla.
+  const saved = await saveContinuityMemoryEntry(chapter, fields, { projectId });
   return { ok: true, entry: saved };
 }
 

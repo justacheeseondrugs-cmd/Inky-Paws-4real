@@ -13,13 +13,14 @@ import { db } from './db.js';
 import { getProvider, getModelOutputLimit } from './providers/index.js';
 import { assembleSystemPrompt, assembleSystemPromptParts } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
-import { wordCount } from './utils.js';
+import { wordCount, contentFingerprint } from './utils.js';
 import { chaptersBefore, memoriesForChapters } from './timeline.js';
 import { REACTION_ROOM_GUIDANCE, REACTION_ROOM_ENDING_GUIDANCE } from './reactionGuidance.js';
 import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
 import { getAuthorBrain, buildAuthorGuidance, authorBriefJsonInstruction, parseAuthorBrief } from './authorBrain.js';
 import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost } from './smartContext.js';
 import { filterCharactersByAllowedCast } from './characterMatch.js';
+import { markChapterMemoriesStale } from './memoryEngine.js';
 
 const DEFAULT_BLOCK_WORDS = 900;
 const STORY_CONTEXT_CHAR_CAP = 55000; // Hasta aproximadamente 7k palabras.
@@ -678,6 +679,11 @@ export async function approvePendingBlock(chapterId, editedText, opts) {
     chapter.wordCount = state.wordsSoFar;
     chapter.updatedAt = state.updatedAt;
     await db.put('chapters', chapter, scope);
+    await markChapterMemoriesStale(chapterId, {
+      projectId: scope.projectId,
+      reason: 'block_approved',
+      chapterRevision: contentFingerprint(chapter.content),
+    });
   }
   return state;
 }

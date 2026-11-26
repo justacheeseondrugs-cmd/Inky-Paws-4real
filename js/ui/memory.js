@@ -1,5 +1,5 @@
 import { db } from '../db.js';
-import { escapeHtml, toast, fmtDate, openModal, closeModal } from '../utils.js';
+import { escapeHtml, toast, fmtDate, openModal, closeModal, contentFingerprint } from '../utils.js';
 import { memoriesForChapters, sortMainTimelineChapters } from '../timeline.js';
 
 export async function renderMemory(root) {
@@ -40,5 +40,45 @@ function renderCanon(canonNotes, root) {
   renderGroup(groups.revealed,'canon-revealed-list','revealed');
   renderGroup(groups.private,'canon-private-list','private');
 }
-function renderContinuity(memoryEntries, root) { const el = document.getElementById('continuity-list'); if (!memoryEntries.length) { el.innerHTML = `<p class="muted">Todavía no se ha generado memoria de continuidad.</p>`; return; } el.innerHTML = memoryEntries.map((m) => `<div class="list-item" data-id="${escapeHtml(m.id)}"><div class="title-row"><b>${escapeHtml(m.chapterTitle || 'Capítulo')}</b><span class="muted">${escapeHtml(fmtDate(m.createdAt))}</span></div><button class="btn btn-ghost btn-sm act-view">Ver / editar</button><button class="btn btn-danger btn-sm act-del">Eliminar</button></div>`).join(''); el.querySelectorAll('.list-item').forEach((item) => { const id = item.dataset.id; item.querySelector('.act-view').addEventListener('click', async () => { const m = await db.get('memoryEntries', id); openMemoryEditModal(m, root); }); item.querySelector('.act-del').addEventListener('click', async () => { if (!confirm('¿Eliminar esta memoria de continuidad?')) return; await db.del('memoryEntries', id); renderMemory(root); }); }); }
-function openMemoryEditModal(m, root) { const fields = [['events','EVENTOS'],['relationshipChanges','CAMBIOS DE RELACIÓN'],['newFacts','HECHOS NUEVOS'],['whoKnowsWhat','QUIÉN SABE QUÉ'],['physicalState','ESTADO FÍSICO / HERIDAS'],['currentLocationTime','LUGAR / TIEMPO ACTUAL'],['openThreads','HILOS ABIERTOS']]; openModal(`<h3 style="font-family:'Cormorant Garamond',serif; color:var(--oldrose-700);">${escapeHtml(m.chapterTitle)}</h3>${fields.map(([key,label]) => `<label class="field-label">${escapeHtml(label)}</label><textarea class="mem-field" data-key="${escapeHtml(key)}">${escapeHtml(m[key] || '')}</textarea>`).join('')}<div class="btn-row"><button class="btn btn-primary" id="mem-save-btn">Guardar</button><button class="btn btn-ghost" id="mem-cancel-btn">Cerrar</button></div>`); document.getElementById('mem-cancel-btn').addEventListener('click', closeModal); document.getElementById('mem-save-btn').addEventListener('click', async () => { document.querySelectorAll('.mem-field').forEach((ta) => { m[ta.dataset.key] = ta.value.trim(); }); await db.put('memoryEntries', m); toast('Memoria actualizada.'); closeModal(); renderMemory(root); }); }
+function renderContinuity(memoryEntries, root) {
+  const el = document.getElementById('continuity-list');
+  if (!memoryEntries.length) { el.innerHTML = `<p class="muted">Todavía no se ha generado memoria de continuidad.</p>`; return; }
+  el.innerHTML = memoryEntries.map((m) => `
+    <div class="list-item" data-id="${escapeHtml(m.id)}">
+      <div class="title-row"><b>${escapeHtml(m.chapterTitle || 'Capítulo')}</b><span class="muted">${escapeHtml(fmtDate(m.createdAt))}</span></div>
+      ${m.stale ? `<div class="chip-row" style="margin:6px 0;"><span class="pill pill-inactive" title="El capítulo fue modificado tras crear esta memoria; se conserva intacta hasta que la revises o actualices.">⚠️ Desactualizada · capítulo modificado</span></div>` : ''}
+      <div class="btn-row">
+        <button class="btn btn-ghost btn-sm act-view">Ver / editar</button>
+        <button class="btn btn-danger btn-sm act-del">Eliminar</button>
+      </div>
+    </div>`).join('');
+  el.querySelectorAll('.list-item').forEach((item) => {
+    const id = item.dataset.id;
+    item.querySelector('.act-view').addEventListener('click', async () => { const m = await db.get('memoryEntries', id); openMemoryEditModal(m, root); });
+    item.querySelector('.act-del').addEventListener('click', async () => { if (!confirm('¿Eliminar esta memoria de continuidad?')) return; await db.del('memoryEntries', id); renderMemory(root); });
+  });
+}
+function openMemoryEditModal(m, root) {
+  const fields = [['events','EVENTOS'],['relationshipChanges','CAMBIOS DE RELACIÓN'],['newFacts','HECHOS NUEVOS'],['whoKnowsWhat','QUIÉN SABE QUÉ'],['physicalState','ESTADO FÍSICO / HERIDAS'],['currentLocationTime','LUGAR / TIEMPO ACTUAL'],['openThreads','HILOS ABIERTOS']];
+  const staleNotice = m.stale
+    ? `<div class="context-guard-item context-guard-warning" style="margin-bottom:10px;"><b>⚠️ Memoria desactualizada</b><div>El capítulo cambió después de generar esta memoria. La versión anterior se conserva intacta; al guardar aquí se marcará como revisada, o puedes generar una nueva propuesta para revisar desde Capítulos.</div></div>`
+    : '';
+  openModal(`<h3 style="font-family:'Cormorant Garamond',serif; color:var(--oldrose-700);">${escapeHtml(m.chapterTitle)}</h3>${staleNotice}${fields.map(([key,label]) => `<label class="field-label">${escapeHtml(label)}</label><textarea class="mem-field" data-key="${escapeHtml(key)}">${escapeHtml(m[key] || '')}</textarea>`).join('')}<div class="btn-row"><button class="btn btn-primary" id="mem-save-btn">Guardar</button><button class="btn btn-ghost" id="mem-cancel-btn">Cerrar</button></div>`);
+  document.getElementById('mem-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('mem-save-btn').addEventListener('click', async () => {
+    document.querySelectorAll('.mem-field').forEach((ta) => { m[ta.dataset.key] = ta.value.trim(); });
+    const chapter = m.chapterId ? await db.get('chapters', m.chapterId) : null;
+    m.stale = false;
+    m.staleReason = '';
+    m.staleAt = null;
+    if (chapter) {
+      const rev = contentFingerprint(chapter.content);
+      m.sourceChapterRevision = rev;
+      m.latestChapterRevision = rev;
+    }
+    await db.put('memoryEntries', m);
+    toast('Memoria actualizada.');
+    closeModal();
+    renderMemory(root);
+  });
+}
