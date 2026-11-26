@@ -32,13 +32,13 @@ import {
 } from '../js/hierarchicalMemory.js';
 import { wordCount } from '../js/utils.js';
 
-// 1. IndexedDB v3 additive schema & v1/v2/v3 backup compatibility
+// 1. IndexedDB v3+ additive schema & v1/v2/v3 backup compatibility
 {
   assert.equal(DB_NAME, 'pts-studio');
-  assert.equal(DB_VERSION, 3);
+  assert.ok(DB_VERSION >= 3);
   assert.equal(V1_STORE_NAMES.length, 9);
   assert.equal(V2_STORE_NAMES.length, 15);
-  assert.equal(STORE_NAMES.length, 18);
+  assert.ok(STORE_NAMES.length >= 18);
   for (const s of ['arcSummaries', 'relationshipStates', 'lexicalIndexes']) {
     assert.ok(STORE_NAMES.includes(s), `Missing v3 store: ${s}`);
   }
@@ -52,7 +52,7 @@ import { wordCount } from '../js/utils.js';
   assert.equal(validateBackupDump(v2Full).isFull, true);
 
   const v3Full = { __meta: { app: 'pts-studio', version: 3 } };
-  for (const s of STORE_NAMES) v3Full[s] = [];
+  for (const s of [...V2_STORE_NAMES, 'arcSummaries', 'relationshipStates', 'lexicalIndexes']) v3Full[s] = [];
   assert.equal(validateBackupDump(v3Full).isFull, true);
 
   const v3Partial = { __meta: { app: 'pts-studio', version: 3 } };

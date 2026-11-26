@@ -2,7 +2,7 @@
 // No contiene lógica de negocio ni de IA: sólo CRUD sobre IndexedDB.
 
 export const DB_NAME = 'pts-studio';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export const V1_STORE_NAMES = [
   'chapters',
@@ -26,6 +26,12 @@ export const V2_STORE_NAMES = [
   'usageLog',
 ];
 
+export const V3_REQUIRED_STORE_NAMES = [
+  ...V2_STORE_NAMES,
+  'arcSummaries',
+  'relationshipStates',
+];
+
 const STORES = {
   chapters: 'id',
   characters: 'id',
@@ -45,6 +51,10 @@ const STORES = {
   arcSummaries: 'id',
   relationshipStates: 'id',
   lexicalIndexes: 'id',
+  writingDnaProfiles: 'id',
+  editorialFeedback: 'id',
+  creativeChats: 'id',
+  chapterBriefs: 'id',
 };
 
 export const STORE_NAMES = Object.keys(STORES);
@@ -117,11 +127,28 @@ const STORE_INDEXES = {
     ['by_project', 'projectId'],
     ['by_project_kind', ['projectId', 'kind']],
   ],
+  writingDnaProfiles: [
+    ['by_scope', 'scope'],
+    ['by_fandom', 'fandom'],
+    ['by_project', 'projectId'],
+  ],
+  editorialFeedback: [
+    ['by_scope', 'scope'],
+    ['by_status', 'status'],
+    ['by_project', 'projectId'],
+  ],
+  creativeChats: [
+    ['by_project', 'projectId'],
+  ],
+  chapterBriefs: [
+    ['by_project', 'projectId'],
+    ['by_project_status', ['projectId', 'status']],
+  ],
 };
 
 // Los proyectos comparten proveedor de IA, pero NUNCA capítulos ni referencias.
 // Los registros heredados de v1 sin projectId pertenecen a ORIGINAL y reciben
-// backfill no destructivo en la migración v1->v2/v3 para ser visibles en índices compuestos.
+// backfill no destructivo en la migración v1->v2/v3/v4 para ser visibles en índices compuestos.
 const ORIGINAL_PROJECT = 'original';
 const SCOPED_STORES = new Set([
   'chapters',
@@ -136,6 +163,8 @@ const SCOPED_STORES = new Set([
   'arcSummaries',
   'relationshipStates',
   'lexicalIndexes',
+  'creativeChats',
+  'chapterBriefs',
 ]);
 const SYNCED_ENTITY_STORES = new Set([
   'chapters',
@@ -153,9 +182,13 @@ const SYNCED_ENTITY_STORES = new Set([
   'knowledgeFacts',
   'arcSummaries',
   'relationshipStates',
+  'writingDnaProfiles',
+  'editorialFeedback',
+  'creativeChats',
+  'chapterBriefs',
 ]);
 export const DERIVED_STORES = new Set(['lexicalIndexes']);
-export const V3_REQUIRED_STORE_NAMES = STORE_NAMES.filter((name) => !DERIVED_STORES.has(name));
+export const V4_REQUIRED_STORE_NAMES = STORE_NAMES.filter((name) => !DERIVED_STORES.has(name));
 const ACTIVE_KEY = 'pts_active_project_v1';
 let memoryActiveProject = null;
 
@@ -518,6 +551,16 @@ function validateStoreRecord(storeName, item, pos) {
     if (item.dimensions !== undefined && !isPlainObject(item.dimensions)) throw new Error(`dimensions inválido en estado relacional (posición ${pos}).`);
   } else if (storeName === 'lexicalIndexes') {
     if (typeof item.kind !== 'string' || !item.kind.trim()) throw new Error(`kind inválido en índice léxico (posición ${pos}).`);
+  } else if (storeName === 'writingDnaProfiles') {
+    if (typeof item.scope !== 'string' || !item.scope.trim()) throw new Error(`scope inválido en perfil Writing DNA (posición ${pos}).`);
+    if (item.antiPatterns !== undefined && !Array.isArray(item.antiPatterns)) throw new Error(`antiPatterns inválido en Writing DNA (posición ${pos}).`);
+  } else if (storeName === 'editorialFeedback') {
+    if (item.originalPassage !== undefined && typeof item.originalPassage !== 'string') throw new Error(`originalPassage inválido en aprendizaje editorial (posición ${pos}).`);
+    if (item.revisedPassage !== undefined && typeof item.revisedPassage !== 'string') throw new Error(`revisedPassage inválido en aprendizaje editorial (posición ${pos}).`);
+  } else if (storeName === 'creativeChats') {
+    if (item.messages !== undefined && !Array.isArray(item.messages)) throw new Error(`messages inválido en chat creativo (posición ${pos}).`);
+  } else if (storeName === 'chapterBriefs') {
+    if (item.objective !== undefined && typeof item.objective !== 'string') throw new Error(`objective inválido en brief de capítulo (posición ${pos}).`);
   }
 }
 
@@ -545,6 +588,7 @@ export function validateBackupDump(dump) {
   const allStoreNames = Object.keys(STORES);
   const v1Set = new Set(V1_STORE_NAMES);
   const v2Set = new Set(V2_STORE_NAMES);
+  const v3Set = new Set([...V3_REQUIRED_STORE_NAMES, 'lexicalIndexes']);
   const targetStores = [];
   const missingAllStores = [];
   for (const name of allStoreNames) {
@@ -571,12 +615,15 @@ export function validateBackupDump(dump) {
   }
   const hasAnyV2Store = targetStores.some((name) => !v1Set.has(name));
   const hasAnyV3Store = targetStores.some((name) => !v2Set.has(name));
-  const inferredVersion = declaredVersion ?? (hasAnyV3Store ? 3 : (hasAnyV2Store ? 2 : 1));
-  // Los índices derivados (`lexicalIndexes`) son opcionales en copias v3 porque se
+  const hasAnyV4Store = targetStores.some((name) => !v3Set.has(name));
+  const inferredVersion = declaredVersion ?? (hasAnyV4Store ? 4 : (hasAnyV3Store ? 3 : (hasAnyV2Store ? 2 : 1)));
+  // Los índices derivados (`lexicalIndexes`) son opcionales en copias v3/v4 porque se
   // reconstruyen de forma determinista a partir de capítulos y documentos aprobados.
   const expectedFullStores = inferredVersion === 1
     ? V1_STORE_NAMES
-    : (inferredVersion === 2 ? V2_STORE_NAMES : V3_REQUIRED_STORE_NAMES);
+    : (inferredVersion === 2
+      ? V2_STORE_NAMES
+      : (inferredVersion === 3 ? V3_REQUIRED_STORE_NAMES : V4_REQUIRED_STORE_NAMES));
   const targetSet = new Set(targetStores);
   const missingStores = expectedFullStores.filter((name) => !targetSet.has(name));
   const isFull = missingStores.length === 0 && meta?.backupKind !== 'partial';
