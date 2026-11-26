@@ -1,9 +1,13 @@
 import { AIProvider, isLikelyInvalidProse, isAbortError } from './base.js';
+import { isSafeOnlinePreview, previewBlockedProviderResult } from '../previewGuard.js';
 
 export class GeminiProvider extends AIProvider {
   get name() { return 'gemini'; }
 
   async generate({ systemPrompt, userPrompt, maxOutputTokens = 2048, temperature = 1.0, signal }) {
+    if (isSafeOnlinePreview()) {
+      return previewBlockedProviderResult();
+    }
     const apiKey = String(this.config.apiKey || '').trim();
     const model = String(this.config.model || 'gemini-2.0-flash').trim();
     if (!apiKey) {
@@ -59,10 +63,22 @@ export class GeminiProvider extends AIProvider {
       return { ok: false, text: null, errorType: 'http', errorMessage: 'Gemini devolvió HTTP ' + res.status + (data?.error?.message ? ': ' + data.error.message : ''), truncated: false, finishReason: null, raw: data };
     }
 
+    const uMeta = data?.usageMetadata;
+    const usage = uMeta && typeof uMeta === 'object'
+      ? {
+          promptTokens: Number(uMeta.promptTokenCount || 0) || 0,
+          completionTokens: Number(uMeta.candidatesTokenCount || 0) || 0,
+          totalTokens: Number(uMeta.totalTokenCount || 0) || 0,
+          cachedTokens: Number(uMeta.cachedContentTokenCount || 0) || 0,
+          reasoningTokens: Number(uMeta.thoughtsTokenCount || 0) || 0,
+          reportedByProvider: true,
+        }
+      : { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, reasoningTokens: 0, reportedByProvider: false };
+
     const candidate = data?.candidates?.[0];
     const finishReason = candidate?.finishReason || null;
     if (finishReason === 'SAFETY' || finishReason === 'RECITATION' || data?.promptFeedback?.blockReason) {
-      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'Gemini bloqueó la respuesta (motivo: ' + (finishReason || data?.promptFeedback?.blockReason) + ').', truncated: false, finishReason, raw: data };
+      return { ok: false, text: null, errorType: 'moderation', errorMessage: 'Gemini bloqueó la respuesta (motivo: ' + (finishReason || data?.promptFeedback?.blockReason) + ').', truncated: false, finishReason, usage, raw: data };
     }
 
     const text = (candidate?.content?.parts || []).map((p) => p.text || '').join('').trim();
@@ -71,9 +87,9 @@ export class GeminiProvider extends AIProvider {
       const msg = truncated
         ? 'Gemini alcanzó el límite de tokens antes de devolver texto utilizable (MAX_TOKENS).'
         : 'Gemini devolvió una respuesta vacía o inválida.';
-      return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, raw: data };
+      return { ok: false, text: null, errorType: 'empty', errorMessage: msg, truncated, finishReason, usage, raw: data };
     }
 
-    return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, raw: data };
+    return { ok: true, text, errorType: null, errorMessage: null, truncated, finishReason, usage, raw: data };
   }
 }

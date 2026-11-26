@@ -1,4 +1,5 @@
 import { AIProvider, isLikelyInvalidProse, isAbortError } from './base.js';
+import { isSafeOnlinePreview, previewBlockedProviderResult } from '../previewGuard.js';
 
 // Free router only: do not switch silently to a paid OpenRouter model.
 export const isFreeModel = (model) => model === 'openrouter/free' || /^[a-z0-9._-]+\/[a-z0-9._:-]+:free$/i.test(model);
@@ -6,6 +7,9 @@ export const isFreeModel = (model) => model === 'openrouter/free' || /^[a-z0-9._
 export class OpenRouterFreeProvider extends AIProvider {
   get name() { return 'openrouter'; }
   async generate({ systemPrompt, userPrompt, maxOutputTokens = 2048, temperature = 1, signal }) {
+    if (isSafeOnlinePreview()) {
+      return previewBlockedProviderResult();
+    }
     const key = String(this.config.apiKey || '').trim();
     const model = String(this.config.model || 'openrouter/free').trim();
     if (!key) return { ok:false, text:null, errorType:'auth', errorMessage:'Falta la clave API de OpenRouter en Ajustes. No sirve la clave de Gemini.', truncated:false, finishReason:null, raw:null };
@@ -39,6 +43,17 @@ export class OpenRouterFreeProvider extends AIProvider {
       let help = status===402 ? 'Esta petición requiere créditos; no se usarán modelos de pago.' : status===429 ? 'Límite gratuito o alta demanda. Espera antes de reanudar.' : [502,503,504].includes(status) ? 'Alta demanda temporal. Espera antes de reanudar.' : '';
       return {ok:false,text:null,errorType,errorMessage:`OpenRouter HTTP ${status}. ${help} ${info} Tu borrador sigue guardado.`,truncated:false,finishReason:null,raw:data};
     }
+    const u = data?.usage;
+    const usage = u && typeof u === 'object'
+      ? {
+          promptTokens: Number(u.prompt_tokens || 0) || 0,
+          completionTokens: Number(u.completion_tokens || 0) || 0,
+          totalTokens: Number(u.total_tokens || 0) || 0,
+          cachedTokens: Number(u.prompt_tokens_details?.cached_tokens || 0) || 0,
+          reasoningTokens: Number(u.completion_tokens_details?.reasoning_tokens || 0) || 0,
+          reportedByProvider: true,
+        }
+      : { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, reasoningTokens: 0, reportedByProvider: false };
     const choice = data?.choices?.[0];
     const finishReason = choice?.finish_reason ? String(choice.finish_reason).slice(0, 60) : null;
     const truncated = finishReason === 'length';
@@ -53,9 +68,9 @@ export class OpenRouterFreeProvider extends AIProvider {
       return {
         ok:false, text:null, errorType:'empty',
         errorMessage:help + 'Modelo: ' + chosenModel + '; motivo: ' + (finishReason || 'desconocido') + '. En Ajustes cambia el modelo de OpenRouter a arcee-ai/trinity-large-preview:free y pulsa Reanudar borrador. Nada se ha borrado.',
-        truncated, finishReason, raw:null,
+        truncated, finishReason, usage, raw:null,
       };
     }
-    return {ok:true,text:prose,errorType:null,errorMessage:null,truncated,finishReason,raw:null};
+    return {ok:true,text:prose,errorType:null,errorMessage:null,truncated,finishReason,usage,raw:null};
   }
 }

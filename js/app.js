@@ -14,6 +14,7 @@ import { ensureKaelAuWorkspace, KAEL_AU_PROJECT } from './kaelAu.js';
 import { ensureVioletWorkspace } from './violet.js';
 import { ensureADayOffWorkspace } from './adayoff.js';
 import { ensureYourNameWorkspace } from './yourName.js';
+import { isSafeOnlinePreview, PREVIEW_BANNER_TITLE, PREVIEW_BANNER_BODY } from './previewGuard.js';
 
 const VIEWS = { write: renderWrite, planner: renderPlanner, chapters: renderChapters, characters: renderCharacters, documents: renderDocuments, memory: renderMemory, settings: renderSettings };
 
@@ -386,6 +387,21 @@ async function boot() {
     toast('No se pudo preparar Your Name. Vuelve a abrir con conexión: ' + error.message, {error:true,ms:9000});
   }
   await seedDefaults();
+  if (isSafeOnlinePreview() && !document.getElementById('alpha-safe-preview-banner')) {
+    const header = document.querySelector('.app-header');
+    const banner = document.createElement('div');
+    banner.id = 'alpha-safe-preview-banner';
+    banner.className = 'card context-guard-item context-guard-info';
+    banner.style.cssText = 'margin: 0 0 12px 0; padding: 10px 14px; font-size: 13px;';
+    const strong = document.createElement('b');
+    strong.textContent = PREVIEW_BANNER_TITLE;
+    const text = document.createElement('div');
+    text.style.marginTop = '4px';
+    text.textContent = PREVIEW_BANNER_BODY;
+    banner.appendChild(strong);
+    banner.appendChild(text);
+    header?.insertAdjacentElement('afterend', banner);
+  }
   initNav();
   await initWorkspaces();
   initServiceWorker();

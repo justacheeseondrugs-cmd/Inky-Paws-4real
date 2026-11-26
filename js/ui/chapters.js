@@ -1,7 +1,9 @@
 import { db } from '../db.js';
 import { escapeHtml, renderManuscript, toast, fmtDate, debounce, wordCount, contentFingerprint, openModal, closeModal, bus, copyTextToClipboard } from '../utils.js';
-import { rewriteChapter, continueRewriteDraft, generateContinuityMemory, saveContinuityMemoryEntry, markChapterMemoriesStale } from '../memoryEngine.js';
+import { rewriteChapter, continueRewriteDraft, rewriteSelectedPassage, applySafePassageReplacement, generateContinuityMemory, saveContinuityMemoryEntry, markChapterMemoriesStale } from '../memoryEngine.js';
+import { continueFromAuthorPosition } from '../postReview.js';
 import { isMainTimelineChapter, sortChaptersWithVariants } from '../timeline.js';
+import { isSafeOnlinePreview, PREVIEW_API_DISABLED_MESSAGE } from '../previewGuard.js';
 
 const rewriteDraftKey = (projectId, chapterId) => `rewrite-draft:${projectId}:${chapterId}`;
 const MEMORY_REVIEW_FIELDS = [
@@ -143,8 +145,8 @@ export async function renderChapters(root) {
         <button class="btn btn-ghost btn-sm act-open">Abrir/editar</button>
         <button class="btn btn-ghost btn-sm act-copy">📋 Copiar</button>
         <button class="btn btn-ghost btn-sm act-download">⬇️ .md</button>
-        <button class="btn btn-ghost btn-sm act-rewrite">${draftChapterIds.has(c.id) ? 'Reescribir (borrador)' : 'Reescribir'}</button>
-        ${alternative ? '<button class="btn btn-primary btn-sm act-promote">⭐ Usar como principal</button>' : '<button class="btn btn-ghost btn-sm act-memory">🧠 Crear/actualizar memoria</button><button class="btn btn-ghost btn-sm act-variants">🌿 Crear 2 alternativas</button>'}
+        <button class="btn btn-ghost btn-sm act-rewrite" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>${draftChapterIds.has(c.id) ? 'Reescribir (borrador)' : 'Reescribir'}</button>
+        ${alternative ? '<button class="btn btn-primary btn-sm act-promote">⭐ Usar como principal</button>' : `<button class="btn btn-ghost btn-sm act-memory" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>🧠 Crear/actualizar memoria</button><button class="btn btn-ghost btn-sm act-variants" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>🌿 Crear 2 alternativas</button>`}
         <button class="btn btn-ghost btn-sm act-duplicate">Duplicar</button>
         <button class="btn btn-danger btn-sm act-delete">Eliminar</button>
       </div>
@@ -373,12 +375,29 @@ async function openChapterEditor(id) {
   };
   window.addEventListener('beforeunload', onBeforeUnload);
 
+  const versionItems = Array.isArray(chapter.versions) && chapter.versions.length
+    ? `<details style="margin-top:8px;"><summary style="cursor:pointer; font-weight:600;">🕰️ Versiones anteriores (${chapter.versions.length})</summary><div style="margin-top:6px;">${chapter.versions.slice().reverse().map((v, revIdx) => {
+        const origIdx = chapter.versions.length - 1 - revIdx;
+        return `<div class="list-item" style="margin-bottom:6px;"><div class="title-row"><span>${escapeHtml(v.note || 'Versión guardada')} · ${Number(v.wordCount) || 0} palabras</span><button type="button" class="btn btn-ghost btn-sm act-restore-ver" data-vidx="${origIdx}">↩️ Restaurar</button></div><div class="muted" style="font-size:12px;">${escapeHtml(fmtDate(v.savedAt))}</div></div>`;
+      }).join('')}</div></details>`
+    : '';
+
   openModal(`
     <div class="paper" style="padding:20px;">
       <div class="card-row"><input type="text" id="editor-title" value="${escapeHtml(chapter.title)}" style="font-family:'Cormorant Garamond',serif; font-size:20px; border:none; background:transparent; padding:0;"><span class="muted" id="editor-save-badge">Guardado ✓</span></div>
       <hr><div class="paper-readonly manuscript-rendered" id="editor-reading">${renderManuscript(chapter.content)}</div><textarea class="paper-text" id="editor-content" rows="18" style="display:none;">${escapeHtml(chapter.content)}</textarea>
     </div>
-    <div class="btn-row"><button class="btn btn-primary" id="editor-mode-toggle">✏️ Editar texto</button><button class="btn btn-ghost" id="editor-close-btn">Cerrar</button><span class="muted" style="align-self:center;" id="editor-wc">${wordCount(chapter.content)} palabras</span></div>`, {
+    <div id="cowrite-toolbar" class="card" style="margin-top:8px; padding:10px; display:none;">
+      <div style="font-weight:600; margin-bottom:4px;">✍️ Co-escritura (IA bajo demanda · conserva tu prosa intacta)</div>
+      <input type="text" id="cowrite-instruction" placeholder="Instrucción breve (ej: intensifica el subtexto en el pasaje seleccionado o continúa desde el cursor)">
+      <div class="btn-row" style="margin-top:6px;">
+        <button type="button" class="btn btn-ghost btn-sm" id="ce-cowrite-continue-btn" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>✒️ Continuar desde cursor (IA)</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="ce-cowrite-passage-btn" ${isSafeOnlinePreview() ? `disabled title="${escapeHtml(PREVIEW_API_DISABLED_MESSAGE)}"` : ''}>✂️ Reescribir pasaje seleccionado (IA)</button>
+      </div>
+      <div id="cowrite-preview-slot" style="margin-top:8px;"></div>
+    </div>
+    ${versionItems}
+    <div class="btn-row" style="margin-top:8px;"><button class="btn btn-primary" id="editor-mode-toggle">✏️ Editar texto</button><button class="btn btn-ghost" id="editor-close-btn">Cerrar</button><span class="muted" style="align-self:center;" id="editor-wc">${wordCount(chapter.content)} palabras</span></div>`, {
     onClose: () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
       autosave.cancel();
@@ -392,13 +411,30 @@ async function openChapterEditor(id) {
     document.getElementById('editor-save-badge').textContent = 'Guardando…';
     autosave();
   });
+  document.querySelectorAll('.act-restore-ver').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const vIdx = Number(btn.dataset.vidx);
+      const chosen = chapter.versions?.[vIdx];
+      if (!chosen || !confirm('¿Restaurar esta versión anterior en el editor? La versión actual se conservará en el historial al guardar.')) return;
+      const ta = document.getElementById('editor-content');
+      if (ta) ta.value = chosen.content || '';
+      latestContent = chosen.content || '';
+      dirty = true;
+      await persistEditor();
+      document.getElementById('editor-reading').innerHTML = renderManuscript(latestContent);
+      document.getElementById('editor-wc').textContent = wordCount(latestContent) + ' palabras';
+      toast('Versión anterior restaurada.');
+    });
+  });
   // La edición conserva Markdown como texto original; lectura lo presenta con formato.
   document.getElementById('editor-mode-toggle').addEventListener('click', (e) => {
     const source = document.getElementById('editor-content');
     const preview = document.getElementById('editor-reading');
+    const cwBar = document.getElementById('cowrite-toolbar');
     const toEdit = source.style.display === 'none';
     source.style.display = toEdit ? 'block' : 'none';
     preview.style.display = toEdit ? 'none' : 'block';
+    if (cwBar) cwBar.style.display = toEdit ? 'block' : 'none';
     if (!toEdit) {
       preview.innerHTML = renderManuscript(source.value);
       if (dirty) {
@@ -408,6 +444,141 @@ async function openChapterEditor(id) {
     }
     e.currentTarget.textContent = toEdit ? '📖 Vista de lectura' : '✏️ Editar texto';
     if (toEdit) source.focus();
+  });
+
+  // Co-escritura: continuar desde el cursor
+  document.getElementById('ce-cowrite-continue-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const ta = document.getElementById('editor-content');
+    const slot = document.getElementById('cowrite-preview-slot');
+    if (!ta || !slot) return;
+    if (dirty) { autosave.cancel(); await persistEditor(); }
+    const freshChapter = await db.get('chapters', id, scope);
+    if (!freshChapter) return;
+    const cursorPos = Number.isInteger(ta.selectionEnd) ? ta.selectionEnd : freshChapter.content.length;
+    const instr = document.getElementById('cowrite-instruction')?.value.trim() || '';
+    btn.disabled = true;
+    btn.textContent = '✒️ Generando continuación…';
+    try {
+      const res = await continueFromAuthorPosition(freshChapter, {
+        cursorOffset: cursorPos,
+        continuationInstruction: instr,
+        projectId: editorProjectId,
+      });
+      if (!res.ok) throw new Error(res.error || 'No se pudo generar la continuación.');
+      slot.innerHTML = `
+        <div class="paper" style="padding:10px;">
+          <b>Vista previa de continuación (borrador — aún no aplicada):</b>
+          <textarea id="cowrite-candidate" rows="6" style="margin-top:6px;">${escapeHtml(res.insertedProse)}</textarea>
+          <div class="btn-row" style="margin-top:6px;">
+            <button type="button" class="btn btn-primary btn-sm" id="cowrite-accept-btn">✓ Insertar en el capítulo</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="cowrite-reject-btn">Descartar</button>
+          </div>
+        </div>`;
+      slot.querySelector('#cowrite-reject-btn')?.addEventListener('click', () => { slot.innerHTML = ''; });
+      slot.querySelector('#cowrite-accept-btn')?.addEventListener('click', async () => {
+        const editedInsertion = slot.querySelector('#cowrite-candidate')?.value || res.insertedProse;
+        const curText = String(ta.value || '');
+        const before = curText.slice(0, res.cursorOffset);
+        const after = curText.slice(res.cursorOffset);
+        const merged = before + (before && !before.endsWith('\n') ? '\n\n' : '') + editedInsertion + (after ? '\n\n' + after : '');
+        const applied = await applySafePassageReplacement(id, {
+          mergedContent: merged,
+          baseContentHash: res.baseContentHash,
+          projectId: editorProjectId,
+        });
+        if (!applied.ok && applied.conflict) {
+          toast(applied.message, { error: true, ms: 8500 });
+          return;
+        }
+        ta.value = merged;
+        latestContent = merged;
+        dirty = false;
+        document.getElementById('editor-wc').textContent = wordCount(merged) + ' palabras';
+        slot.innerHTML = '';
+        toast('Continuación insertada y guardada (versión anterior respaldada).');
+        bus.emit('chapters-changed');
+      });
+    } catch (err) {
+      toast(err.message || 'Falló la continuación.', { error: true, ms: 8500 });
+    } finally {
+      if (btn.isConnected) { btn.disabled = false; btn.textContent = '✒️ Continuar desde cursor (IA)'; }
+    }
+  });
+
+  // Co-escritura: reescribir únicamente el pasaje seleccionado preservando el resto intacto
+  document.getElementById('ce-cowrite-passage-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const ta = document.getElementById('editor-content');
+    const slot = document.getElementById('cowrite-preview-slot');
+    if (!ta || !slot) return;
+    const s = ta.selectionStart || 0;
+    const end = ta.selectionEnd || 0;
+    if (end <= s) return toast('Selecciona primero con el cursor el pasaje exacto que quieres reescribir.', { error: true });
+    if (dirty) { autosave.cancel(); await persistEditor(); }
+    const freshChapter = await db.get('chapters', id, scope);
+    if (!freshChapter) return;
+    const instr = document.getElementById('cowrite-instruction')?.value.trim() || 'Mejora la prosa, voz y subtexto conservando los eventos.';
+    btn.disabled = true;
+    btn.textContent = '✂️ Reescribiendo pasaje…';
+    try {
+      const res = await rewriteSelectedPassage(freshChapter, {
+        startOffset: s,
+        endOffset: end,
+        rewriteInstructions: instr,
+        projectId: editorProjectId,
+      });
+      if (!res.ok) throw new Error(res.error || 'No se pudo reescribir el pasaje.');
+      slot.innerHTML = `
+        <div class="paper" style="padding:10px;">
+          <b>Comparar pasaje (el texto antes y después permanece intacto):</b>
+          <div class="muted" style="font-size:12px; margin-top:4px;">Original:</div>
+          <pre class="context-prompt" style="max-height:110px;">${escapeHtml(res.originalPassage)}</pre>
+          <div class="muted" style="font-size:12px;">Reemplazo propuesto (editable):</div>
+          <textarea id="cowrite-passage-replacement" rows="5">${escapeHtml(res.replacementPassage)}</textarea>
+          <div class="btn-row" style="margin-top:6px;">
+            <button type="button" class="btn btn-primary btn-sm" id="cowrite-apply-passage-btn">✓ Reemplazar solo este pasaje</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="cowrite-alt-passage-btn">🌿 Guardar como alternativa</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="cowrite-discard-passage-btn">Descartar</button>
+          </div>
+        </div>`;
+      slot.querySelector('#cowrite-discard-passage-btn')?.addEventListener('click', () => { slot.innerHTML = ''; });
+      const applyReplacement = async (asAlternative) => {
+        const rep = slot.querySelector('#cowrite-passage-replacement')?.value ?? res.replacementPassage;
+        const merged = res.surroundingBefore + rep + res.surroundingAfter;
+        const applied = await applySafePassageReplacement(id, {
+          mergedContent: merged,
+          baseContentHash: res.baseContentHash,
+          projectId: editorProjectId,
+          saveAsAlternativeOnConflict: asAlternative,
+        });
+        if (!applied.ok && applied.conflict) {
+          toast(applied.message, { error: true, ms: 9000 });
+          return;
+        }
+        if (asAlternative && !applied.savedAsAlternative) {
+          await saveRewriteAsAlternative(freshChapter, merged, scope);
+          slot.innerHTML = '';
+          toast('Guardado como capítulo alternativo sin tocar la línea principal.');
+          return;
+        }
+        if (!applied.savedAsAlternative) {
+          ta.value = merged;
+          latestContent = merged;
+          dirty = false;
+          document.getElementById('editor-wc').textContent = wordCount(merged) + ' palabras';
+        }
+        slot.innerHTML = '';
+        toast(applied.savedAsAlternative ? 'Conflicto detectado: guardado como alternativa segura.' : 'Pasaje reemplazado (versión anterior guardada y texto circundante intacto).');
+        bus.emit('chapters-changed');
+      };
+      slot.querySelector('#cowrite-apply-passage-btn')?.addEventListener('click', () => applyReplacement(false));
+      slot.querySelector('#cowrite-alt-passage-btn')?.addEventListener('click', () => applyReplacement(true));
+    } catch (err) {
+      toast(err.message || 'Falló la reescritura del pasaje.', { error: true, ms: 8500 });
+    } finally {
+      if (btn.isConnected) { btn.disabled = false; btn.textContent = '✂️ Reescribir pasaje seleccionado (IA)'; }
+    }
   });
   document.getElementById('editor-title').addEventListener('input', (e) => {
     latestTitle = e.target.value;
@@ -481,6 +652,8 @@ async function openRewriteModal(id) {
   let stagedTruncated = hasRestoredDraft ? Boolean(savedDraft.truncated) : false;
   let stagedModelMaxOutput = hasRestoredDraft && Number.isFinite(savedDraft.modelMaxOutput) ? savedDraft.modelMaxOutput : 0;
   let stagedMayNeedContinuation = hasRestoredDraft ? Boolean(savedDraft.mayNeedContinuation) : false;
+  let stagedSpentUsd = hasRestoredDraft && Number.isFinite(savedDraft.cumulativeSpentUsd) ? savedDraft.cumulativeSpentUsd : 0;
+  let stagedHasUnknownCost = hasRestoredDraft ? Boolean(savedDraft.hasPriorUnknownCost) : false;
   let previousDraftText = hasRestoredDraft ? String(savedDraft.previousText || '') : '';
   let latestPreviewValue = hasRestoredDraft ? String(savedDraft.text || '') : '';
   let latestInstructionsValue = stagedInstructions;
@@ -504,6 +677,8 @@ async function openRewriteModal(id) {
       truncated: stagedTruncated,
       modelMaxOutput: stagedModelMaxOutput,
       mayNeedContinuation: stagedMayNeedContinuation,
+      cumulativeSpentUsd: stagedSpentUsd,
+      hasPriorUnknownCost: stagedHasUnknownCost,
       updatedAt: new Date().toISOString(),
     });
   };
@@ -641,9 +816,15 @@ async function openRewriteModal(id) {
     controller = new AbortController();
     setBusy(true, 'Reescribiendo… el capítulo original permanece intacto.');
     conflictSlot.innerHTML = '';
-    const result = await rewriteChapter(freshSource, instructions, { signal: controller.signal });
+    const result = await rewriteChapter(freshSource, instructions, {
+      signal: controller.signal,
+      spentSoFarUsd: stagedSpentUsd,
+      hasPriorUnknownCost: stagedHasUnknownCost,
+    });
     controller = null;
     setBusy(false);
+    if (Number.isFinite(result.cumulativeSpentUsd)) stagedSpentUsd = result.cumulativeSpentUsd;
+    if (result.hasPriorUnknownCost) stagedHasUnknownCost = true;
     if (!result.ok) {
       statusEl.textContent = '⚠️ ' + result.error;
       toast(result.errorType === 'aborted' ? 'Reescritura cancelada.' : 'No se guardó ningún cambio: ' + result.error, { error: result.errorType !== 'aborted' });
@@ -682,9 +863,15 @@ async function openRewriteModal(id) {
     const freshSource = (await db.get('chapters', id, scope)) || chapter;
     controller = new AbortController();
     setBusy(true, 'Continuando la reescritura desde el último párrafo…');
-    const result = await continueRewriteDraft(freshSource, instructions, currentDraft, { signal: controller.signal });
+    const result = await continueRewriteDraft(freshSource, instructions, currentDraft, {
+      signal: controller.signal,
+      spentSoFarUsd: stagedSpentUsd,
+      hasPriorUnknownCost: stagedHasUnknownCost,
+    });
     controller = null;
     setBusy(false);
+    if (Number.isFinite(result.cumulativeSpentUsd)) stagedSpentUsd = result.cumulativeSpentUsd;
+    if (result.hasPriorUnknownCost) stagedHasUnknownCost = true;
     if (!result.ok) {
       statusEl.textContent = '⚠️ ' + result.error;
       toast(result.errorType === 'aborted' ? 'Continuación cancelada.' : result.error, { error: result.errorType !== 'aborted' });
