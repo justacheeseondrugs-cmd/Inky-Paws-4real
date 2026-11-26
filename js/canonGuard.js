@@ -103,7 +103,10 @@ export function buildContinuityBlock(memoryEntries, canonNotes, recentChapterExc
   }
 
   if (memoryEntries?.length) {
-    const all = memoryEntries.filter(Boolean);
+    // Excluir memorias desactualizadas (`stale`) del canon autoritativo actual;
+    // permanecen guardadas en IndexedDB hasta que la autora las revise o reemplace.
+    const all = memoryEntries.filter((m) => m && m.stale !== true);
+    if (all.length) {
     const foundation = all.slice(0, 3);
     const recent = all.slice(-4);
     const detailedIds = new Set([...foundation, ...recent].map((m) => m.chapterId || m.id));
@@ -135,6 +138,7 @@ export function buildContinuityBlock(memoryEntries, canonNotes, recentChapterExc
         '🧵 MEMORIA RECIENTE DETALLADA:\n' +
         recentOnly.map(formatMemoryEntry).join('\n\n')
       );
+    }
     }
   }
 

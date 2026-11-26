@@ -131,10 +131,10 @@ function makeSyntheticBible(contentVersion = '1.1') {
   };
 }
 
-// 1. Database v2 constants and v1/v2 backup validation
+// 1. Database v2+ constants and v1/v2 backup validation
 {
   assert.equal(DB_NAME, 'pts-studio', 'Database name must remain pts-studio');
-  assert.equal(DB_VERSION, 2);
+  assert.ok(DB_VERSION >= 2);
   assert.equal(V1_STORE_NAMES.length, 9);
   assert.ok(STORE_NAMES.includes('universalCharacters'));
   assert.ok(STORE_NAMES.includes('characterOverlays'));
@@ -151,9 +151,11 @@ function makeSyntheticBible(contentVersion = '1.1') {
   assert.equal(v1Info.backupKind, 'full');
   assert.equal(v1Info.version, 1);
 
-  // Full v2 backup (all 15 stores) is FULL
+  // Full v2 backup (15 stores) remains importable as FULL
   const v2Full = { __meta: { app: 'pts-studio', version: 2 } };
-  for (const name of STORE_NAMES) v2Full[name] = [];
+  for (const name of [...V1_STORE_NAMES, 'universalCharacters', 'characterOverlays', 'storyConfigs', 'storyPresets', 'knowledgeFacts', 'usageLog']) {
+    v2Full[name] = [];
+  }
   const v2Info = validateBackupDump(v2Full);
   assert.equal(v2Info.isFull, true);
   assert.equal(v2Info.backupKind, 'full');

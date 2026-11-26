@@ -361,7 +361,7 @@ def main():
               };
             }''')
             assert migration_check['name'] == 'pts-studio'
-            assert migration_check['version'] == 2
+            assert migration_check['version'] >= 2
             for s in ['universalCharacters', 'characterOverlays', 'storyConfigs', 'storyPresets', 'knowledgeFacts', 'usageLog']:
                 assert s in migration_check['stores'], f'Missing v2 store: {s}'
             assert 'by_project' in migration_check['chIndexes']
@@ -371,20 +371,20 @@ def main():
             for k in ['ch1Ok', 'legacyIndexedOk', 'chAltOk', 'chBOk', 'charLeviOk', 'docOk', 'memOk', 'factOk', 'canonOk', 'genOk', 'keysOk', 'rewriteDraftOk', 'noSilentAuConfig']:
                 assert migration_check[k], f'Migration preservation failed for {k}: {migration_check}'
 
-            # Repeated reload (re-opening v2) is completely safe
+            # Repeated reload (re-opening upgraded DB) is completely safe
             page.reload()
             page.wait_for_function("() => (document.querySelector('#workspace-select')?.options.length || 0) >= 2")
 
             # ------------------------------------------------------------------
-            # TEST 2: v2 export excludes API keys & includes new stores; legacy v1 backup still imports
+            # TEST 2: export excludes API keys & includes new stores; legacy v1 backup still imports
             # ------------------------------------------------------------------
             backup_compat = page.evaluate('''async () => {
-              const { db } = await import('/js/db.js');
+              const { db, DB_VERSION } = await import('/js/db.js');
               const dump = await db.exportAll();
               const mainExported = dump.settings.find(s => s.id === 'main');
               const keysExcluded = mainExported && Object.keys(mainExported.apiKeys || {}).length === 0 && dump.__meta.apiKeysExcluded === true;
               const hasV2Stores = ['universalCharacters','characterOverlays','storyConfigs','storyPresets','knowledgeFacts','usageLog'].every(s => Array.isArray(dump[s]));
-              const metaOk = dump.__meta.version === 2 && dump.__meta.schemaVersion === 2;
+              const metaOk = dump.__meta.version === DB_VERSION && dump.__meta.schemaVersion === DB_VERSION;
 
               // Import a legacy v1 full backup (only 9 stores, version 1, chapter WITHOUT projectId!) -> must succeed, backfill projectId, & keep local keys!
               const v1LegacyBackup = {

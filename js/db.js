@@ -2,7 +2,7 @@
 // No contiene lógica de negocio ni de IA: sólo CRUD sobre IndexedDB.
 
 export const DB_NAME = 'pts-studio';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 export const V1_STORE_NAMES = [
   'chapters',
@@ -14,6 +14,16 @@ export const V1_STORE_NAMES = [
   'canonNotes',
   'settings',
   'generationState',
+];
+
+export const V2_STORE_NAMES = [
+  ...V1_STORE_NAMES,
+  'universalCharacters',
+  'characterOverlays',
+  'storyConfigs',
+  'storyPresets',
+  'knowledgeFacts',
+  'usageLog',
 ];
 
 const STORES = {
@@ -32,6 +42,9 @@ const STORES = {
   storyPresets: 'id',
   knowledgeFacts: 'id',
   usageLog: 'id',
+  arcSummaries: 'id',
+  relationshipStates: 'id',
+  lexicalIndexes: 'id',
 };
 
 export const STORE_NAMES = Object.keys(STORES);
@@ -87,15 +100,28 @@ const STORE_INDEXES = {
   knowledgeFacts: [
     ['by_project', 'projectId'],
     ['by_project_checkpoint', ['projectId', 'firstEffectiveCheckpoint']],
+    ['by_project_source_chapter', ['projectId', 'sourceChapterId']],
   ],
   usageLog: [
     ['by_created', 'createdAt'],
+  ],
+  arcSummaries: [
+    ['by_project', 'projectId'],
+    ['by_project_order', ['projectId', 'arcOrder']],
+  ],
+  relationshipStates: [
+    ['by_project', 'projectId'],
+    ['by_project_pair', ['projectId', 'pairKey']],
+  ],
+  lexicalIndexes: [
+    ['by_project', 'projectId'],
+    ['by_project_kind', ['projectId', 'kind']],
   ],
 };
 
 // Los proyectos comparten proveedor de IA, pero NUNCA capítulos ni referencias.
 // Los registros heredados de v1 sin projectId pertenecen a ORIGINAL y reciben
-// backfill no destructivo en la migración v1->v2 para ser visibles en índices compuestos.
+// backfill no destructivo en la migración v1->v2/v3 para ser visibles en índices compuestos.
 const ORIGINAL_PROJECT = 'original';
 const SCOPED_STORES = new Set([
   'chapters',
@@ -107,6 +133,9 @@ const SCOPED_STORES = new Set([
   'canonNotes',
   'generationState',
   'knowledgeFacts',
+  'arcSummaries',
+  'relationshipStates',
+  'lexicalIndexes',
 ]);
 const SYNCED_ENTITY_STORES = new Set([
   'chapters',
@@ -122,7 +151,11 @@ const SYNCED_ENTITY_STORES = new Set([
   'storyConfigs',
   'storyPresets',
   'knowledgeFacts',
+  'arcSummaries',
+  'relationshipStates',
 ]);
+export const DERIVED_STORES = new Set(['lexicalIndexes']);
+export const V3_REQUIRED_STORE_NAMES = STORE_NAMES.filter((name) => !DERIVED_STORES.has(name));
 const ACTIVE_KEY = 'pts_active_project_v1';
 let memoryActiveProject = null;
 
@@ -472,8 +505,19 @@ function validateStoreRecord(storeName, item, pos) {
   } else if (storeName === 'knowledgeFacts') {
     if (item.truth !== undefined && typeof item.truth !== 'string') throw new Error(`truth inválido en hecho de conocimiento (posición ${pos}).`);
     if (item.statusByCharacter !== undefined && !isPlainObject(item.statusByCharacter)) throw new Error(`statusByCharacter inválido en hecho de conocimiento (posición ${pos}).`);
+    if (item.beliefsByCharacter !== undefined && !isPlainObject(item.beliefsByCharacter)) throw new Error(`beliefsByCharacter inválido en hecho de conocimiento (posición ${pos}).`);
   } else if (storeName === 'usageLog') {
     if (item.provider !== undefined && typeof item.provider !== 'string') throw new Error(`provider inválido en registro de uso (posición ${pos}).`);
+  } else if (storeName === 'arcSummaries') {
+    if (item.title !== undefined && typeof item.title !== 'string') throw new Error(`title inválido en resumen de arco (posición ${pos}).`);
+    if (item.summary !== undefined && typeof item.summary !== 'string') throw new Error(`summary inválido en resumen de arco (posición ${pos}).`);
+    if (item.arcOrder !== undefined && !Number.isFinite(Number(item.arcOrder))) throw new Error(`arcOrder inválido en resumen de arco (posición ${pos}).`);
+  } else if (storeName === 'relationshipStates') {
+    if (typeof item.pairKey !== 'string' || !item.pairKey.trim()) throw new Error(`pairKey inválido en estado relacional (posición ${pos}).`);
+    if (item.participants !== undefined && !Array.isArray(item.participants)) throw new Error(`participants inválido en estado relacional (posición ${pos}).`);
+    if (item.dimensions !== undefined && !isPlainObject(item.dimensions)) throw new Error(`dimensions inválido en estado relacional (posición ${pos}).`);
+  } else if (storeName === 'lexicalIndexes') {
+    if (typeof item.kind !== 'string' || !item.kind.trim()) throw new Error(`kind inválido en índice léxico (posición ${pos}).`);
   }
 }
 
@@ -500,6 +544,7 @@ export function validateBackupDump(dump) {
   }
   const allStoreNames = Object.keys(STORES);
   const v1Set = new Set(V1_STORE_NAMES);
+  const v2Set = new Set(V2_STORE_NAMES);
   const targetStores = [];
   const missingAllStores = [];
   for (const name of allStoreNames) {
@@ -525,8 +570,13 @@ export function validateBackupDump(dump) {
     throw new Error('La copia de seguridad no contiene ningún almacén de datos reconocible.');
   }
   const hasAnyV2Store = targetStores.some((name) => !v1Set.has(name));
-  const treatAsV1 = declaredVersion === 1 || (declaredVersion === null && !hasAnyV2Store);
-  const expectedFullStores = treatAsV1 ? V1_STORE_NAMES : allStoreNames;
+  const hasAnyV3Store = targetStores.some((name) => !v2Set.has(name));
+  const inferredVersion = declaredVersion ?? (hasAnyV3Store ? 3 : (hasAnyV2Store ? 2 : 1));
+  // Los índices derivados (`lexicalIndexes`) son opcionales en copias v3 porque se
+  // reconstruyen de forma determinista a partir de capítulos y documentos aprobados.
+  const expectedFullStores = inferredVersion === 1
+    ? V1_STORE_NAMES
+    : (inferredVersion === 2 ? V2_STORE_NAMES : V3_REQUIRED_STORE_NAMES);
   const targetSet = new Set(targetStores);
   const missingStores = expectedFullStores.filter((name) => !targetSet.has(name));
   const isFull = missingStores.length === 0 && meta?.backupKind !== 'partial';
@@ -535,18 +585,22 @@ export function validateBackupDump(dump) {
     missingStores,
     isFull,
     backupKind: isFull ? 'full' : 'partial',
-    version: declaredVersion ?? (treatAsV1 ? 1 : DB_VERSION),
-    schemaVersion: declaredVersion ?? (treatAsV1 ? 1 : DB_VERSION),
+    version: inferredVersion,
+    schemaVersion: inferredVersion,
+    includesDerivedIndexes: targetSet.has('lexicalIndexes'),
   };
 }
 
-async function exportAll() {
+async function exportAll({ includeDerivedIndexes = false } = {}) {
   const dump = {};
+  const exportedStores = [];
   for (const name of Object.keys(STORES)) {
+    if (!includeDerivedIndexes && DERIVED_STORES.has(name)) continue;
     const records = await rawGetAll(name);
     dump[name] = name === 'settings'
       ? records.map(sanitizeSettingsForBackup)
       : records;
+    exportedStores.push(name);
   }
   dump.__meta = {
     app: 'pts-studio',
@@ -554,10 +608,43 @@ async function exportAll() {
     exportedAt: new Date().toISOString(),
     version: DB_VERSION,
     schemaVersion: DB_VERSION,
-    storeNames: Object.keys(STORES),
-    apiKeysExcluded: true
+    storeNames: exportedStores,
+    apiKeysExcluded: true,
+    derivedIndexesExcluded: !includeDerivedIndexes,
   };
   return dump;
+}
+
+async function runAtomicTransaction(storeNames, mode, executor) {
+  const names = [...new Set(Array.isArray(storeNames) ? storeNames : [storeNames])];
+  const database = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(names, mode || 'readwrite');
+    let resultValue;
+    let customError = null;
+    transaction.oncomplete = () => resolve(resultValue);
+    transaction.onerror = () => reject(customError || transaction.error || new Error('La transacción en IndexedDB falló.'));
+    transaction.onabort = () => reject(customError || transaction.error || new Error('La transacción en IndexedDB fue abortada.'));
+
+    const stores = {};
+    for (const name of names) stores[name] = transaction.objectStore(name);
+    try {
+      const maybePromise = executor({ transaction, stores, setResult: (v) => { resultValue = v; } });
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        maybePromise.then((val) => {
+          if (val !== undefined) resultValue = val;
+        }).catch((err) => {
+          customError = err;
+          try { transaction.abort(); } catch { }
+        });
+      } else if (maybePromise !== undefined) {
+        resultValue = maybePromise;
+      }
+    } catch (err) {
+      customError = err;
+      try { transaction.abort(); } catch { }
+    }
+  });
 }
 
 async function importAll(dump, { merge = false, allowPartial = false, targetProjectId = null } = {}) {
@@ -586,9 +673,10 @@ async function importAll(dump, { merge = false, allowPartial = false, targetProj
   const localMain = await get('settings', 'main').catch(() => null);
   const localApiKeys = { ...(localMain?.apiKeys || {}) };
   const database = await openDb();
+  const txStores = [...new Set([...targetStores, ...(!merge ? [...DERIVED_STORES] : [])])];
 
   await new Promise((resolve, reject) => {
-    const transaction = database.transaction(targetStores, 'readwrite');
+    const transaction = database.transaction(txStores, 'readwrite');
     let customError = null;
     transaction.oncomplete = () => resolve(true);
     transaction.onerror = () => reject(customError || transaction.error || new Error('No se pudo completar la importación.'));
@@ -596,6 +684,14 @@ async function importAll(dump, { merge = false, allowPartial = false, targetProj
 
     const writeAll = () => {
       try {
+        // Limpiar índices derivados obsoletos en restauración completa si la copia no los trae
+        if (!merge) {
+          for (const derived of DERIVED_STORES) {
+            if (!targetStores.includes(derived)) {
+              transaction.objectStore(derived).clear();
+            }
+          }
+        }
         for (const name of targetStores) {
           const store = transaction.objectStore(name);
           if (!merge) store.clear();
@@ -665,6 +761,7 @@ async function importAll(dump, { merge = false, allowPartial = false, targetProj
 export const db = {
   openDb,
   resetConnection,
+  runAtomicTransaction,
   getAll,
   getByIndex,
   getByProjectIndex,

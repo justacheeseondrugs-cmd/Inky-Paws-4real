@@ -79,21 +79,165 @@ export function parseMemoryResponse(text) {
 }
 
 export async function markChapterMemoriesStale(chapterId, { projectId = '', reason = 'edited', chapterRevision = '' } = {}) {
-  if (!chapterId) return 0;
-  const scope = { projectId: projectId || db.getActiveProjectId() };
-  const entries = await db.getByIndex('memoryEntries', 'by_chapter', chapterId, scope);
-  if (!entries.length) return 0;
+  if (!chapterId) return { memoryEntries: 0, knowledgeFacts: 0, relationshipStates: 0, arcSummaries: 0, lexicalIndexInvalidated: false, total: 0 };
+  const targetProjectId = projectId || db.getActiveProjectId();
   const now = new Date().toISOString();
-  for (const entry of entries) {
-    await db.put('memoryEntries', {
-      ...entry,
-      stale: true,
-      staleReason: reason || 'edited',
-      staleAt: now,
-      latestChapterRevision: chapterRevision || entry.latestChapterRevision || '',
-    }, scope);
-  }
-  return entries.length;
+  const safeReason = reason || 'edited';
+
+  const idbReq = (req) => new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+
+  const belongsToProject = (rec) => !!rec && (rec.projectId || 'original') === targetProjectId;
+  const stampRevision = (rec) => ({
+    ...rec,
+    revision: (Number.isInteger(rec.revision) ? rec.revision : 0) + 1,
+    syncUpdatedAt: now,
+    dirty: true,
+  });
+
+  // Transacción atómica multi-store: jamás deja memorias, hechos, relaciones,
+  // arcos o índices léxicos a medias ni silencia errores de persistencia.
+  return db.runAtomicTransaction(
+    ['memoryEntries', 'knowledgeFacts', 'relationshipStates', 'arcSummaries', 'lexicalIndexes'],
+    'readwrite',
+    async ({ stores }) => {
+      const [allMem, allFacts, allRels, allArcs] = await Promise.all([
+        idbReq(stores.memoryEntries.index('by_chapter').getAll(chapterId)),
+        idbReq(stores.knowledgeFacts.index('by_project').getAll(targetProjectId)),
+        idbReq(stores.relationshipStates.index('by_project').getAll(targetProjectId)),
+        idbReq(stores.arcSummaries.index('by_project').getAll(targetProjectId)),
+      ]);
+
+      let staleMemCount = 0;
+      let staleFactCount = 0;
+      let staleRelCount = 0;
+      let staleArcCount = 0;
+
+      // 1. Memorias de continuidad del capítulo (conservando contenido previo intacto)
+      for (const entry of (allMem || [])) {
+        if (!belongsToProject(entry)) continue;
+        stores.memoryEntries.put(stampRevision({
+          ...entry,
+          stale: true,
+          staleReason: safeReason,
+          staleAt: now,
+          latestChapterRevision: chapterRevision || entry.latestChapterRevision || '',
+        }));
+        staleMemCount += 1;
+      }
+
+      // 2. Hechos epistémicos: invalidar tanto si el hecho se originó en `chapterId`
+      //    COMO si alguna transición de creencia o divulgación se aprendió en `chapterId`!
+      for (const fact of (allFacts || [])) {
+        if (!fact || fact.deletedAt || !belongsToProject(fact)) continue;
+        const factOriginatedHere = fact.sourceChapterId === chapterId;
+        let beliefAffected = false;
+        let nextBeliefHistory = fact.beliefHistoryByCharacter ? structuredClone(fact.beliefHistoryByCharacter) : null;
+        let nextBeliefs = fact.beliefsByCharacter ? structuredClone(fact.beliefsByCharacter) : null;
+
+        if (nextBeliefHistory) {
+          for (const [charKey, list] of Object.entries(nextBeliefHistory)) {
+            if (!Array.isArray(list)) continue;
+            nextBeliefHistory[charKey] = list.map((tr) => {
+              if (tr && (tr.sourceChapterId === chapterId || tr.learnedAtChapterId === chapterId)) {
+                beliefAffected = true;
+                return { ...tr, stale: true, staleReason: safeReason };
+              }
+              return tr;
+            });
+          }
+        }
+        if (nextBeliefs) {
+          for (const [charKey, b] of Object.entries(nextBeliefs)) {
+            if (b && (b.sourceChapterId === chapterId || b.learnedAtChapterId === chapterId)) {
+              beliefAffected = true;
+              nextBeliefs[charKey] = { ...b, stale: true, staleReason: safeReason };
+            }
+          }
+        }
+        let disclosureAffected = false;
+        let nextDisclosures = Array.isArray(fact.disclosureHistory)
+          ? fact.disclosureHistory.map((d) => {
+              if (d && d.sourceChapterId === chapterId) {
+                disclosureAffected = true;
+                return { ...d, stale: true };
+              }
+              return d;
+            })
+          : fact.disclosureHistory;
+
+        if (factOriginatedHere || beliefAffected || disclosureAffected) {
+          stores.knowledgeFacts.put(stampRevision({
+            ...fact,
+            ...(nextBeliefHistory ? { beliefHistoryByCharacter: nextBeliefHistory } : {}),
+            ...(nextBeliefs ? { beliefsByCharacter: nextBeliefs } : {}),
+            ...(nextDisclosures !== undefined ? { disclosureHistory: nextDisclosures } : {}),
+            stale: true,
+            disputed: true,
+            staleReason: factOriginatedHere ? safeReason : `belief_or_disclosure_source_${safeReason}`,
+            staleAt: now,
+            previousTruthSnapshot: fact.previousTruthSnapshot || fact.truth || '',
+            latestChapterRevision: chapterRevision || fact.latestChapterRevision || '',
+          }));
+          staleFactCount += 1;
+        }
+      }
+
+      // 3. Estados relacionales cualitativos (incluyendo snapshots temporales, promesas y evidencia)
+      for (const rel of (allRels || [])) {
+        if (!rel || rel.deletedAt || !belongsToProject(rel)) continue;
+        const histAffected = Array.isArray(rel.stateHistory) && rel.stateHistory.some((s) => s?.sourceChapterId === chapterId);
+        const refsChapter = rel.sourceChapterId === chapterId ||
+          histAffected ||
+          (rel.evidenceRefs || []).some((e) => e?.chapterId === chapterId) ||
+          (rel.promises || []).some((p) => p?.sourceChapterId === chapterId || (p?.statusHistory || []).some((h) => h?.sourceChapterId === chapterId)) ||
+          (rel.sharedMemories || []).some((m) => m?.sourceChapterId === chapterId) ||
+          (rel.privateSecrets || []).some((s) => s?.sourceChapterId === chapterId);
+        if (refsChapter) {
+          const nextHistory = Array.isArray(rel.stateHistory)
+            ? rel.stateHistory.map((s) => (s?.sourceChapterId === chapterId ? { ...s, stale: true, staleReason: safeReason } : s))
+            : rel.stateHistory;
+          stores.relationshipStates.put(stampRevision({
+            ...rel,
+            ...(nextHistory !== undefined ? { stateHistory: nextHistory } : {}),
+            stale: true,
+            staleReason: safeReason,
+            staleAt: now,
+            latestChapterRevision: chapterRevision || rel.latestChapterRevision || '',
+          }));
+          staleRelCount += 1;
+        }
+      }
+
+      // 4. Resúmenes de arcos narrativos que incluyen este capítulo
+      for (const arc of (allArcs || [])) {
+        if (!arc || arc.deletedAt || !belongsToProject(arc)) continue;
+        if (Array.isArray(arc.sourceChapterIds) && arc.sourceChapterIds.includes(chapterId)) {
+          stores.arcSummaries.put(stampRevision({
+            ...arc,
+            stale: true,
+            staleReason: safeReason,
+            staleAt: now,
+          }));
+          staleArcCount += 1;
+        }
+      }
+
+      // 5. Invalidar el índice léxico derivado de capítulos de esta historia en la MISMA transacción
+      stores.lexicalIndexes.delete(`${targetProjectId}::chapters`);
+
+      return {
+        memoryEntries: staleMemCount,
+        knowledgeFacts: staleFactCount,
+        relationshipStates: staleRelCount,
+        arcSummaries: staleArcCount,
+        lexicalIndexInvalidated: true,
+        total: staleMemCount + staleFactCount + staleRelCount + staleArcCount,
+      };
+    }
+  );
 }
 
 export async function saveContinuityMemoryEntry(chapter, fields, { projectId = '' } = {}) {
