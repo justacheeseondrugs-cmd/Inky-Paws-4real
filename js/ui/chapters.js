@@ -265,23 +265,173 @@ async function openChapterEditor(id) {
   document.getElementById('editor-close-btn').addEventListener('click', closeModal);
 }
 
+async function saveRewriteAsAlternative(chapter, text) {
+  const groupId = chapter.branchGroupId || chapter.id;
+  const now = new Date().toISOString();
+  if (!chapter.branchGroupId || !chapter.branchRole) {
+    const main = {
+      ...chapter,
+      branchGroupId: groupId,
+      branchRole: chapter.branchRole || 'main',
+      variantLabel: chapter.variantLabel || 'Original',
+      updatedAt: now,
+    };
+    await db.put('chapters', main);
+  }
+  const all = await db.getAll('chapters');
+  const group = all.filter((item) => (item.branchGroupId || item.id) === groupId);
+  const usedLabels = new Set(group.map((item) => String(item.variantLabel || '').toUpperCase()));
+  const nextLabel = ['A', 'B', 'C', 'D', 'E', 'F'].find((label) => !usedLabels.has(label)) || ('R' + group.length);
+  const alt = {
+    ...chapter,
+    id: db.uid(),
+    content: text,
+    wordCount: wordCount(text),
+    branchGroupId: groupId,
+    branchRole: 'alternative',
+    variantLabel: nextLabel,
+    alternativeSourceId: chapter.id,
+    versions: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db.put('chapters', alt);
+  return alt;
+}
+
 async function openRewriteModal(id) {
   const chapter = await db.get('chapters', id);
+  if (!chapter) return;
+  let controller = null;
   openModal(`
     <h3 style="font-family:'Cormorant Garamond',serif; color:var(--oldrose-700);">Reescribir «${escapeHtml(chapter.title)}»</h3>
-    <p class="muted">La versión actual se conservará en el historial de versiones.</p>
-    <label class="field-label">Instrucciones de reescritura</label>
-    <textarea id="rewrite-instructions" placeholder="Ej: Alarga la escena entre Levi y Erwin, añade más interioridad de Levi, mantén el resto igual."></textarea>
-    <div class="btn-row"><button class="btn btn-primary" id="rewrite-go-btn">Reescribir con IA</button><button class="btn btn-ghost" id="rewrite-cancel-btn">Cancelar</button></div>
-    <div id="rewrite-status" class="muted" style="margin-top:8px;"></div>`);
-  document.getElementById('rewrite-cancel-btn').addEventListener('click', closeModal);
-  document.getElementById('rewrite-go-btn').addEventListener('click', async () => {
-    const instructions = document.getElementById('rewrite-instructions').value.trim(); if (!instructions) return toast('Escribe qué quieres cambiar.', { error: true });
-    const btn = document.getElementById('rewrite-go-btn'); btn.disabled = true; document.getElementById('rewrite-status').textContent = 'Reescribiendo…';
-    const result = await rewriteChapter(chapter, instructions); btn.disabled = false;
-    if (!result.ok) { document.getElementById('rewrite-status').textContent = '⚠️ ' + result.error; toast('No se guardó ningún cambio: la respuesta no fue válida.', { error: true }); return; }
-    const fresh = await db.get('chapters', id); fresh.versions = fresh.versions || []; fresh.versions.push({ content: fresh.content, note: instructions, timestamp: new Date().toISOString() }); fresh.content = result.text; fresh.wordCount = wordCount(result.text); fresh.updatedAt = new Date().toISOString(); await db.put('chapters', fresh);
-    toast('Capítulo reescrito. La versión anterior quedó guardada.'); closeModal(); bus.emit('chapters-changed');
+    <p class="muted">La reescritura se mostrará primero para que la revises y edites. El capítulo original no se reemplazará hasta que lo apruebes (y se guardará en el historial de versiones).</p>
+    <div id="rewrite-request-pane">
+      <label class="field-label" for="rewrite-instructions">Instrucciones de reescritura</label>
+      <textarea id="rewrite-instructions" placeholder="Ej: Alarga la escena entre Levi y Erwin, añade más interioridad de Levi, mantén el resto igual."></textarea>
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" id="rewrite-go-btn">Reescribir con IA</button>
+        <button type="button" class="btn btn-danger" id="rewrite-abort-btn" style="display:none;">⏹ Cancelar solicitud</button>
+        <button type="button" class="btn btn-ghost" id="rewrite-cancel-btn">Cerrar</button>
+      </div>
+      <div id="rewrite-status" class="muted" style="margin-top:8px;"></div>
+    </div>
+    <div id="rewrite-review-pane" style="display:none; margin-top:12px;">
+      <div id="rewrite-warning-slot"></div>
+      <div class="card-row" style="margin-bottom:6px;">
+        <label class="field-label" for="rewrite-preview" style="margin:0;">✏️ Borrador reescrito (pendiente de aprobación)</label>
+        <span class="muted" id="rewrite-wc-compare"></span>
+      </div>
+      <textarea id="rewrite-preview" class="paper-text" rows="14"></textarea>
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" id="rewrite-approve-btn">✓ Aprobar y reemplazar original</button>
+        <button type="button" class="btn btn-ghost" id="rewrite-alt-btn">🌿 Guardar como alternativa</button>
+        <button type="button" class="btn btn-ghost" id="rewrite-copy-btn">📋 Copiar borrador</button>
+        <button type="button" class="btn btn-danger" id="rewrite-discard-btn">Descartar borrador</button>
+      </div>
+    </div>`);
+
+  const goBtn = document.getElementById('rewrite-go-btn');
+  const abortBtn = document.getElementById('rewrite-abort-btn');
+  const cancelBtn = document.getElementById('rewrite-cancel-btn');
+  const statusEl = document.getElementById('rewrite-status');
+  const reviewPane = document.getElementById('rewrite-review-pane');
+  const warningSlot = document.getElementById('rewrite-warning-slot');
+  const previewEl = document.getElementById('rewrite-preview');
+  const wcEl = document.getElementById('rewrite-wc-compare');
+  let stagedResult = null;
+  let stagedInstructions = '';
+
+  const updateCounts = () => {
+    const originalWords = wordCount(chapter.content);
+    const draftWords = wordCount(previewEl.value);
+    wcEl.textContent = `${originalWords} → ${draftWords} palabras`;
+  };
+
+  previewEl.addEventListener('input', updateCounts);
+  cancelBtn.addEventListener('click', () => {
+    controller?.abort();
+    closeModal();
+  });
+  abortBtn.addEventListener('click', () => {
+    controller?.abort();
+    abortBtn.disabled = true;
+    statusEl.textContent = 'Cancelando solicitud…';
+  });
+
+  goBtn.addEventListener('click', async () => {
+    const instructions = document.getElementById('rewrite-instructions').value.trim();
+    if (!instructions) return toast('Escribe qué quieres cambiar.', { error: true });
+    controller = new AbortController();
+    goBtn.disabled = true;
+    abortBtn.style.display = '';
+    abortBtn.disabled = false;
+    statusEl.textContent = 'Reescribiendo… el capítulo original permanece intacto.';
+    const result = await rewriteChapter(chapter, instructions, { signal: controller.signal });
+    controller = null;
+    goBtn.disabled = false;
+    abortBtn.style.display = 'none';
+    if (!result.ok) {
+      statusEl.textContent = '⚠️ ' + result.error;
+      toast(result.errorType === 'aborted' ? 'Reescritura cancelada.' : 'No se guardó ningún cambio: ' + result.error, { error: result.errorType !== 'aborted' });
+      return;
+    }
+    stagedResult = result;
+    stagedInstructions = instructions;
+    previewEl.value = result.text;
+    updateCounts();
+    warningSlot.innerHTML = result.incomplete
+      ? `<div class="context-guard-item context-guard-critical"><b>⚠️ Respuesta posiblemente incompleta o truncada</b><div>${result.warnings.map((w) => escapeHtml(w)).join(' ')}</div><div class="muted">Revisa el final antes de reemplazar el capítulo original, o guárdalo como alternativa para no perder texto.</div></div>`
+      : '';
+    reviewPane.style.display = 'block';
+    statusEl.textContent = result.incomplete
+      ? '⚠️ Borrador recibido con advertencias. Revísalo cuidadosamente antes de aprobar.'
+      : 'Borrador listo para revisar. Nada se ha sobrescrito todavía.';
+  });
+
+  document.getElementById('rewrite-copy-btn').addEventListener('click', async () => {
+    try {
+      await copyTextToClipboard(previewEl.value);
+      toast('Borrador reescrito copiado al portapapeles.');
+    } catch (err) {
+      toast(err.message || 'No se pudo copiar el borrador.', { error: true });
+    }
+  });
+
+  document.getElementById('rewrite-discard-btn').addEventListener('click', () => {
+    if (!confirm('¿Descartar este borrador reescrito? El capítulo original seguirá intacto.')) return;
+    closeModal();
+    toast('Borrador descartado. El capítulo original no cambió.');
+  });
+
+  document.getElementById('rewrite-alt-btn').addEventListener('click', async () => {
+    const text = previewEl.value.trim();
+    if (wordCount(text) < 10) return toast('El borrador está demasiado vacío para guardarlo.', { error: true });
+    const fresh = await db.get('chapters', id);
+    if (!fresh) return toast('No se encontró el capítulo original.', { error: true });
+    await saveRewriteAsAlternative(fresh, text);
+    toast('🌿 Reescritura guardada como alternativa. La versión principal quedó intacta.', { ms: 6500 });
+    closeModal();
+    bus.emit('chapters-changed');
+  });
+
+  document.getElementById('rewrite-approve-btn').addEventListener('click', async () => {
+    const text = previewEl.value.trim();
+    if (wordCount(text) < 10) return toast('El borrador está demasiado vacío para reemplazar el capítulo.', { error: true });
+    if (stagedResult?.incomplete) {
+      if (!confirm('⚠️ Este borrador fue marcado como posiblemente incompleto/truncado. ¿Seguro que quieres reemplazar el capítulo original? (El original se guardará en el historial de versiones.)')) return;
+    }
+    const fresh = await db.get('chapters', id);
+    if (!fresh) return toast('No se encontró el capítulo original.', { error: true });
+    fresh.versions = fresh.versions || [];
+    fresh.versions.push({ content: fresh.content, note: stagedInstructions, timestamp: new Date().toISOString() });
+    fresh.content = text;
+    fresh.wordCount = wordCount(text);
+    fresh.updatedAt = new Date().toISOString();
+    await db.put('chapters', fresh);
+    toast('Capítulo actualizado. La versión anterior quedó guardada en el historial.');
+    closeModal();
+    bus.emit('chapters-changed');
   });
 }
 

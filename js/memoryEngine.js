@@ -4,6 +4,7 @@ import { assembleSystemPrompt } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
 import { isLikelyInvalidProse } from './providers/base.js';
 import { filterActiveMemories } from './timeline.js';
+import { wordCount } from './utils.js';
 
 const MEMORY_FIELDS = [
   ['EVENTS', 'events'],
@@ -14,6 +15,15 @@ const MEMORY_FIELDS = [
   ['CURRENT_LOCATION_TIME', 'currentLocationTime'],
   ['OPEN_THREADS', 'openThreads'],
 ];
+
+const SHORTEN_REQUEST_RX = /\b(acort\w*|resum\w*|recort\w*|condens\w*|reduc\w*|breve|shorter|shorten\w*|trim\w*|condens\w*|cut\b|brief)\b/i;
+
+export function computeRewriteMaxOutputTokens(originalText, model = '') {
+  const originalWords = wordCount(originalText);
+  const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(String(model || ''));
+  const proseBudget = Math.max(4000, Math.round(originalWords * 3.8) + 2000);
+  return Math.min(120000, proseBudget + (reasoningModel ? 3200 : 0));
+}
 
 function parseMemoryResponse(text) {
   try {
@@ -75,7 +85,7 @@ export async function generateContinuityMemory(chapter) {
   return { ok: true, entry: saved };
 }
 
-export async function rewriteChapter(chapter, rewriteInstructions) {
+export async function rewriteChapter(chapter, rewriteInstructions, { signal } = {}) {
   const settings = (await db.get('settings', 'main')) || {};
   const provider = getProvider(settings);
   const [lockedFacts, characters, memoryEntries, canonNotes, documents, allChunks, chapters] = await Promise.all([
@@ -84,14 +94,48 @@ export async function rewriteChapter(chapter, rewriteInstructions) {
   const activeMemoryEntries = filterActiveMemories(memoryEntries, chapters);
   const queryText = rewriteInstructions + ' ' + chapter.title;
   const retrievedChunks = getRelevantChunks(documents.filter((d) => d.type !== 'STYLE_ONLY'), allChunks, queryText, { context: 'rewrite' });
+  const originalWords = wordCount(chapter.content);
+  const maxOutputTokens = computeRewriteMaxOutputTokens(chapter.content, provider.config?.model || '');
   const systemPrompt = assembleSystemPrompt({
     lockedFacts,
     chapterInstructions: `Vas a REESCRIBIR un capítulo existente según instrucciones del autor. Instrucciones de reescritura: ${rewriteInstructions}`,
     characters, memoryEntries: activeMemoryEntries, canonNotes, recentChapterExcerpt: '', retrievedChunks,
-    extraGuidance: 'Devuelve el capítulo reescrito completo, en prosa, sin comentarios meta ni explicaciones fuera del propio texto narrativo.',
+    extraGuidance: `Devuelve el capítulo reescrito COMPLETO (~${Math.max(originalWords, 300)} palabras), en prosa, sin omitir escenas no modificadas ni añadir comentarios meta o explicaciones fuera del propio texto narrativo.`,
   });
-  const userPrompt = `CAPÍTULO ORIGINAL:\n\n${chapter.content}\n\n---\n\nReescribe este capítulo aplicando las instrucciones indicadas, conservando lo que no se pidió cambiar.`;
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: 4000, temperature: 1.0 });
-  if (!result.ok || isLikelyInvalidProse(result.text)) return { ok: false, error: result.errorMessage || 'La reescritura no devolvió prosa válida; no se guardó ningún cambio.' };
-  return { ok: true, text: result.text.trim() };
+  const userPrompt = `CAPÍTULO ORIGINAL (${originalWords} palabras):\n\n${chapter.content}\n\n---\n\nReescribe este capítulo completo aplicando las instrucciones indicadas, conservando intactas las escenas que no se pidió cambiar.`;
+  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens, temperature: 1.0, signal });
+  if (!result.ok) {
+    return {
+      ok: false,
+      errorType: result.errorType || 'http',
+      error: result.errorMessage || 'La reescritura falló; no se guardó ningún cambio.',
+    };
+  }
+  const rewritten = String(result.text || '').trim();
+  if (isLikelyInvalidProse(rewritten)) {
+    return { ok: false, error: 'La reescritura no devolvió prosa válida; no se guardó ningún cambio.' };
+  }
+  const rewrittenWords = wordCount(rewritten);
+  const providerTruncated = result.truncated === true || ['length', 'MAX_TOKENS', 'max_output_tokens'].includes(String(result.finishReason || ''));
+  const suspiciouslyShort = originalWords >= 600 &&
+    rewrittenWords < Math.round(originalWords * 0.45) &&
+    !SHORTEN_REQUEST_RX.test(String(rewriteInstructions || ''));
+  const warnings = [];
+  if (providerTruncated) {
+    warnings.push('El proveedor indicó que la respuesta alcanzó el límite de salida y quedó incompleta.');
+  }
+  if (suspiciouslyShort) {
+    warnings.push(`El borrador reescrito (${rewrittenWords} palabras) es mucho más corto que el original (${originalWords} palabras) y podría faltar parte del capítulo.`);
+  }
+  return {
+    ok: true,
+    text: rewritten,
+    originalWords,
+    rewrittenWords,
+    truncated: providerTruncated,
+    suspiciouslyShort,
+    incomplete: providerTruncated || suspiciouslyShort,
+    finishReason: result.finishReason || null,
+    warnings,
+  };
 }
