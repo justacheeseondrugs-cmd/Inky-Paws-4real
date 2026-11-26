@@ -1,12 +1,9 @@
 import { db } from './db.js';
-import { getProvider, getModelOutputLimit } from './providers/index.js';
-import { assembleSystemPrompt } from './canonGuard.js';
-import { getRelevantChunks } from './retrieval.js';
+import { getProviderForRole, getModelOutputLimit } from './providers/index.js';
 import { isLikelyInvalidProse } from './providers/base.js';
-import { chaptersBefore, memoriesForChapters } from './timeline.js';
-import { selectSmartMemories, canonQueryBoost } from './smartContext.js';
-import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
 import { wordCount, contentFingerprint } from './utils.js';
+import { assembleOperationContext } from './contextEngine.js';
+import { getWalletConfig, checkGenerationBudget, recordUsageEvent } from './inkyWallet.js';
 
 const MEMORY_FIELDS = [
   ['EVENTS', 'events'],
@@ -270,30 +267,68 @@ export async function saveContinuityMemoryEntry(chapter, fields, { projectId = '
   return saved;
 }
 
-export async function generateContinuityMemory(chapter, { signal, stageOnly = false } = {}) {
+export async function generateContinuityMemory(chapter, { signal, stageOnly = false, provider: customProvider = null } = {}) {
   const projectId = chapter?.projectId || db.getActiveProjectId();
   const scope = { projectId };
-  const settings = (await db.get('settings', 'main')) || {};
-  const provider = getProvider(settings);
-  const [lockedFacts, characters, canonNotes] = await Promise.all([
-    db.getAll('lockedFacts', scope), db.getAll('characters', scope), db.getAll('canonNotes', scope),
+  const [settings, walletConfig] = await Promise.all([
+    db.get('settings', 'main'),
+    getWalletConfig(),
   ]);
-  // La memoria DEBE resumir el manuscrito real, no historias de referencia.
-  // No enviar documentos STYLE_ONLY ni otros textos al extractor: así no se
-  // introducen personajes o sucesos ajenos en una continuidad aprobada.
-  const retrievedChunks = [];
-  const systemPrompt = assembleSystemPrompt({
-    lockedFacts,
-    chapterInstructions: 'Analiza el capítulo completo proporcionado por el usuario y extrae, con precisión y sin inventar nada que no esté implícito en el texto, un resumen de continuidad estructurado.',
-    characters, memoryEntries: [], canonNotes, recentChapterExcerpt: '', retrievedChunks,
-    extraGuidance: `Responde EXCLUSIVAMENTE con un objeto JSON válido (sin markdown, sin texto fuera del JSON) con estas claves exactas: EVENTS, RELATIONSHIP_CHANGES, NEW_FACTS, WHO_KNOWS_WHAT, PHYSICAL_STATE, CURRENT_LOCATION_TIME, OPEN_THREADS. Cada valor debe ser breve pero concreto. Prioriza nombres, relaciones, secretos revelados, quién sabe o NO sabe algo, apodos, promesas, bromas recurrentes, preguntas aún abiertas y hechos que un capítulo futuro podría contradecir. No sustituyas hechos por interpretaciones temáticas. Si una categoría no aplica, usa un string vacío.`,
+  const provider = customProvider || getProviderForRole(settings, walletConfig, 'auxiliary');
+  const bundle = await assembleOperationContext({
+    projectId,
+    operation: 'continuity_extraction',
+    role: 'auxiliary',
+    targetChapterId: chapter?.id || null,
+    targetChapterOrder: chapter?.order ?? null,
+    chapterTitle: chapter?.title || '',
+    chapterText: chapter?.content || '',
+    documentIds: [], // La memoria resume el manuscrito real, nunca historias de referencia
+    providerId: provider.name,
+    modelId: provider.config?.model || walletConfig.auxiliaryModel,
+    walletConfig,
   });
-  const userPrompt = `CAPÍTULO A ANALIZAR ("${chapter.title}"):\n\n${chapter.content}`;
-  // En modelos de razonamiento, max_completion_tokens incluye también los
-  // tokens de razonamiento; 900 puede agotarse antes de devolver el JSON.
+
+  const budget = checkGenerationBudget({
+    estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
+    spentSoFarUsd: 0,
+    maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+  });
+  if (!budget.allowed) {
+    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+  }
+
   const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
   const modelLimit = getModelOutputLimit(provider.name, provider.config?.model || '');
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: Math.min(modelLimit, reasoningModel ? 4800 : 1400), temperature: 0.3, signal });
+  const maxOutputTokens = Math.min(
+    modelLimit,
+    walletConfig.maxOutputTokensPerRequest || modelLimit,
+    reasoningModel ? 4800 : 1800
+  );
+
+  const result = await provider.generate({
+    systemPrompt: bundle.modelBound.systemPrompt,
+    userPrompt: bundle.modelBound.userPrompt,
+    maxOutputTokens,
+    temperature: 0.3,
+    reasoningEffort: bundle.modelBound.reasoningEffort || '',
+    signal,
+  });
+
+  await recordUsageEvent({
+    projectId,
+    operation: 'continuity_extraction',
+    provider: provider.name,
+    model: provider.config?.model || bundle.modelBound.modelId,
+    role: 'auxiliary',
+    status: result.ok ? 'ok' : (result.errorType || 'error'),
+    errorType: result.errorType || null,
+    estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
+    estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    providerUsage: result.usage || null,
+    walletConfig,
+  });
+
   if (!result.ok) return { ok: false, error: result.errorMessage || 'No se pudo generar la memoria de continuidad.' };
   const fields = parseMemoryResponse(result.text);
   if (!Object.values(fields).some((value) => String(value || '').trim())) {
@@ -319,36 +354,13 @@ export async function generateContinuityMemory(chapter, { signal, stageOnly = fa
         latestChapterRevision: revision,
       },
       fields,
+      rawText: result.text,
+      usage: result.usage || null,
+      snapshotHash: bundle.snapshotHash,
     };
   }
-  // Rehacer una memoria sustituye la anterior del MISMO capítulo, sin duplicarla.
   const saved = await saveContinuityMemoryEntry(chapter, fields, { projectId });
-  return { ok: true, entry: saved };
-}
-
-async function buildRewriteContext(chapter, rewriteInstructions, scope) {
-  const [lockedFacts, characters, memoryEntries, canonNotes, documents, allChunks, chapters] = await Promise.all([
-    db.getAll('lockedFacts', scope), db.getAll('characters', scope), db.getAll('memoryEntries', scope),
-    db.getAll('canonNotes', scope), db.getAll('documents', scope), db.getAll('docChunks', scope),
-    db.getAll('chapters', scope),
-  ]);
-  const priorChapters = chaptersBefore(chapters, chapter.id);
-  const priorMemories = memoriesForChapters(memoryEntries, priorChapters);
-  const queryBase = [rewriteInstructions, chapter.title, String(chapter.content || '').slice(0, 3500)].filter(Boolean).join(' ');
-  const selectedMemories = selectSmartMemories(priorMemories, queryBase).selected;
-  const continuityQuery = [
-    queryBase,
-    canonQueryBoost(canonNotes, queryBase),
-    selectedMemories.slice(-2).map((m) => [m.events, m.openThreads, m.whoKnowsWhat].filter(Boolean).join(' ')).join(' '),
-  ].filter(Boolean).join(' ');
-  const storyExcerpts = getRelevantStoryExcerpts(priorChapters, continuityQuery, {
-    excludeChapterId: chapter.id,
-    maxExcerpts: 4,
-    maxPerChapter: 2,
-  });
-  const previousEnding = getPreviousChapterEnding(priorChapters, chapter.id, 3200);
-  const retrievedChunks = getRelevantChunks(documents.filter((d) => d.type !== 'STYLE_ONLY'), allChunks, continuityQuery, { context: 'rewrite' });
-  return { lockedFacts, characters, selectedMemories, canonNotes, previousEnding, storyExcerpts, retrievedChunks };
+  return { ok: true, entry: saved, usage: result.usage || null, snapshotHash: bundle.snapshotHash };
 }
 
 function evaluateRewriteResult(rewritten, originalWords, rewriteInstructions, providerResult, plan) {
@@ -373,29 +385,73 @@ function evaluateRewriteResult(rewritten, originalWords, rewriteInstructions, pr
   };
 }
 
-export async function rewriteChapter(chapter, rewriteInstructions, { signal } = {}) {
+export async function rewriteChapter(chapter, rewriteInstructions, { signal, provider: customProvider = null, targetSceneId = null } = {}) {
   const projectId = chapter?.projectId || db.getActiveProjectId();
-  const scope = { projectId };
-  const settings = (await db.get('settings', 'main')) || {};
-  const provider = getProvider(settings);
-  const ctx = await buildRewriteContext(chapter, rewriteInstructions, scope);
+  const [settings, walletConfig] = await Promise.all([
+    db.get('settings', 'main'),
+    getWalletConfig(),
+  ]);
+  const provider = customProvider || getProviderForRole(settings, walletConfig, 'primary');
   const originalWords = wordCount(chapter.content);
   const baseContentHash = contentFingerprint(chapter.content);
   const baseUpdatedAt = String(chapter.updatedAt || '');
   const plan = getRewriteOutputPlan(chapter.content, provider.config?.model || '', provider.name);
-  const systemPrompt = assembleSystemPrompt({
-    lockedFacts: ctx.lockedFacts,
-    chapterInstructions: `Vas a REESCRIBIR un capítulo existente según instrucciones del autor. Instrucciones de reescritura: ${rewriteInstructions}`,
-    characters: ctx.characters,
-    memoryEntries: ctx.selectedMemories,
-    canonNotes: ctx.canonNotes,
-    recentChapterExcerpt: ctx.previousEnding.text,
-    storyExcerpts: ctx.storyExcerpts,
-    retrievedChunks: ctx.retrievedChunks,
-    extraGuidance: `Devuelve el capítulo reescrito COMPLETO (~${Math.max(originalWords, 300)} palabras), en prosa, sin omitir escenas no modificadas ni añadir comentarios meta o explicaciones fuera del propio texto narrativo.`,
+
+  const bundle = await assembleOperationContext({
+    projectId,
+    operation: 'chapter_rewrite',
+    role: 'primary',
+    targetChapterId: chapter?.id || null,
+    targetChapterOrder: chapter?.order ?? null,
+    targetSceneId,
+    chapterTitle: chapter?.title || '',
+    originalChapterText: chapter?.content || '',
+    rewriteInstructions,
+    providerId: provider.name,
+    modelId: provider.config?.model || walletConfig.primaryModel,
+    walletConfig,
   });
-  const userPrompt = `CAPÍTULO ORIGINAL (${originalWords} palabras):\n\n${chapter.content}\n\n---\n\nReescribe este capítulo completo aplicando las instrucciones indicadas, conservando intactas las escenas que no se pidió cambiar.`;
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: plan.maxOutputTokens, temperature: 1.0, signal });
+
+  if (!bundle.canGenerate) {
+    const msg = (bundle.inspectorOnly.criticalBlockers || []).map((b) => b.message).join(' | ');
+    return { ok: false, errorType: 'critical_contradiction', error: `Reescritura bloqueada por contradicciones críticas de universo: ${msg}`, criticalBlockers: bundle.inspectorOnly.criticalBlockers };
+  }
+
+  const budget = checkGenerationBudget({
+    estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
+    spentSoFarUsd: 0,
+    maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+  });
+  if (!budget.allowed) {
+    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+  }
+
+  const maxOutputTokens = Math.min(plan.maxOutputTokens, walletConfig.maxOutputTokensPerRequest || plan.maxOutputTokens);
+  const result = await provider.generate({
+    systemPrompt: bundle.modelBound.systemPrompt,
+    stableSystemPrompt: bundle.modelBound.stablePrompt,
+    dynamicSystemPrompt: bundle.modelBound.dynamicPrompt,
+    userPrompt: bundle.modelBound.userPrompt,
+    maxOutputTokens,
+    temperature: 1.0,
+    reasoningEffort: bundle.modelBound.reasoningEffort || '',
+    signal,
+  });
+
+  await recordUsageEvent({
+    projectId,
+    operation: 'chapter_rewrite',
+    provider: provider.name,
+    model: provider.config?.model || bundle.modelBound.modelId,
+    role: 'primary',
+    status: result.ok ? 'ok' : (result.errorType || 'error'),
+    errorType: result.errorType || null,
+    estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
+    estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    providerUsage: result.usage || null,
+    walletConfig,
+  });
+
   if (!result.ok) {
     return {
       ok: false,
@@ -422,46 +478,70 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal } = 
     mayNeedContinuation: plan.mayNeedContinuation,
     baseContentHash,
     baseUpdatedAt,
+    snapshotHash: bundle.snapshotHash,
+    usage: result.usage || null,
   };
 }
 
-export async function continueRewriteDraft(chapter, rewriteInstructions, draftSoFar, { signal } = {}) {
+export async function continueRewriteDraft(chapter, rewriteInstructions, draftSoFar, { signal, provider: customProvider = null } = {}) {
   const projectId = chapter?.projectId || db.getActiveProjectId();
-  const scope = { projectId };
   const existingDraft = String(draftSoFar || '').trim();
   if (wordCount(existingDraft) < 15) {
     return { ok: false, error: 'No hay suficiente borrador previo para continuar la reescritura.' };
   }
-  const settings = (await db.get('settings', 'main')) || {};
-  const provider = getProvider(settings);
-  const ctx = await buildRewriteContext(chapter, rewriteInstructions, scope);
+  const [settings, walletConfig] = await Promise.all([
+    db.get('settings', 'main'),
+    getWalletConfig(),
+  ]);
+  const provider = customProvider || getProviderForRole(settings, walletConfig, 'primary');
   const originalWords = wordCount(chapter.content);
   const remainingWords = Math.max(400, originalWords - wordCount(existingDraft) + 300);
   const plan = getRewriteOutputPlan('w '.repeat(remainingWords), provider.config?.model || '', provider.name);
-  const systemPrompt = assembleSystemPrompt({
-    lockedFacts: ctx.lockedFacts,
-    chapterInstructions: `Vas a CONTINUAR una reescritura incompleta de un capítulo existente. Instrucciones originales de reescritura: ${rewriteInstructions}`,
-    characters: ctx.characters,
-    memoryEntries: ctx.selectedMemories,
-    canonNotes: ctx.canonNotes,
-    recentChapterExcerpt: ctx.previousEnding.text,
-    storyExcerpts: ctx.storyExcerpts,
-    retrievedChunks: ctx.retrievedChunks,
-    extraGuidance: 'Devuelve ÚNICAMENTE la continuación que falta desde la última palabra/frase de <REWRITE_SO_FAR> hasta completar el final del capítulo original. No repitas párrafos ya reescritos, ni añadas encabezados o comentarios.',
-  });
-  const userPrompt = [
-    `CAPÍTULO ORIGINAL COMPLETO (${originalWords} palabras):`,
-    '<ORIGINAL_CHAPTER>',
-    chapter.content,
-    '</ORIGINAL_CHAPTER>',
-    'PARTE YA REESCRITA (NO repetir; continuar exactamente desde el final):',
-    '<REWRITE_SO_FAR>',
-    existingDraft.slice(-55000),
-    '</REWRITE_SO_FAR>',
-    'Continúa la reescritura exactamente donde se cortó y completa el resto del capítulo.',
-  ].join('\n\n');
 
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: plan.maxOutputTokens, temperature: 1.0, signal });
+  const bundle = await assembleOperationContext({
+    projectId,
+    operation: 'chapter_rewrite',
+    role: 'primary',
+    targetChapterId: chapter?.id || null,
+    targetChapterOrder: chapter?.order ?? null,
+    chapterTitle: chapter?.title || '',
+    originalChapterText: chapter?.content || '',
+    rewriteDraftSoFar: existingDraft,
+    rewriteInstructions,
+    providerId: provider.name,
+    modelId: provider.config?.model || walletConfig.primaryModel,
+    walletConfig,
+  });
+
+  if (!bundle.canGenerate) {
+    const msg = (bundle.inspectorOnly.criticalBlockers || []).map((b) => b.message).join(' | ');
+    return { ok: false, errorType: 'critical_contradiction', error: `Continuación de reescritura bloqueada: ${msg}` };
+  }
+
+  const maxOutputTokens = Math.min(plan.maxOutputTokens, walletConfig.maxOutputTokensPerRequest || plan.maxOutputTokens);
+  const result = await provider.generate({
+    systemPrompt: bundle.modelBound.systemPrompt,
+    userPrompt: bundle.modelBound.userPrompt,
+    maxOutputTokens,
+    temperature: 1.0,
+    reasoningEffort: bundle.modelBound.reasoningEffort || '',
+    signal,
+  });
+
+  await recordUsageEvent({
+    projectId,
+    operation: 'chapter_rewrite',
+    provider: provider.name,
+    model: provider.config?.model || bundle.modelBound.modelId,
+    role: 'primary',
+    status: result.ok ? 'ok' : (result.errorType || 'error'),
+    errorType: result.errorType || null,
+    estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
+    estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    providerUsage: result.usage || null,
+    walletConfig,
+  });
+
   if (!result.ok) {
     return {
       ok: false,
@@ -488,5 +568,179 @@ export async function continueRewriteDraft(chapter, rewriteInstructions, draftSo
     warnings: check.warnings,
     modelMaxOutput: plan.modelMaxOutput,
     mayNeedContinuation: plan.mayNeedContinuation,
+    snapshotHash: bundle.snapshotHash,
+    usage: result.usage || null,
   };
+}
+
+/**
+ * Co-escritura: reescribe ÚNICAMENTE el pasaje seleccionado `[startOffset, endOffset]`
+ * preservando el texto anterior y posterior exactamente intactos, con control de revisión
+ * (`baseContentHash`) contra ediciones concurrentes.
+ */
+export async function rewriteSelectedPassage(chapter, {
+  startOffset = 0,
+  endOffset = 0,
+  rewriteInstructions = '',
+  targetSceneId = null,
+  signal,
+  provider: customProvider = null,
+} = {}) {
+  const fullText = String(chapter?.content || '');
+  const s = Math.max(0, Math.min(fullText.length, Math.floor(Number(startOffset) || 0)));
+  const e = Math.max(s, Math.min(fullText.length, Math.floor(Number(endOffset) || 0)));
+  const selectedPassage = fullText.slice(s, e);
+  if (!selectedPassage.trim()) {
+    return { ok: false, error: 'Selecciona primero un pasaje con texto para reescribirlo.' };
+  }
+
+  const surroundingBefore = fullText.slice(0, s);
+  const surroundingAfter = fullText.slice(e);
+  const baseContentHash = contentFingerprint(fullText);
+  const projectId = chapter?.projectId || db.getActiveProjectId();
+  const [settings, walletConfig] = await Promise.all([
+    db.get('settings', 'main'),
+    getWalletConfig(),
+  ]);
+  const provider = customProvider || getProviderForRole(settings, walletConfig, 'primary');
+
+  const bundle = await assembleOperationContext({
+    projectId,
+    operation: 'passage_rewrite',
+    role: 'primary',
+    targetChapterId: chapter?.id || null,
+    targetChapterOrder: chapter?.order ?? null,
+    targetSceneId,
+    chapterTitle: chapter?.title || '',
+    selectedPassage,
+    surroundingBefore,
+    surroundingAfter,
+    rewriteInstructions,
+    providerId: provider.name,
+    modelId: provider.config?.model || walletConfig.primaryModel,
+    walletConfig,
+  });
+
+  if (!bundle.canGenerate) {
+    const msg = (bundle.inspectorOnly.criticalBlockers || []).map((b) => b.message).join(' | ');
+    return { ok: false, errorType: 'critical_contradiction', error: `Reescritura de pasaje bloqueada por contradicciones críticas: ${msg}` };
+  }
+
+  const budget = checkGenerationBudget({
+    estimatedAdditionalUsd: bundle.modelBound.costEstimate?.costUsd,
+    spentSoFarUsd: 0,
+    maxGenerationSpendUsd: walletConfig.maxGenerationSpendUsd,
+  });
+  if (!budget.allowed) {
+    return { ok: false, errorType: 'budget_blocked', error: budget.message };
+  }
+
+  const result = await provider.generate({
+    systemPrompt: bundle.modelBound.systemPrompt,
+    userPrompt: bundle.modelBound.userPrompt,
+    maxOutputTokens: bundle.modelBound.maxOutputTokens,
+    temperature: 0.9,
+    reasoningEffort: bundle.modelBound.reasoningEffort || '',
+    signal,
+  });
+
+  await recordUsageEvent({
+    projectId,
+    operation: 'passage_rewrite',
+    provider: provider.name,
+    model: provider.config?.model || bundle.modelBound.modelId,
+    role: 'primary',
+    status: result.ok ? 'ok' : (result.errorType || 'error'),
+    errorType: result.errorType || null,
+    estimatedInputTokens: bundle.modelBound.estimatedInputTokens,
+    estimatedOutputTokens: bundle.modelBound.estimatedOutputTokens,
+    providerUsage: result.usage || null,
+    walletConfig,
+  });
+
+  if (!result.ok) {
+    return { ok: false, errorType: result.errorType || 'http', error: result.errorMessage || 'No se pudo reescribir el pasaje.' };
+  }
+  const replacement = String(result.text || '').trim();
+  if (!replacement) {
+    return { ok: false, error: 'El modelo devolvió un reemplazo vacío; el pasaje original no cambió.' };
+  }
+
+  const mergedContent = surroundingBefore + replacement + surroundingAfter;
+  return {
+    ok: true,
+    originalPassage: selectedPassage,
+    replacementPassage: replacement,
+    surroundingBefore,
+    surroundingAfter,
+    mergedContent,
+    startOffset: s,
+    endOffset: e,
+    baseContentHash,
+    snapshotHash: bundle.snapshotHash,
+    usage: result.usage || null,
+  };
+}
+
+/**
+ * Aplica de forma segura un reemplazo de pasaje verificando que el capítulo
+ * no cambió de forma concurrente desde `baseContentHash`.
+ */
+export async function applySafePassageReplacement(chapterId, {
+  mergedContent,
+  baseContentHash,
+  projectId = '',
+  saveAsAlternativeOnConflict = false,
+} = {}) {
+  const pid = projectId || db.getActiveProjectId();
+  const scope = { projectId: pid };
+  const current = await db.get('chapters', chapterId, scope);
+  if (!current) throw new Error('No se encontró el capítulo.');
+  const currentHash = contentFingerprint(current.content || '');
+  if (baseContentHash && currentHash !== baseContentHash) {
+    if (!saveAsAlternativeOnConflict) {
+      return {
+        ok: false,
+        conflict: true,
+        currentHash,
+        baseContentHash,
+        message: 'El capítulo cambió mientras se reescribía el pasaje. No se sobrescribió el texto para proteger tus ediciones; guarda como alternativa o vuelve a aplicar.',
+      };
+    }
+    const alt = {
+      ...structuredClone(current),
+      id: db.uid(),
+      title: `${current.title} (alternativa de co-escritura)`,
+      content: mergedContent,
+      wordCount: wordCount(mergedContent),
+      branchRole: 'alternative',
+      branchGroupId: current.branchGroupId || current.id,
+      variantLabel: 'Alternativa · conflicto resuelto',
+      updatedAt: new Date().toISOString(),
+    };
+    await db.put('chapters', alt, scope);
+    return { ok: true, savedAsAlternative: true, chapter: alt };
+  }
+
+  const versions = [...(current.versions || []), {
+    content: current.content,
+    wordCount: current.wordCount || wordCount(current.content || ''),
+    savedAt: new Date().toISOString(),
+    note: 'Antes de reescritura de pasaje (co-escritura)',
+  }].slice(-12);
+
+  const updated = {
+    ...current,
+    content: mergedContent,
+    wordCount: wordCount(mergedContent),
+    versions,
+    updatedAt: new Date().toISOString(),
+  };
+  await db.put('chapters', updated, scope);
+  await markChapterMemoriesStale(chapterId, {
+    projectId: pid,
+    reason: 'passage_rewritten',
+    chapterRevision: contentFingerprint(updated.content),
+  });
+  return { ok: true, conflict: false, chapter: updated };
 }

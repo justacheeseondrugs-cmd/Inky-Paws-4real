@@ -1,13 +1,11 @@
+// modelTestPack.js — Constructor de vista previa exacta del Context Inspector y
+// exportación portátil de prueba (0 tokens), delegando 100% en el Motor de Contexto
+// Unificado (`js/contextEngine.js`) para garantizar que el preview y la solicitud
+// enviada al proveedor utilicen exactamente la misma instantánea (`snapshotHash`).
+
 import { db } from './db.js';
-import { assembleSystemPromptParts } from './canonGuard.js';
-import { getRelevantChunks } from './retrieval.js';
-import { chaptersBefore, memoriesForChapters } from './timeline.js';
-import { REACTION_ROOM_GUIDANCE } from './reactionGuidance.js';
-import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
-import { getAuthorBrain, buildAuthorGuidance } from './authorBrain.js';
-import { buildSmartContextQuery, selectSmartMemories, canonQueryBoost, rankCanonNotes } from './smartContext.js';
+import { assembleOperationContext } from './contextEngine.js';
 import { analyzeContextGuard } from './contextGuard.js';
-import { filterCharactersByAllowedCast } from './characterMatch.js';
 import { combineCast, formatCast } from './storyCast.js';
 
 function safeName(value) {
@@ -18,127 +16,46 @@ function safeName(value) {
     .slice(0, 80) || 'chapter';
 }
 
-function firstRequestGuidance({
-  chapterTitle,
-  targetWords,
-  requiredEnding,
-  scenePlan,
-  allowedCast,
-  roomCast,
-  onscreenCast,
-  forbiddenCast,
-  reactionMode,
-  generationMode,
-}) {
-  const fullChapterMode = generationMode === 'full_chapter';
-  const narrativePosition = fullChapterMode
-    ? 'FULL CHAPTER: write the complete chapter in this single response. Pace the opening, middle, escalation and ending as ONE continuous arc. Do not stop after an intermediate reveal or treat each listed beat as a separate mini-scene. Carry unfinished questions, jokes, tension and emotional consequences forward across the whole chapter.'
-    : 'FIRST BLOCK: establish the initial scene; do not rush to the climax.';
-
-  return [
-    'This request is ONE continuous chapter, NOT a fresh chapter per API call. Return ONLY new prose, never a repeat or rephrasing.',
-    reactionMode
-      ? REACTION_ROOM_GUIDANCE
-      : 'Write only the narrative requested by the author.',
-    'References contain background, not a new scene plan. Do not introduce unrelated characters, places or plotlines just because a reference mentions them. The author instructions control the current episode.',
-    'Word count is a flexible target, not a reason to end before the author-requested final event. Pace the setup to leave time for the entire climax and cliffhanger.',
-    reactionMode ? 'REACTION ROOM CAST — physically present viewers: ' + (roomCast || '(not specified)') + '. Keep these people in the room unless an approved event changes the roster.' : '',
-    'ONSCREEN CAST FOR THIS CHAPTER: ' + (onscreenCast || '(none explicitly listed)') + '. These people may appear in the future footage when the plan requires them.',
-    'ALLOWED NAMED CAST ACROSS BOTH SETTINGS: ' + (allowedCast || '(none)') + '. Do not introduce ANY other named person from a reference or another AU. Unnamed extras may appear only when the chapter instruction requires them. A name being allowed does NOT move that person between the room and the footage.',
-    forbiddenCast ? 'EXPLICITLY FORBIDDEN PEOPLE/CHARACTERS: ' + forbiddenCast + '. These names must never appear in the prose.' : '',
-    Array.isArray(scenePlan) && scenePlan.length
-      ? (fullChapterMode
-        ? 'ORDERED STORY PLAN FOR THE WHOLE CHAPTER (each beat happens once, flowing naturally into the next):\n' + scenePlan.map((beat, i) => (i + 1) + '. ' + beat).join('\n') + '\nTreat this as one arc, not a checklist. Earlier beats may keep affecting dialogue and tension long after the story has moved forward.'
-        : 'ORDERED STORY PLAN (each beat happens once):\n' + scenePlan.map((beat, i) => (i + 1) + '. ' + beat).join('\n') + '\nFOCUS FOR THIS BLOCK: scene 1. Progress from here toward the later scenes, never jump backward.')
-      : '',
-    'CONTINUE: Advance naturally. Do not recap or restart.',
-    narrativePosition,
-    requiredEnding ? 'MANDATORY FINAL SCENE / LAST IMAGE: ' + requiredEnding + ' Complete the entire event before ending; do not stop at the first distant hint of it.' : '',
-    fullChapterMode
-      ? 'Write the COMPLETE chapter "' + chapterTitle + '" now, targeting approximately ' + targetWords + ' words in this one response. Reach the required ending before you stop. Do not stop at 1,500-2,000 words merely because a major reveal has landed.'
-      : 'Write the FIRST approximately ' + Math.min(targetWords, 1000) + ' words of "' + chapterTitle + '". Do not end the chapter in this block.',
-  ].filter(Boolean).join('\n\n');
-}
-
 export async function buildModelTestPack({
+  projectId = '',
   chapterId = '',
-  chapterTitle,
-  instructions,
-  targetWords,
+  chapterTitle = '',
+  instructions = '',
+  targetWords = 5000,
   requiredEnding = '',
   scenePlan = [],
   allowedCast = '',
   roomCast = '',
   onscreenCast = '',
   forbiddenCast = '',
-  documentIds = [],
+  documentIds = null,
   reactionMode = true,
   generationMode = 'full_chapter',
-}) {
-  const [settings, lockedFacts, allCharacters, allMemoryEntries, canonNotes, allDocuments, allChunks, allChapters] = await Promise.all([
-    db.get('settings', 'main'),
-    db.getAll('lockedFacts'),
-    db.getAll('characters'),
-    db.getAll('memoryEntries'),
-    db.getAll('canonNotes'),
-    db.getAll('documents'),
-    db.getAll('docChunks'),
-    db.getAll('chapters'),
-  ]);
-
+  activeBriefId = null,
+  targetChapterOrder = null,
+  targetSceneId = null,
+  characterVersion = 'room',
+} = {}) {
+  const pid = projectId || db.getActiveProjectId();
+  const scope = { projectId: pid };
   const effectiveAllowedCast = allowedCast || formatCast(combineCast(roomCast, onscreenCast));
-  const characters = filterCharactersByAllowedCast(allCharacters, effectiveAllowedCast);
 
-  const priorChapters = chaptersBefore(allChapters, chapterId);
-  const allActiveMemoryEntries = memoriesForChapters(allMemoryEntries, priorChapters);
-  const smartQuery = buildSmartContextQuery({
-    instructions,
-    allowedCast: effectiveAllowedCast,
-    requiredEnding,
-    scenePlan,
-  });
-  const memorySelection = selectSmartMemories(allActiveMemoryEntries, smartQuery);
-  const memoryEntries = memorySelection.selected;
-  const canonRanking = rankCanonNotes(canonNotes, smartQuery);
+  const operation = generationMode === 'novel_orchestrated'
+    ? 'novel_orchestrated'
+    : (generationMode === 'blocks' ? 'manual_block' : 'full_chapter');
 
-  const mainChapters = priorChapters;
-  const continuityQuery = [
-    smartQuery,
-    canonQueryBoost(canonNotes, smartQuery),
-    memoryEntries.slice(-2).map((m) => [m.events, m.openThreads, m.whoKnowsWhat].filter(Boolean).join(' ')).join(' ')
-  ].filter(Boolean).join(' ');
-  const storyExcerpts = getRelevantStoryExcerpts(mainChapters, continuityQuery, {
-    excludeChapterId: chapterId,
-    maxExcerpts: 5,
-    maxPerChapter: 2,
-  });
-  const previousEnding = getPreviousChapterEnding(mainChapters, chapterId, 4200);
-
-  const documents = allDocuments.filter((d) => Array.isArray(documentIds) ? documentIds.includes(d.id) : true);
-  const queryText = continuityQuery;
-  const safeDocuments = documents.filter((d) => d.type !== 'STYLE_ONLY');
-  const retrievedChunks = getRelevantChunks(safeDocuments, allChunks, queryText, { context: 'chapter_generation' });
-
-  for (const doc of documents.filter((d) => d.type === 'STYLE_ONLY' && d.active !== false)) {
-    retrievedChunks.push({
-      documentId: doc.id,
-      document: doc,
-      text: 'Style notes supplied by author: ' + (doc.useOnlyFor || 'novel-like rhythm and narration') +
-        '. Do not import any plot, character, relationship, dialogue or event from this file.',
-    });
-  }
-
-  const authorBrain = await getAuthorBrain();
-  const authorGuidance = buildAuthorGuidance({
-    brain: authorBrain,
-    characters,
-    scenePlan,
-    requiredEnding,
-    authorBrief: null,
-  });
-  const extraGuidance = [
-    firstRequestGuidance({
+  const [bundle, lockedFacts, canonNotes, allCharacters, allDocuments] = await Promise.all([
+    assembleOperationContext({
+      projectId: pid,
+      operation,
+      targetChapterId: chapterId || null,
+      targetChapterOrder,
+      targetSceneId,
+      characterVersion,
+      activeBriefId,
+      documentIds,
       chapterTitle,
+      instructions,
       targetWords,
       requiredEnding,
       scenePlan,
@@ -147,32 +64,18 @@ export async function buildModelTestPack({
       onscreenCast,
       forbiddenCast,
       reactionMode,
-      generationMode,
     }),
-    authorGuidance,
-  ].filter(Boolean).join('\n\n');
+    db.getAll('lockedFacts', scope),
+    db.getAll('canonNotes', scope),
+    db.getAll('characters', scope),
+    db.getAll('documents', scope),
+  ]);
 
-  const promptParts = assembleSystemPromptParts({
-    lockedFacts,
-    chapterInstructions: instructions,
-    characters,
-    memoryEntries,
-    canonNotes,
-    recentChapterExcerpt: previousEnding.text,
-    storyExcerpts,
-    retrievedChunks,
-    extraGuidance,
-  });
+  const selectedDocuments = Array.isArray(documentIds)
+    ? allDocuments.filter((d) => documentIds.includes(d.id))
+    : allDocuments.filter((d) => d.active !== false);
 
-  const userPrompt = generationMode === 'full_chapter'
-    ? 'BEGIN AND COMPLETE THE CHAPTER. Write the entire cohesive English novel chapter in this single response, from opening through ending hook. Target approximately ' + targetWords + ' words. Do not stop at an intermediate beat, do not ask to continue, and do not output an outline or commentary.'
-    : 'BEGIN CHAPTER. Follow the author scene order and write ONLY the opening block as English novel prose.';
-  const systemPrompt = [promptParts.stablePrompt, promptParts.dynamicPrompt].filter(Boolean).join('\n\n---\n\n');
-
-  const selectedDocNames = documents.map((d) => d.filename).filter(Boolean);
-  const memoryTitles = memoryEntries.slice(-4).map((m) => m.chapterTitle || 'sin título');
-  const sourceModel = settings?.models?.[settings?.provider] || '(modelo no guardado)';
-  const preflight = analyzeContextGuard({
+  const guardPreflight = analyzeContextGuard({
     lockedFacts,
     canonNotes,
     allCharacters,
@@ -181,108 +84,154 @@ export async function buildModelTestPack({
     instructions,
     scenePlan,
     reactionMode,
-    selectedDocuments: documents,
+    selectedDocuments,
   });
 
+  // Unificar bloqueadores críticos del Motor de Contexto Unificado (universeResolver + PtS invariants)
+  // con las alertas estructurales de Context Guard sin duplicar códigos.
+  const mergedIssues = [...(bundle.inspectorOnly.criticalBlockers || [])];
+  const seenCodes = new Set(mergedIssues.map((x) => `${x.code}:${x.message}`));
+  for (const issue of (guardPreflight.issues || [])) {
+    const k = `${issue.code || ''}:${issue.message || ''}`;
+    if (!seenCodes.has(k)) {
+      seenCodes.add(k);
+      mergedIssues.push(issue);
+    }
+  }
+  const criticalCount = mergedIssues.filter((i) => i.level === 'critical').length;
+  const warningCount = mergedIssues.filter((i) => i.level === 'warning').length;
+  const infoCount = mergedIssues.filter((i) => i.level === 'info').length;
+  const preflight = {
+    issues: mergedIssues,
+    criticalCount,
+    warningCount,
+    infoCount,
+    ok: criticalCount === 0 && bundle.canGenerate,
+  };
+
+  const { modelBound, inspectorOnly, snapshot } = bundle;
+  const layers = snapshot?.memory?.modelPayload?.layers || {};
+  const recentMems = layers.B_recent_continuity?.recentMemories || [];
+  const histMems = layers.C_historical_episodic?.historicalMemories || [];
+  const combinedMemories = [...recentMems, ...histMems];
+  const resolvedChars = snapshot?.universe?.resolvedCharacters || [];
+  const factualRefs = inspectorOnly.referencesSummary?.factualChunks || [];
+  const histPassages = inspectorOnly.memorySummary?.historicalPassages || [];
+
   const inspector = {
+    snapshotHash: bundle.snapshotHash,
+    canGenerate: preflight.ok,
+    blockedByCriticalIssues: !preflight.ok,
     chapterTitle,
     targetWords,
     generationMode,
-    sourceProvider: settings?.provider || 'unknown',
-    sourceModel,
+    operation,
+    sourceProvider: modelBound.providerId,
+    sourceModel: modelBound.modelId,
+    reasoningEffort: modelBound.reasoningEffort,
+    modelCapabilityWarning: modelBound.modelCapabilityWarning,
     preflight,
-    characters: characters.map((c) => ({ id:c.id, name:c.name || 'Sin nombre' })),
-    smartContextVersion:'v1',
-    memoryTotal:memorySelection.total,
-    memoryOmitted:memorySelection.omitted,
-    smartQueryTerms:memorySelection.queryTerms,
-    memories: memorySelection.details,
-    lockedFacts: lockedFacts.map((f) => String(f.text || '').trim()).filter(Boolean),
-    revealedCanonNotes: canonNotes.filter((n)=>n?.visibility === 'revealed').map((n)=>String(n.text || '').trim()).filter(Boolean),
-    privateCanonNotes: canonNotes.filter((n)=>n?.visibility !== 'revealed').map((n)=>String(n.text || '').trim()).filter(Boolean),
-    canonNotes: canonNotes.map((n) => String(n.text || '').trim()).filter(Boolean),
-    canonRanking,
-    roomCast: roomCast || '',
+    narrativeTarget: inspectorOnly.narrativeTarget,
+    universeSummary: inspectorOnly.universeSummary,
+    writingDnaSummary: inspectorOnly.writingDnaSummary,
+    epistemicSummary: inspectorOnly.epistemicSummary,
+    referencesSummary: inspectorOnly.referencesSummary,
+    memorySummary: inspectorOnly.memorySummary,
+    approvedChapterBrief: inspectorOnly.approvedChapterBrief,
+    characters: resolvedChars.map((c) => ({ id: c.id || c.logicalId, name: c.name || c.logicalId || 'Sin nombre' })),
+    smartContextVersion: 'unified-context-engine-m5',
+    memoryTotal: combinedMemories.length,
+    memoryOmitted: 0,
+    memories: combinedMemories.map((m) => ({
+      chapterTitle: m.chapterTitle || `Cap. ${m.chapterOrder ?? ''}`,
+      reason: 'memoria jerárquica',
+      score: 1,
+    })),
+    lockedFacts: (layers.F_permanent_canon?.lockedFacts || []).map((f) => f.text),
+    revealedCanonNotes: (layers.F_permanent_canon?.revealedCanon || []).map((n) => n.text),
+    privateCanonNotes: (layers.F_permanent_canon?.privateAuthorCanon || []).map((n) => n.text),
+    canonNotes: [
+      ...(layers.F_permanent_canon?.revealedCanon || []).map((n) => n.text),
+      ...(layers.F_permanent_canon?.privateAuthorCanon || []).map((n) => n.text),
+    ],
+    canonRanking: [],
+    roomCast: roomCast || (inspectorOnly.universeSummary?.allowedRoomCast || []).join(', '),
     onscreenCast: onscreenCast || '',
     allowedCast: effectiveAllowedCast,
-    documents: documents.map((d) => ({
-      id:d.id,
-      filename:d.filename || 'Documento',
-      type:d.type || 'REFERENCE',
-      useOnlyFor:d.useOnlyFor || '',
+    documents: selectedDocuments.map((d) => ({
+      id: d.id,
+      filename: d.filename || 'Documento',
+      type: d.role || d.type || 'WORLD_BUILDING',
+      timelineId: d.timelineId || 'shared_active',
+      useOnlyFor: d.useOnlyFor || '',
     })),
-    retrievedChunks: retrievedChunks.map((chunk) => ({
-      documentId:chunk.documentId,
-      filename:chunk.document?.filename || 'Documento',
-      type:chunk.document?.type || 'REFERENCE',
-      text:String(chunk.text || '').trim(),
-      score:Number.isFinite(Number(chunk.score)) ? Number(chunk.score) : null,
+    retrievedChunks: factualRefs.map((chunk) => ({
+      documentId: chunk.documentId,
+      filename: chunk.filename || 'Documento',
+      type: chunk.role || 'WORLD_BUILDING',
+      text: String(chunk.text || '').trim(),
+      score: Number.isFinite(Number(chunk.score)) ? Number(chunk.score) : null,
     })),
-    storyExcerpts: storyExcerpts.map((item) => ({
-      chapterId:item.chapterId,
-      chapterTitle:item.chapterTitle || 'capítulo anterior',
-      text:String(item.text || '').trim(),
-      score:Number.isFinite(Number(item.score)) ? Number(item.score) : null,
+    storyExcerpts: histPassages.map((item) => ({
+      chapterId: item.chapterId,
+      chapterTitle: item.chapterTitle || 'capítulo anterior',
+      text: String(item.excerpt || '').trim(),
+      score: Number.isFinite(Number(item.bm25Score)) ? Number(item.bm25Score) : null,
     })),
-    previousEnding:String(previousEnding.text || '').trim(),
-    systemPrompt,
-    userPrompt,
-    approxInputTokens:Math.max(1,Math.ceil((systemPrompt.length + userPrompt.length) / 4)),
+    previousEnding: String(layers.A_immediate_scene?.previousEndingExcerpt || '').trim(),
+    systemPrompt: modelBound.systemPrompt,
+    stablePrompt: modelBound.stablePrompt,
+    dynamicPrompt: modelBound.dynamicPrompt,
+    userPrompt: modelBound.userPrompt,
+    approxInputTokens: modelBound.estimatedInputTokens,
+    approxOutputTokens: modelBound.estimatedOutputTokens,
+    maxOutputTokens: modelBound.maxOutputTokens,
+    costEstimate: modelBound.costEstimate,
+    diagnosticsExcludedFromModelRequest: true,
   };
 
   const markdown = [
-    '# Inky Paws — AI Model Test Pack',
+    '# Inky Paws — Unified Context Engine Pack (Milestone 5)',
     '',
-    '> Portable lore/context snapshot generated locally by Inky Paws. No API keys are included.',
-    '> For a fair comparison, paste this entire file into the other model and ask it to follow SYSTEM CONTEXT first, then USER REQUEST.',
+    '> Local exact preview of the model-bound request. Zero API keys or Inspector-only diagnostics are included in the model payload.',
     '',
-    '## Test metadata',
+    '## Context Metadata',
     '',
-    '- Chapter: ' + chapterTitle,
-    '- Target: ~' + targetWords + ' words',
-    '- Paws source provider: ' + (settings?.provider || 'unknown'),
-    '- Paws source model: ' + sourceModel,
-    '- Writing mode: ' + generationMode,
-    '- Reaction-room cast: ' + (roomCast || '(none)'),
-    '- Onscreen cast: ' + (onscreenCast || '(none explicitly listed)'),
-    '- Selected character sheets: ' + (characters.map((c) => c.name).join(', ') || '(none)'),
-    '- Smart Context v1: ' + memoryEntries.length + ' of ' + memorySelection.total + ' continuity memories selected (' + memorySelection.omitted + ' omitted as lower-priority context)',
-    '- Continuity memories included by Paws: ' + (memoryTitles.join(' → ') || '(none)'),
-    '- Selected documents: ' + (selectedDocNames.join(', ') || '(none)'),
-    '- Direct prior-chapter excerpts recalled: ' + storyExcerpts.length,
-    '- Inky author brain: Writing DNA + learned feedback + relationship chemistry + local pressure map',
-    '- Context Guard: ' + (preflight.ok ? 'no critical conflicts detected' : preflight.criticalCount + ' critical conflict(s) detected') + '; ' + preflight.warningCount + ' warning(s); ' + preflight.infoCount + ' info note(s)',
+    `- Snapshot hash: \`${bundle.snapshotHash}\``,
+    `- Operation: ${operation} (${generationMode})`,
+    `- Chapter: ${chapterTitle} (target order: ${inspectorOnly.narrativeTarget?.targetChapterOrder ?? 'next'})`,
+    `- Target words: ~${targetWords}`,
+    `- Provider / model: ${modelBound.providerId} / ${modelBound.modelId}${modelBound.reasoningEffort ? ` (reasoning: ${modelBound.reasoningEffort})` : ''}`,
+    `- Estimated tokens: ~${modelBound.estimatedInputTokens} input / ~${modelBound.estimatedOutputTokens} output (cap ${modelBound.maxOutputTokens})`,
+    `- Estimated cost: ${modelBound.costEstimate?.displayCost || 'costo desconocido'}`,
+    `- Universe: ${inspectorOnly.universeSummary?.fandom || 'neutral'} · checkpoint: ${inspectorOnly.universeSummary?.checkpointId || '(none)'}`,
+    `- Critical blockers: ${preflight.criticalCount} (${preflight.ok ? 'READY' : 'BLOCKED'})`,
     '',
     '---',
     '',
-    '# SYSTEM CONTEXT',
+    '# SYSTEM PROMPT (EXACT MODEL-BOUND)',
     '',
-    promptParts.stablePrompt,
-    '',
-    promptParts.dynamicPrompt ? '---\n\n' + promptParts.dynamicPrompt : '',
+    modelBound.systemPrompt,
     '',
     '---',
     '',
-    '# USER REQUEST',
+    '# USER PROMPT (EXACT MODEL-BOUND)',
     '',
-    userPrompt,
-    '',
-    '---',
-    '',
-    '## Fair-comparison note',
-    '',
-    'Do not invent knowledge outside this pack. Locked facts outrank all later material. Treat continuity memories as prior events, character sheets as current characterization/knowledge, and reference-document fragments only for their stated permitted purpose.',
-  ].filter((v) => v !== '').join('\n\n');
+    modelBound.userPrompt,
+  ].join('\n');
 
   return {
     markdown,
     inspector,
-    filename: 'Inky-Paws-Model-Test-' + safeName(chapterTitle) + '.md',
+    contextBundle: bundle,
+    snapshotHash: bundle.snapshotHash,
+    canGenerate: preflight.ok,
+    filename: 'Inky-Paws-Context-Pack-' + safeName(chapterTitle) + '.md',
     stats: {
-      characters: characters.length,
-      memories: memoryTitles.length,
-      documents: selectedDocNames.length,
-      retrievedChunks: retrievedChunks.length,
+      characters: resolvedChars.length,
+      memories: combinedMemories.length,
+      documents: selectedDocuments.length,
+      retrievedChunks: factualRefs.length,
     },
   };
 }

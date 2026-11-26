@@ -129,6 +129,7 @@ export async function assembleUnifiedContextSnapshot({
   sceneId = null,
   activeBriefId = null,
   chapterSceneDnaOverride = null,
+  documentIds = null,
   maxMemoryChars = 24000,
 } = {}) {
   const pid = projectId || db.getActiveProjectId();
@@ -146,7 +147,7 @@ export async function assembleUnifiedContextSnapshot({
     arcSummaries,
     lockedFacts,
     canonNotes,
-    documents,
+    allDocuments,
     docChunks,
     globalDna,
     storyDna,
@@ -171,6 +172,10 @@ export async function assembleUnifiedContextSnapshot({
     listEditorialFeedback({ projectId: pid }),
     listChapterBriefs({ projectId: pid }),
   ]);
+
+  const documents = Array.isArray(documentIds)
+    ? (allDocuments || []).filter((d) => documentIds.includes(d.id))
+    : (allDocuments || []);
 
   const fandom = storyConfig?.fandom || 'neutral';
   const fandomDna = await getWritingDnaProfile({ scope: 'fandom', fandom });
@@ -233,7 +238,7 @@ export async function assembleUnifiedContextSnapshot({
 
   const [{ index: chapterLexicalIndex }, { index: documentLexicalIndex }] = await Promise.all([
     syncPersistedChapterIndex({ projectId: pid, chapters }),
-    syncPersistedDocumentIndex({ projectId: pid, documents, docChunks }),
+    syncPersistedDocumentIndex({ projectId: pid, documents: allDocuments, docChunks }),
   ]);
 
   const josephInvite = normalizeRoomGuestInvitations(storyConfig?.roomGuestInvitations || [])
@@ -291,20 +296,15 @@ export async function assembleUnifiedContextSnapshot({
     approvedChapterBrief: approvedBrief,
     integrationBoundary: {
       connectedToGenerationNow: [
-        'Fichas locales de personaje (characters)',
-        'Hechos bloqueados y canon revelado/privado (canonGuard)',
-        'Memorias de continuidad filtradas cronológicamente y sin entradas stale',
-        'Transferencia de Brief de Capítulo a la vista Escribir (planner-draft)',
-        'Autor Brain heredado por historia (authorBrain.js)',
+        'Motor de Contexto Unificado (js/contextEngine.js) para todas las operaciones literarias y editoriales',
+        'Writing DNA en 4 ámbitos, anti-patrones editables y reglas aprendidas aprobadas',
+        'Biblioteca Universal de Personajes, overlays Character Lab e invariantes de universeResolver',
+        'Memoria jerárquica de 6 capas (epistémico temporal, relaciones cualitativas, BM25, arcos)',
+        'Referencias separadas por 6 roles, fandom y línea temporal (factual vs STYLE_ONLY)',
+        'Brief de Capítulo aprobado y verificado por capítulo objetivo',
+        'Inky Wallet (presupuesto, límites de salida y registro local de uso)',
       ],
-      readyForMilestone5UnifiedContextEngine: [
-        'Inyección automática de Writing DNA en 4 ámbitos y anti-patrones (writingDna.js)',
-        'Aplicación automática de reglas aprendidas editoriales aprobadas (editorialFeedback)',
-        'Inyección de perfiles de Biblioteca Universal, overlays Character Lab e invariantes de universeResolver',
-        'Inyección del payload serializado de 6 capas (epistémico temporal, relaciones cualitativas, BM25, arcos)',
-        'Perfiles de oficio STYLE_ONLY y filtrado estricto por 6 roles, fandom y línea temporal (referenceRoles.js)',
-        'Auditoría semántica post-generación sobre semanticReviewPayload',
-      ],
+      readyForMilestone5UnifiedContextEngine: [],
     },
   };
 }
