@@ -29,6 +29,39 @@ export function hasInFlightGeneration() {
   return inFlightCount > 0;
 }
 
+export function findForbiddenCastLeaks(text, forbiddenCast) {
+  const source = String(text || '');
+  if (!source) return [];
+  const forbidden = String(forbiddenCast || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+  const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const leaks = [];
+  for (const name of forbidden) {
+    const rx = new RegExp('(?<![\\p{L}\\p{N}_])' + escaped(name) + '(?![\\p{L}\\p{N}_])', 'iu');
+    if (rx.test(source)) leaks.push(name);
+  }
+  return leaks;
+}
+
+function collectPendingWarnings({ text, forbiddenCast, truncated = false, finishReason = null }) {
+  const warnings = [];
+  const leaks = findForbiddenCastLeaks(text, forbiddenCast);
+  if (leaks.length) {
+    warnings.push({
+      type: 'forbidden_cast',
+      leaks,
+      message: 'Este borrador incluye personajes prohibidos (' + leaks.join(', ') + '). Se guardó en cuarentena para no perder texto: edita o elimina esos nombres antes de aprobar, o descarta el bloque.',
+    });
+  }
+  if (truncated) {
+    warnings.push({
+      type: 'truncated',
+      finishReason: finishReason || 'length',
+      message: 'La respuesta alcanzó el límite de tokens de salida y pudo quedar incompleta. Revisa el final y usa «Add an ending» o edítalo antes de aprobar.',
+    });
+  }
+  return warnings;
+}
+
 async function trackInFlight(fn) {
   inFlightCount += 1;
   try {
@@ -341,22 +374,20 @@ export async function runGenerationLoop(state, onProgress, shouldStop, { signal 
       return state;
     }
 
-    // Rechazar de forma verificable nombres que el autor haya prohibido.
-    const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
-    const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const leaks = forbidden.filter((name) => new RegExp('\\b'+escaped(name)+'\\b','i').test(result.text));
-    if (leaks.length) {
-      state.status = 'paused_error';
-      state.lastError = {type:'cast',message:'El bloque incluyó personajes prohibidos: '+leaks.join(', ')+'. No se añadió al capítulo; cambia las instrucciones y vuelve a intentarlo.',at:new Date().toISOString()};
-      state.updatedAt = new Date().toISOString();
-      await db.put('generationState', state, scope);
-      onProgress?.({phase:'error',state});
-      return state;
-    }
-
     // Guardar el bloque candidato por separado, para leer y EDITAR antes de
-    // que se incorpore a la historia. Solo entonces podrá continuar el modelo.
-    state.pendingText = result.text.trim();
+    // que se incorpore a la historia. Si contiene personajes prohibidos o se
+    // cortó por límite de tokens, se guarda en cuarentena (nunca se descarta
+    // contenido ya pagado ni se auto-incorpora al capítulo).
+    const candidate = String(result.text || '').trim();
+    const warnings = collectPendingWarnings({
+      text: candidate,
+      forbiddenCast: state.forbiddenCast,
+      truncated: result.truncated === true,
+      finishReason: result.finishReason || null,
+    });
+    state.pendingText = candidate;
+    state.previousPendingText = '';
+    state.pendingWarnings = warnings;
     state.status = 'awaiting_review';
     state.lastError = null;
     state.updatedAt = new Date().toISOString();
@@ -476,14 +507,17 @@ export async function extendPendingBlockWithEnding(chapterId, editedText, ending
 
   if (!result.ok) throw new Error(result.errorMessage || 'No se pudo generar el final.');
 
-  const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
-  const lowerResult = String(result.text || '').toLowerCase();
-  const leaks = forbidden.filter((name) => lowerResult.includes(name.toLowerCase()));
-  if (leaks.length) throw new Error('El final incluyó personajes prohibidos: '+leaks.join(', ')+'. No se añadió.');
-
   const addition = String(result.text || '').trim();
   if (wordCount(addition) < 8) throw new Error('La IA devolvió un final demasiado corto. No se modificó el bloque.');
-  state.pendingText = pending + '\n\n' + addition;
+  const combined = pending + '\n\n' + addition;
+  state.previousPendingText = pending;
+  state.pendingText = combined;
+  state.pendingWarnings = collectPendingWarnings({
+    text: combined,
+    forbiddenCast: state.forbiddenCast,
+    truncated: result.truncated === true,
+    finishReason: result.finishReason || null,
+  });
   state.status = 'awaiting_review';
   state.lastError = null;
   state.updatedAt = new Date().toISOString();
@@ -600,14 +634,16 @@ export async function polishPendingBlock(chapterId, editedText, { projectId = ''
   });
   if (!result.ok) throw new Error(result.errorMessage || 'No se pudo completar el Editor Pass.');
 
-  const forbidden = (state.forbiddenCast || '').split(/[,;\n]/).map((x)=>x.trim()).filter(Boolean);
-  const lower = String(result.text || '').toLowerCase();
-  const leaks = forbidden.filter((name)=>lower.includes(name.toLowerCase()));
-  if (leaks.length) throw new Error('El Editor Pass incluyó personajes prohibidos: '+leaks.join(', ')+'. No se aplicó.');
-
   const revised = String(result.text || '').trim();
   if (wordCount(revised) < 60) throw new Error('El Editor Pass devolvió un texto demasiado corto. No se modificó el borrador.');
+  state.previousPendingText = draft;
   state.pendingText = revised;
+  state.pendingWarnings = collectPendingWarnings({
+    text: revised,
+    forbiddenCast: state.forbiddenCast,
+    truncated: result.truncated === true,
+    finishReason: result.finishReason || null,
+  });
   state.updatedAt = new Date().toISOString();
   await db.put('generationState', state, scope);
   return state;
@@ -620,10 +656,15 @@ export async function approvePendingBlock(chapterId, editedText, opts) {
   if (!state || state.status !== 'awaiting_review') throw new Error('No hay un bloque pendiente de aprobación.');
   const content = String(editedText || '').trim();
   if (wordCount(content) < 15) throw new Error('El bloque es demasiado corto; revísalo antes de guardarlo.');
+  const remainingLeaks = findForbiddenCastLeaks(content, state.forbiddenCast);
+  if (remainingLeaks.length) {
+    throw new Error('El borrador todavía incluye personajes prohibidos (' + remainingLeaks.join(', ') + '). Edítalos o elimínalos antes de aprobar.');
+  }
   state.accumulatedText += (state.accumulatedText ? '\n\n' : '') + content;
   state.wordsSoFar = wordCount(state.accumulatedText);
   state.blocksDone += 1;
   state.pendingText = '';
+  state.previousPendingText = '';
   state.pendingWarnings = [];
   state.status = state.wordsSoFar >= state.targetWords ? 'review_target_reached' : 'paused_review';
   state.updatedAt = new Date().toISOString();
@@ -643,6 +684,7 @@ export async function rejectPendingBlock(chapterId, opts) {
   const state = await db.get('generationState', chapterId, scope);
   if (!state || state.status !== 'awaiting_review') return null;
   state.pendingText = '';
+  state.previousPendingText = '';
   state.pendingWarnings = [];
   state.status = 'paused_review';
   state.updatedAt = new Date().toISOString();
