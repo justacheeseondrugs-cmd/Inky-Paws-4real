@@ -7,7 +7,7 @@ import { renderMemory } from './ui/memory.js';
 import { renderSettings } from './ui/settings.js';
 import { renderPlanner } from './ui/planner.js';
 import { bus, toast } from './utils.js';
-import { getActiveGenerationState } from './generation.js';
+import { getActiveGenerationState, hasInFlightGeneration } from './generation.js';
 import { initAppearance } from './ui/appearance.js';
 import { isPowerToStriveStory } from './storyCast.js';
 import { ensureKaelAuWorkspace, KAEL_AU_PROJECT } from './kaelAu.js';
@@ -248,9 +248,9 @@ async function initWorkspaces() {
   select.addEventListener('change', async () => {
     const old = db.getActiveProjectId();
     const active = await getActiveGenerationState();
-    if (active?.status === 'in_progress') {
+    if (active?.status === 'in_progress' || hasInFlightGeneration()) {
       select.value = old;
-      toast('Termina, detén o descarta primero el bloque que se está generando.', { error:true, ms:6500 });
+      toast('Espera a que termine o cancela la generación en curso antes de cambiar de historia.', { error:true, ms:6500 });
       return;
     }
     db.setActiveProjectId(select.value);
@@ -261,7 +261,7 @@ async function initWorkspaces() {
   });
   document.getElementById('workspace-create').addEventListener('click', async () => {
     const active = await getActiveGenerationState();
-    if (active?.status === 'in_progress') return toast('Detén primero la generación en curso.', {error:true});
+    if (active?.status === 'in_progress' || hasInFlightGeneration()) return toast('Espera o cancela primero la generación en curso.', {error:true});
     const name = window.prompt('Nombre de la nueva historia (no se copiarán capítulos ni documentos):');
     if (!name?.trim()) return;
     const saved = await db.get('settings','workspaces') || {id:'workspaces',items:[]};
@@ -279,7 +279,7 @@ async function initWorkspaces() {
   const packInput = document.getElementById('workspace-pack-input');
   packButton?.addEventListener('click', async () => {
     const active = await getActiveGenerationState();
-    if (active?.status === 'in_progress') return toast('Detén primero la generación en curso.', {error:true});
+    if (active?.status === 'in_progress' || hasInFlightGeneration()) return toast('Espera o cancela primero la generación en curso.', {error:true});
     if (db.getActiveProjectId() === 'original') return toast('Crea o selecciona una historia nueva antes de importar un pack. La historia original está protegida.', {error:true, ms:6500});
     packInput?.click();
   });

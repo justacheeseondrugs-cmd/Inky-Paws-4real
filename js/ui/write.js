@@ -214,6 +214,7 @@ function renderBanner(state) {
     try{await copyTextToClipboard(text);toast('Bloque copiado al portapapeles.');}
     catch(err){toast(err.message || 'No se pudo copiar el bloque.',{error:true});}
   });
+  const stateScope = { projectId: state.projectId || db.getActiveProjectId() };
   document.getElementById('w-editor-pass-btn')?.addEventListener('click',async(e)=>{
     const btn=e.currentTarget;
     const review=document.getElementById('w-review-text');
@@ -221,9 +222,11 @@ function renderBanner(state) {
     btn.disabled=true;
     btn.textContent='🐈‍⬛ Editando…';
     try{
-      const updated=await polishPendingBlock(state.chapterId,review.value);
-      review.value=updated.pendingText || review.value;
-      state.pendingText=updated.pendingText || state.pendingText;
+      const updated=await polishPendingBlock(state.chapterId,review.value,stateScope);
+      if (db.getActiveProjectId() === stateScope.projectId && review.isConnected) {
+        review.value=updated.pendingText || review.value;
+        state.pendingText=updated.pendingText || state.pendingText;
+      }
       toast('Editor Pass listo. Revisa el nuevo borrador antes de aprobar.',{ms:7500});
     }catch(err){toast(err.message || 'No se pudo hacer el Editor Pass.',{error:true,ms:9000});}
     finally{btn.disabled=false;btn.textContent='🐈‍⬛ Editor Pass · 1 llamada';}
@@ -234,8 +237,8 @@ function renderBanner(state) {
     btn.disabled=true;
     btn.textContent='✨ Adding ending…';
     try{
-      const updated=await extendPendingBlockWithEnding(state.chapterId,review?.value || state.pendingText || '');
-      if(review) review.value=updated.pendingText || '';
+      const updated=await extendPendingBlockWithEnding(state.chapterId,review?.value || state.pendingText || '','natural',stateScope);
+      if(review && review.isConnected && db.getActiveProjectId() === stateScope.projectId) review.value=updated.pendingText || '';
       toast('Final añadido al bloque. Revísalo antes de aprobar.',{ms:6000});
     }catch(err){toast(err.message || 'No se pudo añadir el final.',{error:true,ms:8500});}
     finally{btn.disabled=false;btn.textContent='✨ Add an ending';}
@@ -245,20 +248,21 @@ function renderBanner(state) {
     try{
       const edited=document.getElementById('w-review-text').value;
       const original=state.pendingText || '';
-      await approvePendingBlock(state.chapterId,edited);
+      await approvePendingBlock(state.chapterId,edited,stateScope);
       try{await recordEditSignal(original,edited);}catch{}
       toast('Bloque aprobado y guardado.');await renderWrite(document.getElementById('view-write'));
     }catch(err){toast(err.message,{error:true,ms:6500});e.currentTarget.disabled=false;}
   });
   document.getElementById('w-reject-btn')?.addEventListener('click',async()=>{
     if(!confirm('¿Descartar SOLO este bloque? Los anteriores se conservan.'))return;
-    await rejectPendingBlock(state.chapterId);
+    await rejectPendingBlock(state.chapterId,stateScope);
     toast('Bloque descartado. Puedes indicar cómo reescribirlo.');await renderWrite(document.getElementById('view-write'));
   });
   const runIntent=(buttonId,generationIntent)=>{
     document.getElementById(buttonId)?.addEventListener('click',async(e)=>{
       e.currentTarget.disabled=true;
       await runGeneration({
+        projectId:stateScope.projectId,
         chapterId:state.chapterId,chapterTitle:state.chapterTitle,instructions:state.instructions,
         targetWords:state.targetWords,requiredEnding:state.requiredEnding,
         sceneIndex:document.getElementById('w-current-scene')?Number(document.getElementById('w-current-scene').value):state.sceneIndex,
@@ -275,10 +279,10 @@ function renderBanner(state) {
     if(!confirm('¿Ya se escribió el desenlace? Se finalizará con los bloques que aceptaste.'))return;
     e.currentTarget.disabled=true;
     try{
-      await finishReviewedChapter(state.chapterId);
+      await finishReviewedChapter(state.chapterId,stateScope);
       await renderWrite(document.getElementById('view-write'));
       toast('Capítulo terminado. Generando memoria de continuidad…');
-      const chapter=await db.get('chapters',state.chapterId);
+      const chapter=await db.get('chapters',state.chapterId,stateScope);
       if(chapter){
         const memory=await generateContinuityMemory(chapter);
         if(memory.ok)toast('Memoria de continuidad guardada.');
@@ -289,7 +293,7 @@ function renderBanner(state) {
   });
   document.getElementById('w-discard-btn')?.addEventListener('click',async()=>{
     if(!confirm('¿Cerrar generación? Se conservará en Capítulos el texto ya aprobado como borrador.'))return;
-    await discardGeneration(state.chapterId);
+    await discardGeneration(state.chapterId,stateScope);
     toast('Generación cerrada. Tu texto aprobado sigue guardado.');await renderWrite(document.getElementById('view-write'));
   });
 }
@@ -550,26 +554,27 @@ async function onGenerateClick(generationIntent='continue'){
   const chapters=await db.getAll('chapters');
   const mainChapters=chapters.filter(isMainTimelineChapter);
   const nextOrder=mainChapters.length ? Math.max(...mainChapters.map((chapter)=>chapter.order ?? 0)) + 1 : 0;
-  const chapter={id:db.uid(),title,content:'',wordCount:0,status:'draft',order:nextOrder,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
-  await db.put('chapters',chapter);
+  const chapter={id:db.uid(),projectId,title,content:'',wordCount:0,status:'draft',order:nextOrder,versions:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+  await db.put('chapters',chapter,{projectId});
   flushActiveFormDraft = null;
   await db.del('settings', writeDraftId(projectId)).catch(() => {});
-  await runGeneration({chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,roomCast,onscreenCast,forbiddenCast,documentIds,reactionMode,generationIntent,generationMode});
+  await runGeneration({projectId,chapterId:chapter.id,chapterTitle:title,instructions,targetWords,requiredEnding,scenePlan,allowedCast,roomCast,onscreenCast,forbiddenCast,documentIds,reactionMode,generationIntent,generationMode});
 }
 
 async function runGeneration(options){
   if(isRunning)return toast('Ya hay una generación en curso.',{error:true});
+  const targetProjectId = options.projectId || db.getActiveProjectId();
   isRunning=true;
   const root=document.getElementById('view-write');
   root?.querySelectorAll('.writer-action').forEach((btn)=>btn.setAttribute('disabled','true'));
   root?.querySelector('#w-next-btn')?.setAttribute('disabled','true');
   root?.querySelector('#w-generate-btn')?.setAttribute('disabled','true');
   try{
-    const result=await startOrResumeGeneration({...options,onProgress:({state})=>{renderBanner(state);showPaper(state);}});
+    const result=await startOrResumeGeneration({...options,projectId:targetProjectId,onProgress:({state})=>{if(db.getActiveProjectId()===targetProjectId){renderBanner(state);showPaper(state);}}});
     if(result.status==='awaiting_review')toast((result.generationMode==='full_chapter' ? 'Capítulo completo listo' : 'Bloque listo')+': léelo y apruébalo antes de continuar.',{ms:6500});
     else if(result.status?.startsWith('paused_'))toast(result.lastError?.message || 'Generación pausada.',{error:true,ms:8000});
   }catch(err){toast('No se pudo generar: '+err.message,{error:true,ms:10000});}
-  finally{isRunning=false;await renderWrite(root);}
+  finally{isRunning=false;if(root && root.isConnected) await renderWrite(root);}
 }
 
 

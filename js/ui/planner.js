@@ -29,11 +29,12 @@ function formatMemory(entries) {
   ].filter(Boolean).join('\n')).join('\n\n');
 }
 
-async function collectContext(question, recentMessages = []) {
+async function collectContext(question, recentMessages = [], projectId = db.getActiveProjectId()) {
+  const scope = { projectId };
   const [lockedFacts, canonNotes, characters, memories, chapters, documents, chunks] = await Promise.all([
-    db.getAll('lockedFacts'), db.getAll('canonNotes'), db.getAll('characters'),
-    db.getAll('memoryEntries'), db.getAll('chapters'),
-    db.getAll('documents'), db.getAll('docChunks'),
+    db.getAll('lockedFacts', scope), db.getAll('canonNotes', scope), db.getAll('characters', scope),
+    db.getAll('memoryEntries', scope), db.getAll('chapters', scope),
+    db.getAll('documents', scope), db.getAll('docChunks', scope),
   ]);
   const sortedChapters = chapters.filter((ch) => isMainTimelineChapter(ch) && ch.content?.trim())
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
@@ -178,7 +179,7 @@ export async function renderPlanner(root) {
     busy = true; send.disabled = true; clear.disabled = true;
     status.textContent = '💭 Pensando contigo…';
     try {
-      const context = await collectContext(question, messages);
+      const context = await collectContext(question, messages, projectId);
       const conversation = messages.slice(-CONTEXT_TURNS).map((m) =>
         (m.role === 'user' ? 'AUTHOR' : 'PLANNING ASSISTANT') + ':\n' + short(m.text, 4100)
       ).join('\n\n');

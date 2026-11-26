@@ -66,11 +66,13 @@ export function parseMemoryResponse(text) {
   return out;
 }
 
-export async function generateContinuityMemory(chapter) {
+export async function generateContinuityMemory(chapter, { signal } = {}) {
+  const projectId = chapter?.projectId || db.getActiveProjectId();
+  const scope = { projectId };
   const settings = (await db.get('settings', 'main')) || {};
   const provider = getProvider(settings);
   const [lockedFacts, characters, canonNotes] = await Promise.all([
-    db.getAll('lockedFacts'), db.getAll('characters'), db.getAll('canonNotes'),
+    db.getAll('lockedFacts', scope), db.getAll('characters', scope), db.getAll('canonNotes', scope),
   ]);
   // La memoria DEBE resumir el manuscrito real, no historias de referencia.
   // No enviar documentos STYLE_ONLY ni otros textos al extractor: así no se
@@ -86,32 +88,36 @@ export async function generateContinuityMemory(chapter) {
   // En modelos de razonamiento, max_completion_tokens incluye también los
   // tokens de razonamiento; 900 puede agotarse antes de devolver el JSON.
   const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: reasoningModel ? 4800 : 1400, temperature: 0.3 });
+  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: reasoningModel ? 4800 : 1400, temperature: 0.3, signal });
   if (!result.ok) return { ok: false, error: result.errorMessage || 'No se pudo generar la memoria de continuidad.' };
   const fields = parseMemoryResponse(result.text);
   if (!Object.values(fields).some((value) => String(value || '').trim())) {
     return { ok: false, error: 'La IA no devolvió un resumen de continuidad reconocible. No se ha guardado una memoria vacía.' };
   }
   // Rehacer una memoria sustituye la anterior del MISMO capítulo, sin duplicarla.
-  const previous = await db.getByIndex('memoryEntries', 'by_chapter', chapter.id);
+  const previous = await db.getByIndex('memoryEntries', 'by_chapter', chapter.id, scope);
   const entry = {
     id: previous[0]?.id || db.uid(),
     chapterId: chapter.id,
     chapterTitle: chapter.title,
-    projectId: chapter.projectId || 'original',
+    projectId,
     ...fields,
     createdAt: new Date().toISOString(),
   };
-  const saved = await db.put('memoryEntries', entry);
-  for (const duplicate of previous.slice(1)) await db.del('memoryEntries', duplicate.id);
+  const saved = await db.put('memoryEntries', entry, scope);
+  for (const duplicate of previous.slice(1)) await db.del('memoryEntries', duplicate.id, scope);
   return { ok: true, entry: saved };
 }
 
 export async function rewriteChapter(chapter, rewriteInstructions, { signal } = {}) {
+  const projectId = chapter?.projectId || db.getActiveProjectId();
+  const scope = { projectId };
   const settings = (await db.get('settings', 'main')) || {};
   const provider = getProvider(settings);
   const [lockedFacts, characters, memoryEntries, canonNotes, documents, allChunks, chapters] = await Promise.all([
-    db.getAll('lockedFacts'), db.getAll('characters'), db.getAll('memoryEntries'), db.getAll('canonNotes'), db.getAll('documents'), db.getAll('docChunks'), db.getAll('chapters'),
+    db.getAll('lockedFacts', scope), db.getAll('characters', scope), db.getAll('memoryEntries', scope),
+    db.getAll('canonNotes', scope), db.getAll('documents', scope), db.getAll('docChunks', scope),
+    db.getAll('chapters', scope),
   ]);
   const priorChapters = chaptersBefore(chapters, chapter.id);
   const priorMemories = memoriesForChapters(memoryEntries, priorChapters);

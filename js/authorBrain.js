@@ -73,8 +73,8 @@ const FEEDBACK_RULES = {
 const BOMB_WORDS = /\b(reveal|reveals|revealed|discover|discovers|discovered|confess|confesses|secret|truth|mama|papa|mother|father|wife|husband|married|kiss|betray|betrayal|death|dies|dead|identity|pregnan|return|returns|arrive|arrives|appears|recognize|recognises|realizes|realises|calls? him|calls? her)\b/i;
 const TEXTURE_WORDS = /\b(brief|small|quick|little|texture|domestic|quiet moment|aside|joke|tease|teasing|transition|walk|walking|move|moving)\b/i;
 
-export async function getAuthorBrain() {
-  const id = 'author-brain:' + db.getActiveProjectId();
+export async function getAuthorBrain(projectId) {
+  const id = 'author-brain:' + (projectId || db.getActiveProjectId());
   const stored = await db.get('settings', id);
   return {
     id,
@@ -86,8 +86,8 @@ export async function getAuthorBrain() {
   };
 }
 
-export async function saveAuthorBrain(next) {
-  const current = await getAuthorBrain();
+export async function saveAuthorBrain(next, projectId) {
+  const current = await getAuthorBrain(projectId);
   return db.put('settings', {
     ...current,
     ...next,

@@ -21,10 +21,43 @@ const STORES = {
 const ORIGINAL_PROJECT = 'original';
 const SCOPED_STORES = new Set(['chapters','characters','documents','docChunks','memoryEntries','lockedFacts','canonNotes','generationState']);
 const ACTIVE_KEY = 'pts_active_project_v1';
-export function getActiveProjectId() { return localStorage.getItem(ACTIVE_KEY) || ORIGINAL_PROJECT; }
-export function setActiveProjectId(id) { localStorage.setItem(ACTIVE_KEY, id || ORIGINAL_PROJECT); }
-function belongs(store, value) {
-  return !SCOPED_STORES.has(store) || !!value && (value.projectId || ORIGINAL_PROJECT) === getActiveProjectId();
+let memoryActiveProject = null;
+
+function readStorage(storage, key) {
+  try { return storage?.getItem(key) || null; } catch { return null; }
+}
+function writeStorage(storage, key, value) {
+  try { storage?.setItem(key, value); } catch { }
+}
+
+export function getActiveProjectId() {
+  if (typeof sessionStorage !== 'undefined') {
+    const tabProject = readStorage(sessionStorage, ACTIVE_KEY);
+    if (tabProject) return tabProject;
+  }
+  if (typeof localStorage !== 'undefined') {
+    const shared = readStorage(localStorage, ACTIVE_KEY);
+    if (shared) {
+      if (typeof sessionStorage !== 'undefined') writeStorage(sessionStorage, ACTIVE_KEY, shared);
+      return shared;
+    }
+  }
+  return memoryActiveProject || ORIGINAL_PROJECT;
+}
+
+export function setActiveProjectId(id) {
+  const next = id || ORIGINAL_PROJECT;
+  memoryActiveProject = next;
+  if (typeof sessionStorage !== 'undefined') writeStorage(sessionStorage, ACTIVE_KEY, next);
+  if (typeof localStorage !== 'undefined') writeStorage(localStorage, ACTIVE_KEY, next);
+}
+
+function resolveScope(opts) {
+  return opts?.projectId || getActiveProjectId();
+}
+
+function belongs(store, value, projectId = getActiveProjectId()) {
+  return !SCOPED_STORES.has(store) || !!value && (value.projectId || ORIGINAL_PROJECT) === projectId;
 }
 
 let dbPromise = null;
@@ -66,33 +99,37 @@ async function rawGetAll(storeName) {
   });
 }
 
-async function getAll(storeName) {
+async function getAll(storeName, opts) {
+  const scope = resolveScope(opts);
   const records = await rawGetAll(storeName);
-  return SCOPED_STORES.has(storeName) ? records.filter((record) => belongs(storeName,record)) : records;
+  return SCOPED_STORES.has(storeName) ? records.filter((record) => belongs(storeName, record, scope)) : records;
 }
 
-async function getByIndex(storeName, indexName, value) {
+async function getByIndex(storeName, indexName, value, opts) {
+  const scope = resolveScope(opts);
   const store = await tx(storeName);
   return new Promise((resolve, reject) => {
     const req = store.index(indexName).getAll(value);
-    req.onsuccess = () => resolve((req.result || []).filter((record) => belongs(storeName,record)));
+    req.onsuccess = () => resolve((req.result || []).filter((record) => belongs(storeName, record, scope)));
     req.onerror = () => reject(req.error);
   });
 }
 
-async function get(storeName, id) {
+async function get(storeName, id, opts) {
+  const scope = resolveScope(opts);
   const store = await tx(storeName);
   return new Promise((resolve, reject) => {
     const req = store.get(id);
-    req.onsuccess = () => resolve(belongs(storeName,req.result) ? req.result : null);
+    req.onsuccess = () => resolve(belongs(storeName, req.result, scope) ? req.result : null);
     req.onerror = () => reject(req.error);
   });
 }
 
-async function put(storeName, obj) {
+async function put(storeName, obj, opts) {
+  const scope = resolveScope(opts);
   if (SCOPED_STORES.has(storeName)) {
-    if (obj.projectId && obj.projectId !== getActiveProjectId()) throw new Error('Este registro pertenece a otra historia.');
-    if (!obj.projectId) obj.projectId = getActiveProjectId();
+    if (obj.projectId && obj.projectId !== scope) throw new Error('Este registro pertenece a otra historia.');
+    if (!obj.projectId) obj.projectId = scope;
   }
   if (!obj.id) obj.id = uid();
   const store = await tx(storeName, 'readwrite');
@@ -103,8 +140,8 @@ async function put(storeName, obj) {
   });
 }
 
-async function del(storeName, id) {
-  if (SCOPED_STORES.has(storeName) && !(await get(storeName,id))) return false;
+async function del(storeName, id, opts) {
+  if (SCOPED_STORES.has(storeName) && !(await get(storeName, id, opts))) return false;
   const store = await tx(storeName, 'readwrite');
   return new Promise((resolve, reject) => {
     const req = store.delete(id);

@@ -237,7 +237,9 @@ async function createChapterMemory(id, card) {
 }
 
 async function openChapterEditor(id) {
-  const chapter = await db.get('chapters', id); if (!chapter) return;
+  const editorProjectId = db.getActiveProjectId();
+  const scope = { projectId: editorProjectId };
+  const chapter = await db.get('chapters', id, scope); if (!chapter) return;
   let latestContent = String(chapter.content || '');
   let latestTitle = String(chapter.title || '');
   let dirty = false;
@@ -247,13 +249,13 @@ async function openChapterEditor(id) {
     const contentToSave = latestContent;
     const titleToSave = latestTitle.trim() || chapter.title;
     dirty = false;
-    const fresh = await db.get('chapters', id);
+    const fresh = await db.get('chapters', id, scope);
     if (!fresh) return;
     fresh.content = contentToSave;
     fresh.title = titleToSave;
     fresh.wordCount = wordCount(contentToSave);
     fresh.updatedAt = new Date().toISOString();
-    await db.put('chapters', fresh);
+    await db.put('chapters', fresh, scope);
     const badge = document.getElementById('editor-save-badge');
     if (badge) badge.textContent = 'Guardado ✓ ' + new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
     bus.emit('chapters-changed');
