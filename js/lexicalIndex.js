@@ -431,22 +431,6 @@ export function searchLexicalIndex(index, query, {
       const doc = index.docs[docIdx];
       const matchedTerms = matchedByDoc.get(docIdx) || [];
       const exactChapterHit = exactHits.has(docIdx);
-      // Enriquecer extracto con el texto real centrado si se proveyó `chaptersById`
-      let excerpt = doc.excerpt;
-      if (chaptersById && doc.chapterId && chaptersById.has(doc.chapterId) && matchedTerms.length) {
-        const ch = chaptersById.get(doc.chapterId);
-        const passages = segmentChapterPassages(ch);
-        const fullPassage = passages[doc.passageIndex]?.text || '';
-        if (fullPassage) {
-          const lower = fullPassage.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-          const firstIdx = lower.indexOf(matchedTerms[0]);
-          if (firstIdx >= 0 && fullPassage.length > EXCERPT_MAX_CHARS) {
-            const start = Math.max(0, firstIdx - 110);
-            const slice = fullPassage.slice(start, start + EXCERPT_MAX_CHARS).trim();
-            excerpt = `${start > 0 ? '…' : ''}${slice}${start + EXCERPT_MAX_CHARS < fullPassage.length ? '…' : ''}`;
-          }
-        }
-      }
       const whyParts = [];
       if (exactChapterHit) whyParts.push(`coincidencia exacta con capítulo ${doc.chapterOrder}`);
       if (matchedTerms.length) whyParts.push(`términos BM25: [${matchedTerms.join(', ')}]`);
@@ -460,7 +444,7 @@ export function searchLexicalIndex(index, query, {
         filename: doc.filename,
         docType: doc.docType,
         passageIndex: doc.passageIndex,
-        excerpt,
+        excerpt: doc.excerpt,
         bm25Score: Number(score.toFixed(4)),
         matchedTerms,
         exactChapterHit,
@@ -472,11 +456,32 @@ export function searchLexicalIndex(index, query, {
   // Evitar que un único capítulo acapare todos los resultados
   const perChapter = new Map();
   const out = [];
+  const passageCache = new Map();
   for (const hit of ranked) {
     const groupKey = hit.chapterId || hit.documentId || hit.docId;
     const count = perChapter.get(groupKey) || 0;
     if (count >= maxPerChapter) continue;
     perChapter.set(groupKey, count + 1);
+
+    // Enriquecer extracto con el texto real centrado ÚNICAMENTE para los topK finales
+    if (chaptersById && hit.chapterId && chaptersById.has(hit.chapterId) && hit.matchedTerms.length) {
+      let passages = passageCache.get(hit.chapterId);
+      if (!passages) {
+        passages = segmentChapterPassages(chaptersById.get(hit.chapterId));
+        passageCache.set(hit.chapterId, passages);
+      }
+      const fullPassage = passages[hit.passageIndex]?.text || '';
+      if (fullPassage) {
+        const lower = fullPassage.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const firstIdx = lower.indexOf(hit.matchedTerms[0]);
+        if (firstIdx >= 0 && fullPassage.length > EXCERPT_MAX_CHARS) {
+          const start = Math.max(0, firstIdx - 110);
+          const slice = fullPassage.slice(start, start + EXCERPT_MAX_CHARS).trim();
+          hit.excerpt = `${start > 0 ? '…' : ''}${slice}${start + EXCERPT_MAX_CHARS < fullPassage.length ? '…' : ''}`;
+        }
+      }
+    }
+
     out.push(hit);
     if (out.length >= topK) break;
   }
