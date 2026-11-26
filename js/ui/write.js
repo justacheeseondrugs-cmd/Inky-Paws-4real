@@ -431,6 +431,8 @@ async function onGenerateClick(generationIntent='continue'){
       requiredEnding,
       scenePlan,
       allowedCast,
+      roomCast,
+      onscreenCast,
       forbiddenCast,
       documentIds,
       reactionMode,

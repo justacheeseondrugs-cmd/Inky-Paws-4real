@@ -3,7 +3,9 @@ import { getProvider } from './providers/index.js';
 import { assembleSystemPrompt } from './canonGuard.js';
 import { getRelevantChunks } from './retrieval.js';
 import { isLikelyInvalidProse } from './providers/base.js';
-import { filterActiveMemories } from './timeline.js';
+import { chaptersBefore, memoriesForChapters } from './timeline.js';
+import { selectSmartMemories, canonQueryBoost } from './smartContext.js';
+import { getRelevantStoryExcerpts, getPreviousChapterEnding } from './storyRecall.js';
 import { wordCount } from './utils.js';
 
 const MEMORY_FIELDS = [
@@ -91,15 +93,28 @@ export async function rewriteChapter(chapter, rewriteInstructions, { signal } = 
   const [lockedFacts, characters, memoryEntries, canonNotes, documents, allChunks, chapters] = await Promise.all([
     db.getAll('lockedFacts'), db.getAll('characters'), db.getAll('memoryEntries'), db.getAll('canonNotes'), db.getAll('documents'), db.getAll('docChunks'), db.getAll('chapters'),
   ]);
-  const activeMemoryEntries = filterActiveMemories(memoryEntries, chapters);
-  const queryText = rewriteInstructions + ' ' + chapter.title;
-  const retrievedChunks = getRelevantChunks(documents.filter((d) => d.type !== 'STYLE_ONLY'), allChunks, queryText, { context: 'rewrite' });
+  const priorChapters = chaptersBefore(chapters, chapter.id);
+  const priorMemories = memoriesForChapters(memoryEntries, priorChapters);
+  const queryBase = [rewriteInstructions, chapter.title, String(chapter.content || '').slice(0, 3500)].filter(Boolean).join(' ');
+  const selectedMemories = selectSmartMemories(priorMemories, queryBase).selected;
+  const continuityQuery = [
+    queryBase,
+    canonQueryBoost(canonNotes, queryBase),
+    selectedMemories.slice(-2).map((m) => [m.events, m.openThreads, m.whoKnowsWhat].filter(Boolean).join(' ')).join(' '),
+  ].filter(Boolean).join(' ');
+  const storyExcerpts = getRelevantStoryExcerpts(priorChapters, continuityQuery, {
+    excludeChapterId: chapter.id,
+    maxExcerpts: 4,
+    maxPerChapter: 2,
+  });
+  const previousEnding = getPreviousChapterEnding(priorChapters, chapter.id, 3200);
+  const retrievedChunks = getRelevantChunks(documents.filter((d) => d.type !== 'STYLE_ONLY'), allChunks, continuityQuery, { context: 'rewrite' });
   const originalWords = wordCount(chapter.content);
   const maxOutputTokens = computeRewriteMaxOutputTokens(chapter.content, provider.config?.model || '');
   const systemPrompt = assembleSystemPrompt({
     lockedFacts,
     chapterInstructions: `Vas a REESCRIBIR un capítulo existente según instrucciones del autor. Instrucciones de reescritura: ${rewriteInstructions}`,
-    characters, memoryEntries: activeMemoryEntries, canonNotes, recentChapterExcerpt: '', retrievedChunks,
+    characters, memoryEntries: selectedMemories, canonNotes, recentChapterExcerpt: previousEnding.text, storyExcerpts, retrievedChunks,
     extraGuidance: `Devuelve el capítulo reescrito COMPLETO (~${Math.max(originalWords, 300)} palabras), en prosa, sin omitir escenas no modificadas ni añadir comentarios meta o explicaciones fuera del propio texto narrativo.`,
   });
   const userPrompt = `CAPÍTULO ORIGINAL (${originalWords} palabras):\n\n${chapter.content}\n\n---\n\nReescribe este capítulo completo aplicando las instrucciones indicadas, conservando intactas las escenas que no se pidió cambiar.`;

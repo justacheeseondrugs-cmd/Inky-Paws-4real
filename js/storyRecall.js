@@ -3,19 +3,45 @@
 // older chapters can remain available without sending every manuscript in full.
 
 const STOPWORDS = new Set(
-  'the of and to in a is that it for on with as was were are be this his her she he him they them their from into at by an or if but not no yes do does did have has had will would can could should chapter scene room screen reaction reactions write writing words word story current previous next then than there here who what when where why how one two three four five six seven eight nine ten'.split(' ')
+  ('the of and to in a is that it for on with as was were are be this his her she he him they them their from into at by an or if but not no yes do does did have has had will would can could should chapter scene room screen reaction reactions write writing words word story current previous next then than there here who what when where why how one two three four five six seven eight nine ten ' +
+   'de la que el en y a los se del las un por con una su para es al lo como mas o pero sus le ya fue este esta estos estas ha hay si porque entre cuando muy sin sobre tambien me hasta donde quien desde todo todos uno unos unas otro otra otros otras ellos ellas nosotros nosotras mi mis tu tus capitulo escena historia').split(' ')
 );
+
+function normalize(text) {
+  return String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
 
 // Explicit references are prioritized over common character-name matches.
 export function requestedChapterNumbers(query) {
-  return new Set([...String(query || '').matchAll(/\b(?:chapters?|cap[ií]tulos?|ch\.?)\s*#?\s*(\d{1,5})\b/gi)]
-    .map(m=>Number(m[1])).filter(n=>n>0));
+  const normalized = normalize(query);
+  return new Set([...normalized.matchAll(/\b(?:chapters?|capitulos?|cap\.?|ch\.?)\s*#?\s*(\d{1,5})\b/gi)]
+    .map((m) => Number(m[1])).filter((n) => n > 0));
+}
+
+export function isPrologueTitle(title) {
+  return /^\s*(?:prologue|prologo)\b/i.test(normalize(title).trim());
+}
+
+export function chapterNumberFromTitle(title) {
+  const cleaned = normalize(title).trim();
+  if (!cleaned || isPrologueTitle(cleaned)) return null;
+  const labeled = cleaned.match(/\b(?:chapters?|capitulos?|cap\.?|ch\.?)\s*#?\s*(\d{1,5})\b/i);
+  if (labeled) return Number(labeled[1]);
+  const leading = cleaned.match(/^#?\s*(\d{1,5})(?:\s*[:.\-—–]|\s+$|$)/);
+  if (leading) return Number(leading[1]);
+  return null;
+}
+
+function requestsPrologue(query) {
+  return /\b(?:prologue|prologo)\b/i.test(normalize(query));
 }
 
 function tokenize(text) {
-  return String(text || '')
-    .toLowerCase()
-    .replace(/[^a-záéíóúñü0-9\s]/gi, ' ')
+  return normalize(text)
+    .replace(/[^a-z0-9ñü\s]/gi, ' ')
     .split(/\s+/)
     .filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
@@ -57,12 +83,28 @@ export function getRelevantStoryExcerpts(
 
   if (maxExcerpts <= 0 || maxPerChapter <= 0) return [];
   const requested = requestedChapterNumbers(queryText);
-  const ordered = (chapters || []).filter(ch=>ch && ch.branchRole !== 'alternative')
-    .slice().sort((a,b)=>(a.order ?? 0)-(b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const wantsPrologue = requestsPrologue(queryText);
+  const ordered = (chapters || []).filter((ch) => ch && ch.branchRole !== 'alternative')
+    .slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+
+  // Resolve explicit numbers from titles first so prologues, empty drafts or
+  // skipped chapter numbers never shift chapter lookups by ±1.
+  let numberedPos = 0;
+  const annotated = ordered.map((chapter) => {
+    const prologue = isPrologueTitle(chapter.title);
+    const titleNum = chapterNumberFromTitle(chapter.title);
+    if (!prologue) numberedPos += 1;
+    return { chapter, prologue, titleNum, fallbackNum: prologue ? null : numberedPos };
+  });
+  const explicitTitleNums = new Set(annotated.map((item) => item.titleNum).filter((n) => n !== null));
+
   const candidates = [];
-  for (const [index, chapter] of ordered.entries()) {
-    const explicit = requested.has(index+1);
+  for (const { chapter, prologue, titleNum, fallbackNum } of annotated) {
     if (!chapter || chapter.id === excludeChapterId || !String(chapter.content || '').trim()) continue;
+    const explicit =
+      (wantsPrologue && prologue) ||
+      (titleNum !== null && requested.has(titleNum)) ||
+      (titleNum === null && fallbackNum !== null && requested.has(fallbackNum) && !explicitTitleNums.has(fallbackNum));
     for (const chunk of chunkWords(chapter.content, chunkSize)) {
       const s = score(chunk.text, queryCounts);
       if (s > 0 || explicit) {
