@@ -27,20 +27,40 @@ export function computeRewriteMaxOutputTokens(originalText, model = '') {
   return Math.min(120000, proseBudget + (reasoningModel ? 3200 : 0));
 }
 
-function parseMemoryResponse(text) {
+function normalizeMemoryValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) return value.map((item) => normalizeMemoryValue(item)).filter(Boolean).join('; ');
+  if (typeof value === 'object') {
+    return Object.entries(value)
+      .map(([k, v]) => {
+        const text = normalizeMemoryValue(v);
+        return text ? `${k}: ${text}` : '';
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
+  return String(value).trim();
+}
+
+export function parseMemoryResponse(text) {
+  const raw = String(text || '');
   try {
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const obj = JSON.parse(jsonMatch[0]);
       const out = {};
-      for (const [key, field] of MEMORY_FIELDS) out[field] = obj[key] || obj[field] || '';
+      for (const [key, field] of MEMORY_FIELDS) {
+        const val = obj[key] !== undefined ? obj[key] : obj[field];
+        out[field] = normalizeMemoryValue(val);
+      }
       return out;
     }
   } catch { }
   const out = {};
   for (const [key, field] of MEMORY_FIELDS) {
     const rx = new RegExp(key.replace(/_/g, '[ _]?') + '\\s*[:\\-]\\s*(.+?)(?=\\n[A-Z_ ]+\\s*[:\\-]|$)', 'is');
-    const m = text.match(rx);
+    const m = raw.match(rx);
     out[field] = m ? m[1].trim() : '';
   }
   return out;
@@ -49,8 +69,8 @@ function parseMemoryResponse(text) {
 export async function generateContinuityMemory(chapter) {
   const settings = (await db.get('settings', 'main')) || {};
   const provider = getProvider(settings);
-  const [lockedFacts, characters, canonNotes, documents, allChunks] = await Promise.all([
-    db.getAll('lockedFacts'), db.getAll('characters'), db.getAll('canonNotes'), db.getAll('documents'), db.getAll('docChunks'),
+  const [lockedFacts, characters, canonNotes] = await Promise.all([
+    db.getAll('lockedFacts'), db.getAll('characters'), db.getAll('canonNotes'),
   ]);
   // La memoria DEBE resumir el manuscrito real, no historias de referencia.
   // No enviar documentos STYLE_ONLY ni otros textos al extractor: así no se
@@ -65,9 +85,9 @@ export async function generateContinuityMemory(chapter) {
   const userPrompt = `CAPÍTULO A ANALIZAR ("${chapter.title}"):\n\n${chapter.content}`;
   // En modelos de razonamiento, max_completion_tokens incluye también los
   // tokens de razonamiento; 900 puede agotarse antes de devolver el JSON.
-  const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/i.test(provider.config?.model || '');
-  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: reasoningModel ? 4800 : 1200, temperature: 0.3 });
-  if (!result.ok || isLikelyInvalidProse(result.text)) return { ok: false, error: result.errorMessage || 'No se pudo generar la memoria de continuidad.' };
+  const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
+  const result = await provider.generate({ systemPrompt, userPrompt, maxOutputTokens: reasoningModel ? 4800 : 1400, temperature: 0.3 });
+  if (!result.ok) return { ok: false, error: result.errorMessage || 'No se pudo generar la memoria de continuidad.' };
   const fields = parseMemoryResponse(result.text);
   if (!Object.values(fields).some((value) => String(value || '').trim())) {
     return { ok: false, error: 'La IA no devolvió un resumen de continuidad reconocible. No se ha guardado una memoria vacía.' };

@@ -79,6 +79,7 @@ export async function getAuthorBrain() {
   return {
     id,
     writingDna: stored?.writingDna || DEFAULT_WRITING_DNA,
+    customGuidance: String(stored?.customGuidance || '').trim(),
     prepEnabled: stored?.prepEnabled !== false,
     feedbackCounts: stored?.feedbackCounts || {},
     editSignals: stored?.editSignals || { approvals:0, substantialEdits:0, totalReduction:0 },
@@ -198,6 +199,7 @@ export function compactAuthorBrief(brief) {
 export function buildAuthorGuidance({ brain, characters, scenePlan, requiredEnding, authorBrief }) {
   return [
     brain?.writingDna ? 'AUTHOR WRITING DNA — persistent house taste:\n'+brain.writingDna.trim() : '',
+    brain?.customGuidance ? 'STORY-SPECIFIC WRITING GUIDANCE:\n'+brain.customGuidance.trim() : '',
     chemistryGuidance(characters),
     feedbackGuidance(brain),
     buildPressureMap(scenePlan, requiredEnding),

@@ -59,10 +59,13 @@ function formatMemoryEntry(m) {
 
 function compactMemoryEntry(m) {
   const pieces = [
-    m.events ? 'Eventos: ' + clip(m.events, 220) : '',
-    m.newFacts ? 'Hechos: ' + clip(m.newFacts, 180) : '',
-    m.whoKnowsWhat ? 'Quién sabe qué: ' + clip(m.whoKnowsWhat, 220) : '',
-    m.openThreads ? 'Hilos: ' + clip(m.openThreads, 180) : '',
+    m.events ? 'Eventos: ' + clip(m.events, 320) : '',
+    m.relationshipChanges ? 'Relaciones: ' + clip(m.relationshipChanges, 260) : '',
+    m.newFacts ? 'Hechos: ' + clip(m.newFacts, 240) : '',
+    m.whoKnowsWhat ? 'Quién sabe qué: ' + clip(m.whoKnowsWhat, 280) : '',
+    m.physicalState ? 'Estado físico: ' + clip(m.physicalState, 220) : '',
+    m.currentLocationTime ? 'Lugar/tiempo: ' + clip(m.currentLocationTime, 180) : '',
+    m.openThreads ? 'Hilos: ' + clip(m.openThreads, 220) : '',
   ].filter(Boolean);
   return `[${m.chapterTitle || 'sin título'}] ${pieces.join(' | ')}`;
 }

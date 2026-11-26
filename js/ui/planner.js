@@ -5,7 +5,7 @@ import { db } from '../db.js';
 import { getProvider } from '../providers/index.js';
 import { getRelevantChunks } from '../retrieval.js';
 import { getActiveGenerationState } from '../generation.js';
-import { escapeHtml, toast, bus } from '../utils.js';
+import { escapeHtml, toast, bus, copyTextToClipboard } from '../utils.js';
 import { isMainTimelineChapter, memoriesForChapters } from '../timeline.js';
 import { getRelevantStoryExcerpts } from '../storyRecall.js';
 import { selectSmartMemories } from '../smartContext.js';
@@ -20,13 +20,16 @@ function formatMemory(entries) {
   return entries.map((m) => [
     m.chapterTitle ? 'CHAPTER: ' + m.chapterTitle : '',
     m.events ? 'Events: ' + short(m.events, 950) : '',
+    m.relationshipChanges ? 'Relationship changes: ' + short(m.relationshipChanges, 600) : '',
+    m.newFacts ? 'New facts: ' + short(m.newFacts, 550) : '',
     m.whoKnowsWhat ? 'Who knows what: ' + short(m.whoKnowsWhat, 750) : '',
-    m.currentLocationTime ? 'Current scene: ' + short(m.currentLocationTime, 350) : '',
+    m.physicalState ? 'Physical state / injuries: ' + short(m.physicalState, 400) : '',
+    m.currentLocationTime ? 'Current scene / location & time: ' + short(m.currentLocationTime, 350) : '',
     m.openThreads ? 'Open threads: ' + short(m.openThreads, 500) : '',
   ].filter(Boolean).join('\n')).join('\n\n');
 }
 
-async function collectContext(question) {
+async function collectContext(question, recentMessages = []) {
   const [lockedFacts, canonNotes, characters, memories, chapters, documents, chunks] = await Promise.all([
     db.getAll('lockedFacts'), db.getAll('canonNotes'), db.getAll('characters'),
     db.getAll('memoryEntries'), db.getAll('chapters'),
@@ -36,7 +39,7 @@ async function collectContext(question) {
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const activeMemories = memoriesForChapters(memories, sortedChapters);
   const recent = sortedChapters.slice(-1);
-  const chapterContext = recent.map((ch, i) => {
+  const chapterContext = recent.map((ch) => {
     const tail = 6200;
     return 'CHAPTER "' + ch.title + '" [' + (ch.status || 'draft') + '] — actual saved text, final excerpt:\n…' + ch.content.slice(-tail);
   }).join('\n\n');
@@ -47,30 +50,36 @@ async function collectContext(question) {
     'hard rules: ' + short(ch.hardRules, 280),
     'current knowledge: ' + short(ch.currentKnowledge, 350),
     'relationships: ' + short(ch.relationships, 180),
+    ch.chemistry ? 'chemistry: ' + short(ch.chemistry, 220) : '',
     'never do: ' + short(ch.neverDoRules, 200),
-  ].join(' | ')).join('\n');
+  ].filter(Boolean).join(' | ')).join('\n');
   // Only the CURRENT AU's factual references. STYLE_ONLY and unrelated plot
   // documents may never introduce story facts during planning.
   const factualDocs = documents.filter((d) => ['CANON','CHARACTER','CONTINUITY'].includes(d.type) && d.active !== false);
-  const query = [question, ...recent.map((c) => c.title + ' ' + c.content.slice(-1800))].join('\n');
-  const selectedMemories = selectSmartMemories(activeMemories,question,{maxSelected:5,foundationCount:1,recentCount:2}).selected;
-  const historical = getRelevantStoryExcerpts(sortedChapters,question,{maxExcerpts:3,maxPerChapter:2,chunkSize:240});
-  const historicalContext = historical.map(x=>'CHAPTER "'+x.chapterTitle+'" — actual manuscript excerpt:\n'+x.text).join('\n\n');
-  const matches = getRelevantChunks(factualDocs, chunks, query, { context:'planner' }).slice(0, 2);
+  const recentChatContext = (recentMessages || []).slice(-2).map((m) => short(m.text, 600)).join('\n');
+  const retrievalQuery = [question, recentChatContext].filter(Boolean).join('\n');
+  const query = [retrievalQuery, ...recent.map((c) => c.title + ' ' + c.content.slice(-1800))].join('\n');
+  const selectedMemories = selectSmartMemories(activeMemories, retrievalQuery, { maxSelected: 6, foundationCount: 1, recentCount: 2 }).selected;
+  const historical = getRelevantStoryExcerpts(sortedChapters, retrievalQuery, { maxExcerpts: 3, maxPerChapter: 2, chunkSize: 240 });
+  const historicalContext = historical.map((x) => 'CHAPTER "' + x.chapterTitle + '" — actual manuscript excerpt:\n' + x.text).join('\n\n');
+  const matches = getRelevantChunks(factualDocs, chunks, query, { context: 'planner' }).slice(0, 2);
   const docContext = matches.map((c) => 'REFERENCE "' + c.document.filename + '" (' + c.document.type + '): ' + short(c.text, 750)).join('\n\n');
+  const revealedCanon = canonNotes.filter((n) => n?.visibility === 'revealed');
+  const privateCanon = canonNotes.filter((n) => n?.visibility !== 'revealed');
   return [
     'LOCKED FACTS:\n' + lockedFacts.map((f) => '- ' + f.text).join('\n').slice(0, 9000),
-    'PERMANENT AU CANON:\n' + canonNotes.map((n) => '- ' + n.text).join('\n').slice(0, 6000),
-    'CHARACTER PROFILES:\n' + characterContext.slice(0, 10500),
+    revealedCanon.length ? 'REVEALED / ESTABLISHED AU CANON:\n' + revealedCanon.map((n) => '- ' + n.text).join('\n').slice(0, 4000) : '',
+    privateCanon.length ? 'PRIVATE AUTHOR CANON (underlying AU truth — NOT automatic character knowledge):\n' + privateCanon.map((n) => '- ' + n.text).join('\n').slice(0, 4000) : '',
+    'CHARACTER PROFILES:\n' + characterContext.slice(0, 12000),
     'SELECTED CONTINUITY MEMORIES (chronological):\n' + formatMemory(selectedMemories),
-    historicalContext ? 'RELEVANT HISTORICAL MANUSCRIPT EXCERPTS:\n'+historicalContext : '',
+    historicalContext ? 'RELEVANT HISTORICAL MANUSCRIPT EXCERPTS:\n' + historicalContext : '',
     'ACTUAL MOST RECENT SAVED CHAPTER ENDINGS (source of truth for immediate next scene):\n' + chapterContext,
     docContext ? 'SELECTED CURRENT-AU REFERENCE EXCERPTS (background only, not events that automatically occurred):\n' + docContext : '',
   ].filter(Boolean).join('\n\n---\n\n');
 }
 
 const SYSTEM = [
-  'You are the author’s friendly collaborative story-planning partner for Power to Strive Studio, NOT a chapter-writing engine.',
+  'You are the author’s friendly collaborative story-planning partner for Inky Paws, NOT a chapter-writing engine.',
   'Talk WITH the author: brainstorm, ask a useful question when genuinely needed, offer distinct directions, work through character consequences, or build a scene outline if requested.',
   'Respond conversationally in the language the author uses. If asked for copy-ready prompts or chapter scenes, write those in English unless the author requests otherwise.',
   'Ground proposals in the current project’s locked facts, character profiles and actual saved chapters. Actual approved events outrank old references or speculative ideas.',
@@ -137,7 +146,7 @@ export async function renderPlanner(root) {
     const message = messages[index];
     if (!message || message.role !== 'assistant') return;
     if (copy) {
-      try { await navigator.clipboard.writeText(message.text); toast('Idea copiada.'); }
+      try { await copyTextToClipboard(message.text); toast('Idea copiada.'); }
       catch { toast('No se pudo copiar; selecciona el texto manualmente.', {error:true}); }
       return;
     }
@@ -169,7 +178,7 @@ export async function renderPlanner(root) {
     busy = true; send.disabled = true; clear.disabled = true;
     status.textContent = '💭 Pensando contigo…';
     try {
-      const context = await collectContext(question);
+      const context = await collectContext(question, messages);
       const conversation = messages.slice(-CONTEXT_TURNS).map((m) =>
         (m.role === 'user' ? 'AUTHOR' : 'PLANNING ASSISTANT') + ':\n' + short(m.text, 4100)
       ).join('\n\n');
@@ -178,11 +187,13 @@ export async function renderPlanner(root) {
         conversation ? 'PREVIOUS PLANNING DISCUSSION:\n' + conversation : '',
         'LATEST AUTHOR MESSAGE — answer this directly:\n' + question,
       ].filter(Boolean).join('\n\n====\n\n');
-      const result = await getProvider(settings).generate({
-        systemPrompt:SYSTEM,
+      const provider = getProvider(settings);
+      const reasoningModel = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$)|gemini-2\.5|gemini-3)/i.test(provider.config?.model || '');
+      const result = await provider.generate({
+        systemPrompt: SYSTEM,
         userPrompt,
-        maxOutputTokens:1400,
-        temperature:1,
+        maxOutputTokens: reasoningModel ? 4200 : 1800,
+        temperature: 1,
       });
       if (!result.ok) throw new Error(result.errorMessage || 'La IA no pudo responder.');
       messages = [...messages,{role:'user',text:question},{role:'assistant',text:result.text}].slice(-HISTORY_LIMIT);
