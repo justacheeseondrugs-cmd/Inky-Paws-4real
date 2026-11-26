@@ -132,6 +132,45 @@ function sanitizeSettingsForBackup(record) {
   return safe;
 }
 
+const ALLOWED_BACKUP_APPS = new Set(['pts-studio', 'inky-paws']);
+
+export function validateBackupDump(dump) {
+  if (!dump || typeof dump !== 'object' || Array.isArray(dump)) {
+    throw new Error('El archivo no contiene una copia de seguridad válida.');
+  }
+  const meta = dump.__meta;
+  if (meta !== undefined) {
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
+      throw new Error('Los metadatos de la copia de seguridad no son válidos.');
+    }
+    if (meta.app && !ALLOWED_BACKUP_APPS.has(String(meta.app))) {
+      throw new Error('Este archivo no corresponde a una copia de seguridad de Inky Paws.');
+    }
+  }
+  const storeNames = Object.keys(STORES);
+  const targetStores = [];
+  for (const name of storeNames) {
+    if (!(name in dump) || dump[name] === undefined) continue;
+    if (!Array.isArray(dump[name])) {
+      throw new Error(`El almacén "${name}" tiene un formato inválido en la copia de seguridad.`);
+    }
+    for (let i = 0; i < dump[name].length; i++) {
+      const item = dump[name][i];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new Error(`Registro inválido en "${name}" (posición ${i + 1}).`);
+      }
+      if (typeof item.id !== 'string' || !item.id.trim()) {
+        throw new Error(`Falta un identificador válido en "${name}" (posición ${i + 1}).`);
+      }
+    }
+    targetStores.push(name);
+  }
+  if (!targetStores.length) {
+    throw new Error('La copia de seguridad no contiene ningún almacén de datos reconocible.');
+  }
+  return { targetStores };
+}
+
 async function exportAll() {
   const dump = {};
   for (const name of Object.keys(STORES)) {
@@ -150,35 +189,52 @@ async function exportAll() {
 }
 
 async function importAll(dump, { merge = false } = {}) {
+  // Validar estructura COMPLETA antes de tocar IndexedDB: una copia inválida
+  // nunca debe borrar ni modificar datos existentes.
+  const { targetStores } = validateBackupDump(dump);
+
   // Nunca aceptar credenciales desde un archivo importado.
   // Conserva únicamente las claves que ya estaban en ESTE navegador.
   const localMain = await get('settings', 'main').catch(() => null);
   const localApiKeys = { ...(localMain?.apiKeys || {}) };
+  const database = await openDb();
 
-  for (const name of Object.keys(STORES)) {
-    if (!Array.isArray(dump[name])) continue;
-    if (!merge) await clearStore(name);
-    const store = await tx(name, 'readwrite');
-    let hasMainSettings = false;
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(targetStores, 'readwrite');
+    transaction.oncomplete = () => resolve(true);
+    transaction.onerror = () => reject(transaction.error || new Error('No se pudo completar la importación.'));
+    transaction.onabort = () => reject(transaction.error || new Error('La importación fue abortada; tus datos previos permanecen intactos.'));
 
-    for (const obj of dump[name]) {
-      let safeObj = obj;
-      if (name === 'settings') {
-        safeObj = sanitizeSettingsForBackup(obj);
-        if (safeObj?.id === 'main') {
-          hasMainSettings = true;
-          safeObj = { ...safeObj, apiKeys: localApiKeys };
+    try {
+      for (const name of targetStores) {
+        const store = transaction.objectStore(name);
+        if (!merge) store.clear();
+        let hasMainSettings = false;
+
+        for (const obj of dump[name]) {
+          let safeObj = { ...obj };
+          if (name === 'settings') {
+            safeObj = sanitizeSettingsForBackup(safeObj);
+            if (safeObj.id === 'main') {
+              hasMainSettings = true;
+              safeObj = { ...safeObj, apiKeys: { ...localApiKeys } };
+            }
+          }
+          store.put(safeObj);
+        }
+
+        // Backup raro/antiguo sin settings.main: no perder las claves locales existentes.
+        if (name === 'settings' && !hasMainSettings && localMain) {
+          store.put({ ...localMain, apiKeys: { ...localApiKeys } });
         }
       }
-      store.put(safeObj);
+    } catch (err) {
+      try { transaction.abort(); } catch { }
+      reject(err);
     }
+  });
 
-    // Backup raro/antiguo sin settings.main: no perder las claves locales existentes.
-    if (name === 'settings' && !hasMainSettings && localMain) {
-      store.put({ ...localMain, apiKeys: localApiKeys });
-    }
-  }
   return true;
 }
 
-export const db = { openDb, getAll, getByIndex, get, put, del, clearStore, uid, exportAll, importAll, getActiveProjectId, setActiveProjectId };
+export const db = { openDb, getAll, getByIndex, get, put, del, clearStore, uid, exportAll, importAll, validateBackupDump, getActiveProjectId, setActiveProjectId };
