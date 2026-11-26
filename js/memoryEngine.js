@@ -79,21 +79,90 @@ export function parseMemoryResponse(text) {
 }
 
 export async function markChapterMemoriesStale(chapterId, { projectId = '', reason = 'edited', chapterRevision = '' } = {}) {
-  if (!chapterId) return 0;
-  const scope = { projectId: projectId || db.getActiveProjectId() };
-  const entries = await db.getByIndex('memoryEntries', 'by_chapter', chapterId, scope);
-  if (!entries.length) return 0;
+  if (!chapterId) return { memoryEntries: 0, knowledgeFacts: 0, relationshipStates: 0, arcSummaries: 0, total: 0 };
+  const targetProjectId = projectId || db.getActiveProjectId();
+  const scope = { projectId: targetProjectId };
   const now = new Date().toISOString();
+  const safeReason = reason || 'edited';
+  let staleMemCount = 0;
+  let staleFactCount = 0;
+  let staleRelCount = 0;
+  let staleArcCount = 0;
+
+  // 1. Memorias de continuidad del capítulo (conservando contenido previo intacto)
+  const entries = await db.getByIndex('memoryEntries', 'by_chapter', chapterId, scope);
   for (const entry of entries) {
     await db.put('memoryEntries', {
       ...entry,
       stale: true,
-      staleReason: reason || 'edited',
+      staleReason: safeReason,
       staleAt: now,
       latestChapterRevision: chapterRevision || entry.latestChapterRevision || '',
     }, scope);
+    staleMemCount += 1;
   }
-  return entries.length;
+
+  // 2. Hechos epistémicos derivados del capítulo (marcados stale/disputed sin alterar `truth`)
+  const allFacts = await db.getAll('knowledgeFacts', scope).catch(() => []);
+  for (const fact of (allFacts || [])) {
+    if (!fact || fact.deletedAt) continue;
+    if (fact.sourceChapterId === chapterId) {
+      await db.put('knowledgeFacts', {
+        ...fact,
+        stale: true,
+        disputed: true,
+        staleReason: safeReason,
+        staleAt: now,
+        previousTruthSnapshot: fact.previousTruthSnapshot || fact.truth || '',
+        latestChapterRevision: chapterRevision || fact.latestChapterRevision || '',
+      }, scope);
+      staleFactCount += 1;
+    }
+  }
+
+  // 3. Estados relacionales cualitativos respaldados por este capítulo
+  const allRels = await db.getAll('relationshipStates', scope).catch(() => []);
+  for (const rel of (allRels || [])) {
+    if (!rel || rel.deletedAt) continue;
+    const refsChapter = rel.sourceChapterId === chapterId ||
+      (rel.evidenceRefs || []).some((e) => e?.chapterId === chapterId) ||
+      (rel.promises || []).some((p) => p?.sourceChapterId === chapterId) ||
+      (rel.sharedMemories || []).some((m) => m?.sourceChapterId === chapterId) ||
+      (rel.privateSecrets || []).some((s) => s?.sourceChapterId === chapterId);
+    if (refsChapter) {
+      await db.put('relationshipStates', {
+        ...rel,
+        stale: true,
+        staleReason: safeReason,
+        staleAt: now,
+        latestChapterRevision: chapterRevision || rel.latestChapterRevision || '',
+      }, scope);
+      staleRelCount += 1;
+    }
+  }
+
+  // 4. Resúmenes de arcos narrativos que incluyen este capítulo
+  const allArcs = await db.getAll('arcSummaries', scope).catch(() => []);
+  for (const arc of (allArcs || [])) {
+    if (!arc || arc.deletedAt) continue;
+    if (Array.isArray(arc.sourceChapterIds) && arc.sourceChapterIds.includes(chapterId)) {
+      await db.put('arcSummaries', {
+        ...arc,
+        stale: true,
+        staleReason: safeReason,
+        staleAt: now,
+      }, scope);
+      staleArcCount += 1;
+    }
+  }
+
+  return {
+    memoryEntries: staleMemCount,
+    knowledgeFacts: staleFactCount,
+    relationshipStates: staleRelCount,
+    arcSummaries: staleArcCount,
+    total: staleMemCount + staleFactCount + staleRelCount + staleArcCount,
+  };
 }
 
 export async function saveContinuityMemoryEntry(chapter, fields, { projectId = '' } = {}) {
