@@ -1,8 +1,20 @@
 // db.js — capa de persistencia. Toda la app pasa por aquí para leer/escribir.
 // No contiene lógica de negocio ni de IA: sólo CRUD sobre IndexedDB.
 
-const DB_NAME = 'pts-studio';
-const DB_VERSION = 1;
+export const DB_NAME = 'pts-studio';
+export const DB_VERSION = 2;
+
+export const V1_STORE_NAMES = [
+  'chapters',
+  'characters',
+  'documents',
+  'docChunks',
+  'memoryEntries',
+  'lockedFacts',
+  'canonNotes',
+  'settings',
+  'generationState',
+];
 
 const STORES = {
   chapters: 'id',
@@ -14,12 +26,86 @@ const STORES = {
   canonNotes: 'id',
   settings: 'id',
   generationState: 'id',
+  universalCharacters: 'id',
+  characterOverlays: 'id',
+  storyConfigs: 'id',
+  storyPresets: 'id',
+  knowledgeFacts: 'id',
+  usageLog: 'id',
+};
+
+export const STORE_NAMES = Object.keys(STORES);
+
+const STORE_INDEXES = {
+  docChunks: [['by_document', 'documentId']],
+  memoryEntries: [
+    ['by_chapter', 'chapterId'],
+    ['by_project_chapter', ['projectId', 'chapterId']],
+    ['by_project_created', ['projectId', 'createdAt']],
+  ],
+  chapters: [
+    ['by_project_order', ['projectId', 'order']],
+    ['by_project_updated', ['projectId', 'updatedAt']],
+  ],
+  characters: [
+    ['by_project_name', ['projectId', 'name']],
+  ],
+  documents: [
+    ['by_project_priority', ['projectId', 'priority']],
+  ],
+  universalCharacters: [
+    ['by_fandom', 'fandom'],
+    ['by_category', 'category'],
+    ['by_name', 'name'],
+  ],
+  characterOverlays: [
+    ['by_base_character', 'baseCharacterId'],
+    ['by_fandom', 'fandom'],
+  ],
+  storyConfigs: [
+    ['by_fandom', 'fandom'],
+  ],
+  storyPresets: [
+    ['by_fandom', 'fandom'],
+  ],
+  knowledgeFacts: [
+    ['by_project', 'projectId'],
+    ['by_project_checkpoint', ['projectId', 'firstEffectiveCheckpoint']],
+  ],
+  usageLog: [
+    ['by_created', 'createdAt'],
+  ],
 };
 
 // Los proyectos comparten proveedor de IA, pero NUNCA capítulos ni referencias.
 // Los registros anteriores no llevan projectId: pertenecen a ORIGINAL y no se migran.
 const ORIGINAL_PROJECT = 'original';
-const SCOPED_STORES = new Set(['chapters','characters','documents','docChunks','memoryEntries','lockedFacts','canonNotes','generationState']);
+const SCOPED_STORES = new Set([
+  'chapters',
+  'characters',
+  'documents',
+  'docChunks',
+  'memoryEntries',
+  'lockedFacts',
+  'canonNotes',
+  'generationState',
+  'knowledgeFacts',
+]);
+const SYNCED_ENTITY_STORES = new Set([
+  'chapters',
+  'characters',
+  'documents',
+  'docChunks',
+  'memoryEntries',
+  'lockedFacts',
+  'canonNotes',
+  'generationState',
+  'universalCharacters',
+  'characterOverlays',
+  'storyConfigs',
+  'storyPresets',
+  'knowledgeFacts',
+]);
 const ACTIVE_KEY = 'pts_active_project_v1';
 let memoryActiveProject = null;
 
@@ -67,17 +153,34 @@ function openDb() {
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (e) => {
-      const db = e.target.result;
+      const database = e.target.result;
+      const upgradeTx = e.target.transaction;
       for (const [name, keyPath] of Object.entries(STORES)) {
-        if (!db.objectStoreNames.contains(name)) {
-          const store = db.createObjectStore(name, { keyPath });
-          if (name === 'docChunks') store.createIndex('by_document', 'documentId', { unique: false });
-          if (name === 'memoryEntries') store.createIndex('by_chapter', 'chapterId', { unique: false });
+        const store = database.objectStoreNames.contains(name)
+          ? upgradeTx.objectStore(name)
+          : database.createObjectStore(name, { keyPath });
+        for (const [idxName, idxKeyPath] of (STORE_INDEXES[name] || [])) {
+          if (!store.indexNames.contains(idxName)) {
+            store.createIndex(idxName, idxKeyPath, { unique: false });
+          }
         }
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const database = req.result;
+      database.onversionchange = () => {
+        database.close();
+        dbPromise = null;
+      };
+      resolve(database);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error);
+    };
+    req.onblocked = () => {
+      dbPromise = null;
+    };
   });
   return dbPromise;
 }
@@ -125,6 +228,18 @@ async function get(storeName, id, opts) {
   });
 }
 
+function stampSyncFields(storeName, obj, existing) {
+  if (!SYNCED_ENTITY_STORES.has(storeName)) return obj;
+  const now = new Date().toISOString();
+  const prevRev = Number.isInteger(existing?.revision) ? existing.revision : 0;
+  const nextRev = prevRev + 1;
+  obj.revision = nextRev;
+  obj.syncUpdatedAt = now;
+  if (obj.deletedAt === undefined) obj.deletedAt = null;
+  obj.dirty = true;
+  return obj;
+}
+
 async function put(storeName, obj, opts) {
   const scope = resolveScope(opts);
   if (SCOPED_STORES.has(storeName)) {
@@ -142,18 +257,20 @@ async function put(storeName, obj, opts) {
     transaction.onerror = () => reject(customError || transaction.error);
     transaction.onabort = () => reject(customError || transaction.error || new Error('No se pudo guardar el registro.'));
 
-    if (SCOPED_STORES.has(storeName) && hadExplicitId) {
+    if (hadExplicitId && (SCOPED_STORES.has(storeName) || SYNCED_ENTITY_STORES.has(storeName))) {
       const checkReq = store.get(obj.id);
       checkReq.onsuccess = () => {
         const existing = checkReq.result;
-        if (existing && (existing.projectId || ORIGINAL_PROJECT) !== scope) {
+        if (SCOPED_STORES.has(storeName) && existing && (existing.projectId || ORIGINAL_PROJECT) !== scope) {
           customError = new Error('Colisión de ID: ya existe un registro con este identificador en otra historia.');
           try { transaction.abort(); } catch { }
           return;
         }
+        stampSyncFields(storeName, obj, existing);
         store.put(obj);
       };
     } else {
+      stampSyncFields(storeName, obj, null);
       store.put(obj);
     }
   });
@@ -255,6 +372,25 @@ function validateStoreRecord(storeName, item, pos) {
     if (item.id === 'main' && item.apiKeys !== undefined && !isPlainObject(item.apiKeys)) {
       throw new Error('El campo apiKeys en ajustes tiene un formato inválido.');
     }
+  } else if (storeName === 'universalCharacters') {
+    if (item.name !== undefined && typeof item.name !== 'string') throw new Error(`Nombre inválido en personaje universal (posición ${pos}).`);
+    if (item.antiPatterns !== undefined && !Array.isArray(item.antiPatterns)) throw new Error(`antiPatterns inválido en personaje universal (posición ${pos}).`);
+    if (item.defaultEnabled !== undefined && typeof item.defaultEnabled !== 'boolean') throw new Error(`defaultEnabled inválido en personaje universal (posición ${pos}).`);
+  } else if (storeName === 'characterOverlays') {
+    if (typeof item.baseCharacterId !== 'string' || !item.baseCharacterId.trim()) throw new Error(`baseCharacterId inválido en overlay (posición ${pos}).`);
+    if (item.characterizationChanges !== undefined && !Array.isArray(item.characterizationChanges)) throw new Error(`characterizationChanges inválido en overlay (posición ${pos}).`);
+    if (item.defaultEnabled !== undefined && typeof item.defaultEnabled !== 'boolean') throw new Error(`defaultEnabled inválido en overlay (posición ${pos}).`);
+  } else if (storeName === 'storyConfigs') {
+    if (item.fandom !== undefined && typeof item.fandom !== 'string') throw new Error(`fandom inválido en configuración de historia (posición ${pos}).`);
+    if (item.proposals !== undefined && !Array.isArray(item.proposals)) throw new Error(`proposals inválido en configuración de historia (posición ${pos}).`);
+  } else if (storeName === 'storyPresets') {
+    if (item.name !== undefined && typeof item.name !== 'string') throw new Error(`Nombre inválido en preset de historia (posición ${pos}).`);
+    if (item.fandom !== undefined && typeof item.fandom !== 'string') throw new Error(`fandom inválido en preset de historia (posición ${pos}).`);
+  } else if (storeName === 'knowledgeFacts') {
+    if (item.truth !== undefined && typeof item.truth !== 'string') throw new Error(`truth inválido en hecho de conocimiento (posición ${pos}).`);
+    if (item.statusByCharacter !== undefined && !isPlainObject(item.statusByCharacter)) throw new Error(`statusByCharacter inválido en hecho de conocimiento (posición ${pos}).`);
+  } else if (storeName === 'usageLog') {
+    if (item.provider !== undefined && typeof item.provider !== 'string') throw new Error(`provider inválido en registro de uso (posición ${pos}).`);
   }
 }
 
@@ -263,6 +399,7 @@ export function validateBackupDump(dump) {
     throw new Error('El archivo no contiene una copia de seguridad válida.');
   }
   const meta = dump.__meta;
+  let declaredVersion = null;
   if (meta !== undefined) {
     if (!isPlainObject(meta)) {
       throw new Error('Los metadatos de la copia de seguridad no son válidos.');
@@ -275,14 +412,16 @@ export function validateBackupDump(dump) {
       if (!Number.isInteger(ver) || ver < SUPPORTED_MIN_VERSION || ver > SUPPORTED_MAX_VERSION) {
         throw new Error(`Versión de esquema no compatible (${String(meta.version)}). Esta versión de Inky Paws admite hasta la versión ${SUPPORTED_MAX_VERSION}.`);
       }
+      declaredVersion = ver;
     }
   }
   const allStoreNames = Object.keys(STORES);
+  const v1Set = new Set(V1_STORE_NAMES);
   const targetStores = [];
-  const missingStores = [];
+  const missingAllStores = [];
   for (const name of allStoreNames) {
     if (!(name in dump) || dump[name] === undefined) {
-      missingStores.push(name);
+      missingAllStores.push(name);
       continue;
     }
     if (!Array.isArray(dump[name])) {
@@ -302,13 +441,19 @@ export function validateBackupDump(dump) {
   if (!targetStores.length) {
     throw new Error('La copia de seguridad no contiene ningún almacén de datos reconocible.');
   }
+  const hasAnyV2Store = targetStores.some((name) => !v1Set.has(name));
+  const treatAsV1 = declaredVersion === 1 || (declaredVersion === null && !hasAnyV2Store);
+  const expectedFullStores = treatAsV1 ? V1_STORE_NAMES : allStoreNames;
+  const targetSet = new Set(targetStores);
+  const missingStores = expectedFullStores.filter((name) => !targetSet.has(name));
   const isFull = missingStores.length === 0 && meta?.backupKind !== 'partial';
   return {
     targetStores,
     missingStores,
     isFull,
     backupKind: isFull ? 'full' : 'partial',
-    version: meta?.version ?? DB_VERSION,
+    version: declaredVersion ?? (treatAsV1 ? 1 : DB_VERSION),
+    schemaVersion: declaredVersion ?? (treatAsV1 ? 1 : DB_VERSION),
   };
 }
 
@@ -325,6 +470,8 @@ async function exportAll() {
     backupKind: 'full',
     exportedAt: new Date().toISOString(),
     version: DB_VERSION,
+    schemaVersion: DB_VERSION,
+    storeNames: Object.keys(STORES),
     apiKeysExcluded: true
   };
   return dump;
