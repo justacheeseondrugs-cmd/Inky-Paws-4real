@@ -131,7 +131,7 @@ export async function renderSettings(root) {
         </div>
         <div>
           <label class="field-label" for="w-max-output">Límite máximo de tokens de salida por solicitud</label>
-          <input type="number" id="w-max-output" min="256" max="65536" step="256" value="${Number(walletConfig.maxOutputTokensPerRequest) || 12000}">
+          <input type="number" id="w-max-output" min="256" max="65536" step="256" value="${Number(walletConfig.maxOutputTokensPerRequest) || 16384}">
         </div>
       </div>
       <div class="grid-2" style="margin-top:8px;">
@@ -520,7 +520,7 @@ export async function renderSettings(root) {
       auxiliaryProvider: document.getElementById('w-aux-provider')?.value || 'openai',
       auxiliaryModel: document.getElementById('w-aux-model')?.value.trim() || 'gpt-5.4-mini',
       reasoningEffort: document.getElementById('w-reasoning-effort')?.value || 'none',
-      maxOutputTokensPerRequest: Number(document.getElementById('w-max-output')?.value || 12000),
+      maxOutputTokensPerRequest: Number(document.getElementById('w-max-output')?.value || 16384),
       maxGenerationSpendUsd: Number(document.getElementById('w-max-spend')?.value ?? 0.50),
       optionalAnalysis: {
         prepEnabled: false,

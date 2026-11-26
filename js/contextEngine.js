@@ -112,7 +112,8 @@ function detectOperationCriticalBlockers(snapshot, opParams = {}) {
   const blockers = [];
 
   // 1. Invariantes críticos del universo (Power to Strive, conflictos de presets, reparto, Anya, Joseph)
-  for (const issue of (snapshot?.universe?.criticalIssues || [])) {
+  const universeContradictions = snapshot?.universe?.contradictions || snapshot?.universe?.criticalIssues || [];
+  for (const issue of universeContradictions) {
     blockers.push({
       code: issue.code || 'universe_critical_issue',
       level: 'critical',
@@ -124,11 +125,11 @@ function detectOperationCriticalBlockers(snapshot, opParams = {}) {
 
   // 2. Verificar que las entradas del formulario no contradigan los invariantes de Power to Strive
   if (snapshot?.universe?.isPowerToStrive && (opParams.reactionMode !== false && snapshot?.universe?.reactionMode !== false)) {
-    const allowedSet = new Set((snapshot.universe.allowedRoomCast || []).map(extractLogicalId));
+    const allowedSet = new Set((snapshot.universe.allowedRoomCast || []).map((x) => extractLogicalId(x).toLowerCase()));
     const roomNames = parseCastNames(opParams.roomCast || '');
     for (const rawName of roomNames) {
-      const firstWord = extractLogicalId(rawName.split(/\s+/)[0] || rawName);
-      const fullId = extractLogicalId(rawName);
+      const firstWord = extractLogicalId(rawName.split(/\s+/)[0] || rawName).toLowerCase();
+      const fullId = extractLogicalId(rawName).toLowerCase();
       const id = PTS_DEFAULT_TWELVE.includes(firstWord) || firstWord === 'joseph' || firstWord === 'anya' || firstWord === 'candy'
         ? firstWord
         : fullId;
@@ -194,9 +195,13 @@ function formatHardInvariantsSection(snapshot, opParams = {}) {
 
     if (uni.activeOverlays?.length) {
       lines.push('- Active AUTHOR-APPROVED character overlays (apply ONLY to their specified character/version/scope):');
+      const resolvedById = new Map((uni.resolvedCharacters || []).map((rc) => [extractLogicalId(rc.id || rc.effectiveProfile?.id || ''), rc]));
       for (const ov of uni.activeOverlays) {
-        const changes = (ov.characterizationChanges || []).join('; ');
-        lines.push(`  * ${ov.characterId} [${ov.scope}/${ov.characterVersion}]: ${ov.name} -> ${changes || '(no changes)'}`);
+        const rc = resolvedById.get(extractLogicalId(ov.characterId || ''));
+        const traits = ov.characterizationChanges?.length
+          ? ov.characterizationChanges
+          : (rc?.effectiveProfile?.overlayTraits || []);
+        lines.push(`  * ${ov.characterId} [${ov.scope}/${ov.characterVersion}]: ${ov.name} -> ${traits.length ? traits.join('; ') : '(authorized)'}`);
       }
     } else if (uni.isPowerToStrive) {
       lines.push('- Character overlay baseline: Standard Levi Ackerman is the permanent default. NO Violet traits are active in this scope; do NOT import Violet Evergarden traits or backstory.');
@@ -315,29 +320,42 @@ function formatWritingDnaAndCraftSection(snapshot, opParams = {}) {
 function formatCharactersAndRelationshipsSection(snapshot, opParams = {}) {
   const lines = ['=== SECTION 3: CHARACTER PROFILES & QUALITATIVE RELATIONSHIPS ==='];
   const resolvedChars = snapshot?.universe?.resolvedCharacters || [];
-  const allowedList = parseCastNames(opParams.allowedCast || '').map((n) => extractLogicalId(n.split(/\s+/)[0] || n));
+  const allowedList = parseCastNames(opParams.allowedCast || '').map((n) => extractLogicalId(n.split(/\s+/)[0] || n).toLowerCase());
   const allowedFilter = allowedList.length ? new Set(allowedList) : null;
 
   const charsToShow = resolvedChars.filter((c) => {
     if (!c || c.active === false) return false;
     if (!allowedFilter) return true;
-    const lid = extractLogicalId(c.logicalId || c.id || c.name);
-    const first = extractLogicalId(String(c.name || '').split(/\s+/)[0] || '');
+    const ep = c.effectiveProfile || c;
+    const lid = extractLogicalId(ep.id || c.logicalId || c.id || ep.name || c.name).toLowerCase();
+    const first = extractLogicalId(String(ep.name || c.name || '').split(/\s+/)[0] || '').toLowerCase();
     return allowedFilter.has(lid) || allowedFilter.has(first);
   });
 
   if (charsToShow.length) {
     for (const c of charsToShow.slice(0, 24)) {
+      const ep = c.effectiveProfile || c;
+      const personality = ep.corePersonality || c.personality || '';
+      const speech = ep.speechPatterns || c.speechStyle || '';
+      const anti = Array.isArray(ep.antiPatterns) && ep.antiPatterns.length
+        ? ep.antiPatterns.join('; ')
+        : (c.neverDoRules || '');
       const details = [
-        `— ${c.name || c.logicalId} (pronouns: ${c.pronouns || 'unspecified'})`,
-        c.personality ? `  Personality: ${clip(c.personality, 260)}` : '',
-        c.speechStyle ? `  Voice/Speech: ${clip(c.speechStyle, 220)}` : '',
-        c.hardRules ? `  Hard rules: ${clip(c.hardRules, 260)}` : '',
-        c.chemistry ? `  Chemistry: ${clip(c.chemistry, 260)}` : '',
-        c.currentKnowledge ? `  Current knowledge: ${clip(c.currentKnowledge, 260)}` : '',
-        c.neverDoRules ? `  NEVER: ${clip(c.neverDoRules, 220)}` : '',
-        c.appliedOverlays?.length
-          ? `  Active approved overlays: ${c.appliedOverlays.map((o) => `${o.name}: ${(o.characterizationChanges || []).join('; ')}`).join(' | ')}`
+        `— ${ep.name || c.name || c.id} (pronouns: ${ep.pronouns || c.pronouns || 'unspecified'})`,
+        personality ? `  Personality: ${clip(personality, 260)}` : '',
+        speech ? `  Voice/Speech: ${clip(speech, 220)}` : '',
+        ep.motivations ? `  Motivations: ${clip(ep.motivations, 200)}` : '',
+        ep.emotionalDefenses ? `  Emotional defenses: ${clip(ep.emotionalDefenses, 200)}` : '',
+        ep.bodyLanguage ? `  Body language: ${clip(ep.bodyLanguage, 200)}` : '',
+        ep.hardRules || c.hardRules ? `  Hard rules: ${clip(ep.hardRules || c.hardRules, 260)}` : '',
+        ep.chemistry || c.chemistry ? `  Chemistry: ${clip(ep.chemistry || c.chemistry, 260)}` : '',
+        ep.currentKnowledge || c.currentKnowledge ? `  Current knowledge: ${clip(ep.currentKnowledge || c.currentKnowledge, 260)}` : '',
+        anti ? `  NEVER / Anti-patterns: ${clip(anti, 260)}` : '',
+        Array.isArray(ep.overlayTraits) && ep.overlayTraits.length
+          ? `  Active approved overlay traits (${(c.appliedOverlays || []).map((o) => o.name).join(', ')}): ${ep.overlayTraits.join('; ')}`
+          : '',
+        Array.isArray(ep.overlayBackstoryNotes) && ep.overlayBackstoryNotes.length
+          ? `  Overlay backstory notes: ${ep.overlayBackstoryNotes.join('; ')}`
           : '',
       ].filter(Boolean);
       lines.push(details.join('\n'));

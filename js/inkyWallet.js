@@ -253,7 +253,7 @@ export function createDefaultWalletConfig(mainSettings = null) {
       semanticReviewEnabled: false,
       continuityExtractionEnabled: false,
     },
-    maxOutputTokensPerRequest: 12000,
+    maxOutputTokensPerRequest: 16384,
     maxGenerationSpendUsd: 0.50,
     customPricingTable: {},
     updatedAt: new Date().toISOString(),

@@ -781,7 +781,7 @@ export async function applySelectiveProposalDecision(projectId, proposal, {
       context: { fandom: normalizedConfig.fandom },
     });
     if (!validation.ok) {
-      const details = (validation.criticalIssues || []).map((i) => i.message || i.code).join(' | ');
+      const details = (validation.contradictions || validation.criticalIssues || []).map((i) => i.message || i.code).join(' | ');
       throw new Error(`La propuesta editada viola invariantes del universo y fue rechazada sin guardar cambios parciales: ${details || 'contradicción crítica detectada'}`);
     }
   }
