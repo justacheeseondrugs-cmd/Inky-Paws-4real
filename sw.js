@@ -2,6 +2,8 @@
 // abra offline. Las llamadas a la API de IA siempre necesitan red y nunca
 // se cachean aquí.
 const CACHE = 'inky-paws-es-v44-phase0-v1';
+const OWNED_CACHE_PREFIXES = ['inky-paws-', 'pts-studio-'];
+const isOwnedCache = (name) => OWNED_CACHE_PREFIXES.some((prefix) => String(name || '').startsWith(prefix));
 const SHELL = [
   './',
   './index.html',
@@ -75,7 +77,9 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    caches.keys().then((keys) => Promise.all(
+      keys.filter((k) => isOwnedCache(k) && k !== CACHE).map((k) => caches.delete(k))
+    ))
   );
   self.clients.claim();
 });
