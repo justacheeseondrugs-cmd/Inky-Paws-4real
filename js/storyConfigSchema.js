@@ -59,6 +59,33 @@ function normalizeCastPatch(rawOp) {
   return Object.keys(patch).length ? patch : null;
 }
 
+function normalizeProposalInvitationEntry(item) {
+  if (typeof item === 'string') {
+    const id = extractLogicalId(item);
+    return id || null;
+  }
+  if (!isPlainObject(item)) return null;
+  const id = extractLogicalId(item.characterId || item.id || item.character || '');
+  if (!id) return null;
+  const rawOrder = item.effectiveChapterOrder !== undefined && item.effectiveChapterOrder !== null && item.effectiveChapterOrder !== ''
+    ? Number(item.effectiveChapterOrder)
+    : null;
+  return {
+    characterId: id,
+    effectiveCheckpoint: cleanString(item.effectiveCheckpoint || ''),
+    effectiveChapterOrder: Number.isFinite(rawOrder) && rawOrder > 0 ? Math.floor(rawOrder) : null,
+    invitedAt: item.invitedAt ? cleanString(item.invitedAt) : null,
+    authorizedBy: cleanString(item.authorizedBy || 'author'),
+    note: cleanString(item.note || ''),
+  };
+}
+
+function getInvitationCharId(entry) {
+  if (typeof entry === 'string') return extractLogicalId(entry);
+  if (isPlainObject(entry)) return extractLogicalId(entry.characterId || entry.id || '');
+  return '';
+}
+
 export function createDefaultStoryConfig(projectId, { fandom = 'neutral', presetId = null } = {}) {
   const now = new Date().toISOString();
   return {
@@ -120,14 +147,18 @@ export function validateConfigProposal(input) {
     }
   }
 
-  // Operaciones explícitas sobre invitaciones a sala (p.ej. invitar o revocar a Joseph)
+  // Operaciones explícitas sobre invitaciones a sala (p.ej. invitar con checkpoint/capítulo o revocar a Joseph)
   const guestInvitationOps = {};
   if (isPlainObject(input.guestInvitationOps)) {
     if (input.guestInvitationOps.set !== undefined) {
-      guestInvitationOps.set = cleanStringArray(input.guestInvitationOps.set).map(extractLogicalId);
+      guestInvitationOps.set = (Array.isArray(input.guestInvitationOps.set) ? input.guestInvitationOps.set : [])
+        .map(normalizeProposalInvitationEntry)
+        .filter(Boolean);
     }
     if (input.guestInvitationOps.invite !== undefined) {
-      guestInvitationOps.invite = cleanStringArray(input.guestInvitationOps.invite).map(extractLogicalId);
+      guestInvitationOps.invite = (Array.isArray(input.guestInvitationOps.invite) ? input.guestInvitationOps.invite : [])
+        .map(normalizeProposalInvitationEntry)
+        .filter(Boolean);
     }
     if (input.guestInvitationOps.revoke !== undefined) {
       guestInvitationOps.revoke = cleanStringArray(input.guestInvitationOps.revoke).map(extractLogicalId);
@@ -321,6 +352,34 @@ function applyOverlayOps(currentList, ops) {
   return next;
 }
 
+function applyGuestInvitationOps(currentList, ops, { fandom = 'neutral' } = {}) {
+  const isPts = fandom === 'power_to_strive' || /(?:^|[_-])power_to_strive(?:$|[_-])/.test(fandom);
+  const byChar = new Map();
+  const baseList = isPlainObject(ops) && ops.set !== undefined ? ops.set : (currentList || []);
+  for (const item of baseList) {
+    const norm = normalizeProposalInvitationEntry(item);
+    if (!norm) continue;
+    const cid = getInvitationCharId(norm);
+    if (isPts && cid !== 'joseph') continue;
+    byChar.set(cid, norm);
+  }
+  if (isPlainObject(ops)) {
+    for (const item of (ops.invite || [])) {
+      const norm = normalizeProposalInvitationEntry(item);
+      if (!norm) continue;
+      const cid = getInvitationCharId(norm);
+      if (isPts && cid !== 'joseph') {
+        throw new Error(`Regla no negociable de Power to Strive: una propuesta conversacional no puede invitar a «${cid}» a la sala de reacciones.`);
+      }
+      byChar.set(cid, norm);
+    }
+    for (const rev of (ops.revoke || [])) {
+      byChar.delete(extractLogicalId(rev));
+    }
+  }
+  return [...byChar.values()];
+}
+
 export async function approveConfigProposal(projectId, proposalId, { decisionNote = '' } = {}) {
   const id = cleanString(projectId) || db.getActiveProjectId();
   const existing = await db.get('storyConfigs', id);
@@ -334,6 +393,8 @@ export async function approveConfigProposal(projectId, proposalId, { decisionNot
     p.id === proposalId ? { ...p, status: 'approved', decisionNote: cleanString(decisionNote), decidedAt: now } : p
   );
 
+  const effectiveFandom = normalizeFandomNamespace(target.fandom !== undefined ? target.fandom : existing.fandom);
+
   // Relaciones: cambiar o eliminar claves explícitamente
   const nextRelationships = structuredClone(existing.relationshipStates || {});
   if (isPlainObject(target.relationshipOps?.set)) {
@@ -345,13 +406,13 @@ export async function approveConfigProposal(projectId, proposalId, { decisionNot
     delete nextRelationships[keyToRemove];
   }
 
-  // Personajes opcionales e invitaciones (enable / disable / set / revoke)
+  // Personajes opcionales e invitaciones (enable / disable / set / invite / revoke)
   const nextOptional = applyStringSetOps(existing.enabledOptionalCharacters || [], target.optionalCharacterOps);
-  let nextInvitations = applyStringSetOps(existing.roomGuestInvitations || [], target.guestInvitationOps);
+  let nextInvitations = applyGuestInvitationOps(existing.roomGuestInvitations || [], target.guestInvitationOps, { fandom: effectiveFandom });
   // Si se desactiva un personaje opcional, también revocar su invitación pendiente a la sala.
   const disabledOptional = new Set(target.optionalCharacterOps?.disable || []);
   if (disabledOptional.size) {
-    nextInvitations = nextInvitations.filter((gid) => !disabledOptional.has(extractLogicalId(gid)));
+    nextInvitations = nextInvitations.filter((entry) => !disabledOptional.has(getInvitationCharId(entry)));
   }
 
   // Casts: aplicar add / remove / set (incluyendo limpieza con [])
@@ -371,7 +432,7 @@ export async function approveConfigProposal(projectId, proposalId, { decisionNot
 
   const nextConfig = {
     ...existing,
-    fandom: target.fandom !== undefined ? target.fandom : existing.fandom,
+    fandom: effectiveFandom,
     universeName: target.universe !== undefined ? target.universe : existing.universeName,
     relationshipStates: nextRelationships,
     enabledOptionalCharacters: nextOptional,
